@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.4.0
+// @version      0.4.1
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -1667,7 +1667,7 @@
     root = host.attachShadow({ mode: "open" });
     root.innerHTML = `
       <style>
-        :host { all: initial; }
+        :host { all: initial; position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; }
         *, *::before, *::after { box-sizing: border-box; }
         button, input, select { font: inherit; letter-spacing: 0; }
         button { cursor: pointer; }
@@ -1676,29 +1676,33 @@
           right: 18px;
           bottom: 18px;
           z-index: 2147483000;
-          font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          color: #1f2937;
+          font-family: "Avenir Next", "Helvetica Neue", ui-sans-serif, sans-serif;
+          color: oklch(92% .018 250);
+          pointer-events: auto;
         }
         .launcher {
-          width: 46px;
-          height: 46px;
-          border: 1px solid #d1d5db;
-          border-radius: 8px;
-          background: #ffffff;
-          color: #111827;
+          width: 50px;
+          height: 50px;
+          border: 1px solid oklch(48% .035 250);
+          border-radius: 15px;
+          background: oklch(20% .035 250);
+          color: oklch(86% .16 145);
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 13px;
           font-weight: 800;
-          box-shadow: 0 8px 24px rgba(15, 23, 42, .16);
+          letter-spacing: .08em;
+          box-shadow: 0 16px 34px oklch(8% .04 250 / .5), 0 0 0 1px oklch(82% .15 145 / .08);
           cursor: grab;
           touch-action: none;
         }
         .panel {
-          width: min(430px, calc(100vw - 24px));
-          max-height: min(760px, calc(100vh - 24px));
+          width: min(460px, calc(100vw - 24px));
+          max-height: min(800px, calc(100vh - 24px));
           overflow: auto;
-          border: 1px solid #d1d5db;
-          border-radius: 8px;
-          background: #ffffff;
-          box-shadow: 0 14px 38px rgba(15, 23, 42, .2);
+          border: 1px solid oklch(36% .035 250);
+          border-radius: 18px;
+          background: oklch(15% .028 250);
+          box-shadow: 0 24px 70px oklch(5% .04 250 / .62), 0 0 0 1px oklch(82% .15 145 / .06);
         }
         .panel[hidden], .launcher[hidden] { display: none; }
         .header {
@@ -1708,100 +1712,106 @@
           display: flex;
           align-items: center;
           gap: 10px;
-          min-height: 48px;
-          padding: 10px 12px;
-          border-bottom: 1px solid #e5e7eb;
-          background: #ffffff;
+          min-height: 64px;
+          padding: 13px 15px;
+          border-bottom: 1px solid oklch(30% .03 250);
+          background: oklch(18% .035 250);
           cursor: grab;
           touch-action: none;
           user-select: none;
         }
-        .title { flex: 1; font-size: 14px; font-weight: 750; }
-        .dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; }
-        .dot[data-tone="running"] { background: #2563eb; }
-        .dot[data-tone="success"] { background: #059669; }
-        .dot[data-tone="warning"] { background: #d97706; }
-        .dot[data-tone="error"] { background: #dc2626; }
+        .header-copy { display: grid; gap: 2px; min-width: 0; flex: 1; }
+        .eyebrow { color: oklch(70% .035 250); font-size: 9px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+        .title { font-size: 15px; font-weight: 750; letter-spacing: 0; }
+        .dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: oklch(62% .025 250); box-shadow: 0 0 0 4px oklch(62% .025 250 / .12); }
+        .dot[data-tone="running"] { background: oklch(74% .15 85); box-shadow: 0 0 0 4px oklch(74% .15 85 / .12); }
+        .dot[data-tone="success"] { background: oklch(78% .16 145); box-shadow: 0 0 0 4px oklch(78% .16 145 / .12); }
+        .dot[data-tone="warning"] { background: oklch(78% .14 78); box-shadow: 0 0 0 4px oklch(78% .14 78 / .12); }
+        .dot[data-tone="error"] { background: oklch(69% .19 25); box-shadow: 0 0 0 4px oklch(69% .19 25 / .12); }
         .icon-button {
           width: 30px;
           height: 30px;
           border: 0;
-          border-radius: 6px;
+          border-radius: 9px;
           background: transparent;
-          color: #4b5563;
+          color: oklch(72% .025 250);
           font-size: 20px;
           line-height: 1;
         }
-        .icon-button:hover { background: #f3f4f6; color: #111827; }
-        .status { padding: 10px 12px; font-size: 12px; line-height: 1.5; color: #4b5563; }
+        .icon-button:hover { background: oklch(28% .035 250); color: oklch(95% .02 250); }
+        .status { padding: 11px 15px 12px; font-size: 11px; line-height: 1.45; color: oklch(70% .03 250); }
         .summary {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 1px;
-          border-top: 1px solid #e5e7eb;
-          border-bottom: 1px solid #e5e7eb;
-          background: #e5e7eb;
+          border-top: 1px solid oklch(29% .03 250);
+          border-bottom: 1px solid oklch(29% .03 250);
+          background: oklch(29% .03 250);
         }
-        .summary > div { min-width: 0; padding: 9px 10px; background: #f9fafb; }
-        .summary small { display: block; margin-bottom: 3px; color: #6b7280; font-size: 10px; }
-        .summary strong { display: block; overflow: hidden; text-overflow: ellipsis; font-size: 12px; white-space: nowrap; }
+        .summary > div { min-width: 0; padding: 11px 12px; background: oklch(20% .035 250); }
+        .summary small { display: block; margin-bottom: 4px; color: oklch(64% .03 250); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+        .summary strong { display: block; overflow: hidden; text-overflow: ellipsis; color: oklch(94% .02 250); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; white-space: nowrap; }
+        .summary > div:nth-child(2) strong { color: oklch(82% .16 145); }
         .today-summary { border-top: 0; }
-        .section { padding: 12px; border-bottom: 1px solid #e5e7eb; }
+        .today-summary > div { background: oklch(18% .03 250); }
+        .today-summary strong { color: oklch(83% .13 85); }
+        .section { padding: 15px; border-bottom: 1px solid oklch(29% .03 250); }
         .section:last-child { border-bottom: 0; }
-        .section-title { margin: 0 0 9px; font-size: 12px; font-weight: 750; color: #374151; }
-        .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+        .section-title { margin: 0 0 10px; font-size: 11px; font-weight: 750; color: oklch(84% .02 250); letter-spacing: .05em; text-transform: uppercase; }
+        .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
         .field { min-width: 0; }
         .field-wide { grid-column: 1 / -1; }
-        label { display: block; margin-bottom: 4px; color: #4b5563; font-size: 11px; }
+        label { display: block; margin-bottom: 5px; color: oklch(69% .025 250); font-size: 10px; font-weight: 600; }
         input[type="number"], input[type="text"], select {
           width: 100%;
           min-width: 0;
-          height: 34px;
-          border: 1px solid #d1d5db;
-          border-radius: 6px;
-          background: #ffffff;
-          color: #111827;
-          padding: 0 9px;
+          height: 36px;
+          border: 1px solid oklch(36% .035 250);
+          border-radius: 9px;
+          background: oklch(20% .035 250);
+          color: oklch(93% .02 250);
+          padding: 0 10px;
           font-size: 12px;
           outline: none;
         }
-        input:focus, select:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .12); }
+        input:focus, select:focus { border-color: oklch(76% .16 145); box-shadow: 0 0 0 3px oklch(76% .16 145 / .14); }
         .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        .switch-row label { margin: 0; color: #111827; font-size: 12px; font-weight: 650; }
-        input[type="checkbox"] { width: 18px; height: 18px; accent-color: #059669; }
-        details { margin-top: 10px; }
-        summary { cursor: pointer; color: #374151; font-size: 11px; font-weight: 650; }
-        .advanced { margin-top: 10px; }
-        .token-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+        .switch-row label { margin: 0; color: oklch(91% .02 250); font-size: 12px; font-weight: 700; }
+        input[type="checkbox"] { width: 18px; height: 18px; accent-color: oklch(76% .16 145); }
+        details { margin-top: 12px; border: 1px solid oklch(32% .03 250); border-radius: 10px; overflow: hidden; }
+        summary { cursor: pointer; padding: 9px 10px; color: oklch(77% .025 250); font-size: 10px; font-weight: 700; list-style-position: inside; }
+        summary:hover { color: oklch(90% .02 250); background: oklch(24% .035 250); }
+        .advanced { padding: 0 10px 10px; }
+        .token-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
         .token-toolbar label { margin: 0; flex: 1; }
-        .token-count { color: #6b7280; font-size: 10px; }
-        .text-button { border: 0; background: transparent; color: #0369a1; padding: 2px; font-size: 10px; }
-        .text-button:hover { color: #075985; text-decoration: underline; }
+        .token-count { color: oklch(63% .025 250); font-size: 10px; }
+        .text-button { border: 0; background: transparent; color: oklch(77% .14 145); padding: 2px; font-size: 10px; }
+        .text-button:hover { color: oklch(88% .15 145); text-decoration: underline; }
         .text-button:disabled { cursor: wait; opacity: .5; text-decoration: none; }
-        .token-list { max-height: 116px; overflow: auto; border: 1px solid #d1d5db; border-radius: 6px; background: #ffffff; }
-        .token-option { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: 0; padding: 5px 8px; border-bottom: 1px solid #f3f4f6; color: #1f2937; cursor: pointer; }
+        .token-list { max-height: 116px; overflow: auto; border: 1px solid oklch(36% .035 250); border-radius: 10px; background: oklch(19% .03 250); }
+        .token-option { display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 0; padding: 6px 9px; border-bottom: 1px solid oklch(29% .03 250); color: oklch(88% .02 250); cursor: pointer; }
         .token-option:last-child { border-bottom: 0; }
-        .token-option:hover { background: #f9fafb; }
+        .token-option:hover { background: oklch(24% .035 250); }
         .token-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .token-empty { padding: 8px; }
-        .actions { display: flex; gap: 8px; margin-top: 11px; }
-        .manual-switch { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; margin-top: 11px; }
+        .actions { display: flex; gap: 8px; margin-top: 13px; flex-wrap: wrap; }
+        .manual-switch { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; margin-top: 12px; }
         .button {
-          min-height: 34px;
-          border: 1px solid #d1d5db;
-          border-radius: 6px;
-          background: #ffffff;
-          color: #1f2937;
-          padding: 7px 11px;
+          min-height: 36px;
+          border: 1px solid oklch(40% .035 250);
+          border-radius: 9px;
+          background: oklch(22% .035 250);
+          color: oklch(88% .02 250);
+          padding: 7px 12px;
           font-size: 12px;
-          font-weight: 650;
+          font-weight: 700;
         }
-        .button:hover { background: #f3f4f6; }
+        .button:hover { background: oklch(28% .035 250); border-color: oklch(48% .035 250); }
         .button:disabled { cursor: wait; opacity: .55; }
-        .button-primary { border-color: #047857; background: #047857; color: #ffffff; }
-        .button-primary:hover { background: #065f46; }
-        .button-switch { border-color: #0369a1; background: #0369a1; color: #ffffff; }
-        .button-switch:hover { background: #075985; }
+        .button-primary { border-color: oklch(71% .16 145); background: oklch(72% .16 145); color: oklch(15% .04 145); box-shadow: 0 6px 18px oklch(72% .16 145 / .16); }
+        .button-primary:hover { background: oklch(79% .16 145); }
+        .button-switch { border-color: oklch(58% .13 75); background: oklch(31% .07 75); color: oklch(88% .13 85); }
+        .button-switch:hover { background: oklch(38% .09 75); }
         .button-spacer { margin-left: auto; }
         .candidate-head, .candidate {
           display: grid;
@@ -1811,41 +1821,29 @@
           min-height: 28px;
           font-size: 10px;
         }
-        .candidate-head { color: #6b7280; border-bottom: 1px solid #e5e7eb; }
-        .candidate { border-bottom: 1px solid #f3f4f6; }
+        .candidate-head { color: oklch(61% .025 250); border-bottom: 1px solid oklch(31% .03 250); }
+        .candidate { border-bottom: 1px solid oklch(28% .03 250); }
         .candidate:last-child { border-bottom: 0; }
         .candidate > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .candidate-ok .verdict { color: #047857; }
-        .candidate-off { color: #6b7280; }
-        .candidate-off .verdict { color: #b45309; }
-        .token-result { display: grid; grid-template-columns: minmax(80px, .8fr) minmax(58px, .6fr) minmax(110px, 1.2fr); align-items: center; gap: 7px; min-height: 29px; border-bottom: 1px solid #f3f4f6; font-size: 10px; }
+        .candidate-ok .verdict { color: oklch(78% .16 145); }
+        .candidate-off { color: oklch(61% .025 250); }
+        .candidate-off .verdict { color: oklch(78% .14 78); }
+        .token-result { display: grid; grid-template-columns: minmax(80px, .8fr) minmax(58px, .6fr) minmax(110px, 1.2fr); align-items: center; gap: 7px; min-height: 31px; border-bottom: 1px solid oklch(28% .03 250); font-size: 10px; }
         .token-result:last-child { border-bottom: 0; }
         .token-result span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .token-result-success span:last-child { color: #047857; }
-        .token-result-warning span:last-child { color: #b45309; }
-        .token-result-error span:last-child { color: #b91c1c; }
+        .token-result-success span:last-child { color: oklch(78% .16 145); }
+        .token-result-warning span:last-child { color: oklch(78% .14 78); }
+        .token-result-error span:last-child { color: oklch(70% .19 25); }
         .mono { font-variant-numeric: tabular-nums; }
         .logs { display: grid; gap: 6px; }
-        .log { display: grid; grid-template-columns: 58px 1fr; gap: 8px; font-size: 10px; line-height: 1.4; color: #4b5563; }
-        .log-error { color: #b91c1c; }
-        .log-success { color: #047857; }
-        .empty { padding: 8px 0; color: #9ca3af; font-size: 10px; }
-        @media (prefers-color-scheme: dark) {
-          .panel, .launcher, .header { background: #171717; color: #f3f4f6; border-color: #404040; }
-          .header, .section, .summary { border-color: #404040; }
-          .summary { background: #404040; }
-          .summary > div { background: #202020; }
-          .summary small, .status, label, summary, .section-title, .candidate-head, .log { color: #a3a3a3; }
-          .switch-row label, .title { color: #f5f5f5; }
-          input[type="number"], input[type="text"], select, .button, .token-list { background: #202020; border-color: #525252; color: #f5f5f5; }
-          .token-option { border-color: #333333; color: #f5f5f5; }
-          .token-option:hover { background: #2a2a2a; }
-          .token-count { color: #a3a3a3; }
-          .button-primary { background: #059669; border-color: #059669; color: #ffffff; }
-          .icon-button { color: #d4d4d4; }
-          .icon-button:hover, .button:hover { background: #2a2a2a; }
-          .candidate, .candidate-head { border-color: #333333; }
-        }
+        .log { display: grid; grid-template-columns: 58px 1fr; gap: 8px; font-size: 10px; line-height: 1.4; color: oklch(68% .025 250); }
+        .log-error { color: oklch(70% .19 25); }
+        .log-success { color: oklch(78% .16 145); }
+        .empty { padding: 8px 0; color: oklch(59% .025 250); font-size: 10px; }
+        .secondary-details { margin: 0; border: 0; border-top: 1px solid oklch(29% .03 250); border-radius: 0; }
+        .secondary-details > summary { padding: 13px 15px; }
+        .secondary-details > div { padding: 0 15px 15px; }
+        .secondary-details .section-title { margin-top: 2px; }
         @media (max-width: 520px) {
           .panel { right: 12px; bottom: 12px; max-height: calc(100vh - 24px); }
           .launcher { right: 12px; bottom: 12px; }
@@ -1859,7 +1857,10 @@
       <section class="panel" aria-label="${SITE_LABEL} 分组监控">
         <header class="header" data-ref="header">
           <span class="dot" data-ref="statusDot"></span>
-          <span class="title">${SITE_LABEL} 分组监控</span>
+          <span class="header-copy">
+            <span class="eyebrow">GROUP CONTROL</span>
+            <span class="title">${SITE_LABEL} 分组监控</span>
+          </span>
           <button class="icon-button" data-ref="collapse" type="button" title="收起" aria-label="收起">−</button>
         </header>
         <div class="status" data-ref="status"></div>
@@ -1913,9 +1914,9 @@
             </div>
           </details>
           <div class="actions">
-            <button class="button button-primary" data-ref="save" type="button">保存</button>
+            <button class="button" data-ref="save" type="button">保存设置</button>
             <button class="button" data-ref="check" type="button">立即检查</button>
-            <button class="button button-switch" data-ref="switchNow" type="button">立即切换</button>
+            <button class="button button-primary" data-ref="switchNow" type="button">立即切换</button>
             <button class="button button-spacer" data-ref="refresh" type="button">刷新</button>
           </div>
           <div class="manual-switch">
@@ -1926,19 +1927,25 @@
             <button class="button button-switch" data-ref="manualSwitch" type="button">手动切换</button>
           </div>
         </section>
-        <section class="section">
-          <h2 class="section-title">密钥状态</h2>
-          <div data-ref="tokenResultRows"></div>
-        </section>
-        <section class="section">
+        <section class="section candidate-section">
           <h2 class="section-title">分组状态</h2>
           <div class="candidate-head"><span>分组</span><span>倍率</span><span>整体</span><span>近期</span><span>延迟</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
-        <section class="section">
-          <h2 class="section-title">事件</h2>
-          <div class="logs" data-ref="logs"></div>
-        </section>
+        <details class="secondary-details">
+          <summary>密钥状态</summary>
+          <div>
+          <h2 class="section-title">密钥状态</h2>
+          <div data-ref="tokenResultRows"></div>
+          </div>
+        </details>
+        <details class="secondary-details">
+          <summary>最近事件</summary>
+          <div>
+            <h2 class="section-title">最近 10 条</h2>
+            <div class="logs" data-ref="logs"></div>
+          </div>
+        </details>
       </section>
     `;
 
