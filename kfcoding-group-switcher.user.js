@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.4.5
+// @version      0.4.6
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.4.5";
+  const SCRIPT_VERSION = "0.4.6";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -1737,8 +1737,21 @@
 
   function renderTokenSelectionCount() {
     if (!refs.tokenList || !refs.tokenCount) return;
-    const selected = refs.tokenList.querySelectorAll('input[data-token-id]:checked').length;
+    const selectedBoxes = [...refs.tokenList.querySelectorAll('input[data-token-id]:checked')];
+    const selected = selectedBoxes.length;
     refs.tokenCount.textContent = `已选 ${selected}/${tokensCache.length}`;
+    if (refs.tokenSelectLabel) {
+      if (!selected) {
+        refs.tokenSelectLabel.textContent = "请选择 API 密钥";
+      } else if (selected === tokensCache.length) {
+        refs.tokenSelectLabel.textContent = "全部 API 密钥";
+      } else if (selected === 1) {
+        const token = tokensCache.find((item) => Number(item.id) === Number(selectedBoxes[0].value));
+        refs.tokenSelectLabel.textContent = token ? String(token.name || `#${token.id}`) : "已选择 1 个密钥";
+      } else {
+        refs.tokenSelectLabel.textContent = `已选择 ${selected} 个密钥`;
+      }
+    }
   }
 
   function renderCandidates() {
@@ -1791,7 +1804,7 @@
   function renderManualGroups() {
     if (!refs.manualGroup) return;
     const selectedGroup = refs.manualGroup.value;
-    refs.manualGroup.replaceChildren(createOption("", "请选择目标分组"));
+    refs.manualGroup.replaceChildren(createOption("", state.candidates.length ? "请选择目标分组" : "暂无检查结果"));
 
     state.candidates
       .slice()
@@ -1817,6 +1830,13 @@
       (option) => option.value === selectedGroup && !option.disabled,
     );
     refs.manualGroup.value = preserved ? selectedGroup : "";
+    if (refs.manualHint) {
+      const availableCount = state.candidates.filter((candidate) => candidate.available).length;
+      refs.manualHint.textContent = state.candidates.length
+        ? `最近检查有 ${availableCount} 个可用分组，确认时会再次校验`
+        : "请先执行一次立即检查";
+    }
+    if (refs.manualConfirm) refs.manualConfirm.disabled = running || !refs.manualGroup.value;
   }
 
   function renderLogs() {
@@ -1904,12 +1924,15 @@
     if (refs.enabled) refs.enabled.checked = config.enabled;
     if (refs.check) refs.check.disabled = running;
     if (refs.switchNow) refs.switchNow.disabled = running;
-    if (refs.save) refs.save.disabled = running;
     if (refs.checkUpdate) {
       refs.checkUpdate.disabled = state.update.checking || running;
-      refs.checkUpdate.textContent = state.update.checking
-        ? "检查中..."
+      refs.checkUpdate.dataset.state = state.update.checking ? "checking" : "idle";
+      refs.checkUpdate.dataset.update = state.update.availableVersion ? "available" : "none";
+      const updateLabel = state.update.checking
+        ? "正在检查更新"
         : (state.update.availableVersion ? `更新至 v${state.update.availableVersion}` : "检查更新");
+      refs.checkUpdate.title = updateLabel;
+      refs.checkUpdate.setAttribute("aria-label", updateLabel);
     }
     if (refs.selectAllTokens) refs.selectAllTokens.disabled = running;
     if (refs.clearTokens) refs.clearTokens.disabled = running;
@@ -1921,7 +1944,7 @@
     }
     renderManualGroups();
     if (refs.manualGroup) refs.manualGroup.disabled = running || !state.candidates.length;
-    if (refs.manualSwitch) refs.manualSwitch.disabled = running || !refs.manualGroup.value;
+    if (refs.manualSwitch) refs.manualSwitch.disabled = running;
     renderCandidates();
     renderTokenResults();
     renderLogs();
@@ -1966,6 +1989,33 @@
     refs.blacklistMinutes.value = String(config.blacklistMinutes);
   }
 
+  function persistFormConfig() {
+    const previousIdentity = `${config.tokenIds.join(",")}:${config.model}`;
+    const wasEnabled = config.enabled;
+    config = readFormConfig();
+    GM_setValue(STORAGE_CONFIG, config);
+    if (`${config.tokenIds.join(",")}:${config.model}` !== previousIdentity) {
+      pendingCandidates.clear();
+      state.candidates = [];
+      state.tokenResults = [];
+      state.currentGroup = "-";
+    }
+    if (config.enabled !== wasEnabled) {
+      scheduleNext(config.enabled ? 250 : undefined);
+      setStatus(config.enabled ? "自动切换已启用" : "自动切换已暂停", config.enabled ? "success" : "warning");
+    } else {
+      scheduleNext(config.enabled ? 250 : undefined);
+      setStatus("设置已自动保存", "success");
+    }
+    render();
+  }
+
+  function setTokenMenuOpen(open) {
+    if (!refs.tokenMenu || !refs.tokenSelectToggle) return;
+    refs.tokenMenu.hidden = !open;
+    refs.tokenSelectToggle.setAttribute("aria-expanded", String(open));
+  }
+
   function bindUi() {
     bindDrag(refs.launcher, refs.launcher, "launcher");
     bindDrag(refs.header, refs.panel, "panel");
@@ -1984,43 +2034,55 @@
     refs.check.addEventListener("click", () => runCheck({ manual: true }));
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
-    refs.manualGroup.addEventListener("change", render);
+    refs.tokenSelectToggle.addEventListener("click", () => {
+      setTokenMenuOpen(refs.tokenMenu.hidden);
+    });
+    root.addEventListener("click", (event) => {
+      if (!refs.tokenSelect.contains(event.target)) setTokenMenuOpen(false);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!event.composedPath().includes(root.host)) setTokenMenuOpen(false);
+    });
     refs.manualSwitch.addEventListener("click", () => {
-      const targetGroup = refs.manualGroup.value;
-      if (!targetGroup) {
-        setStatus("请先选择要手动切换的目标分组", "warning");
-        return;
+      renderManualGroups();
+      if (!state.candidates.length) {
+        setStatus("请先执行一次立即检查，再选择手动目标分组", "warning");
       }
+      refs.manualDialog.showModal();
+    });
+    refs.manualGroup.addEventListener("change", () => {
+      refs.manualConfirm.disabled = running || !refs.manualGroup.value;
+    });
+    refs.manualConfirm.addEventListener("click", () => {
+      const targetGroup = refs.manualGroup.value;
+      if (!targetGroup) return;
+      refs.manualDialog.close();
       runCheck({ manual: true, forceSwitch: true, targetGroup });
     });
-    refs.tokenList.addEventListener("change", renderTokenSelectionCount);
+    [refs.manualClose, refs.manualCancel].forEach((button) => {
+      button.addEventListener("click", () => refs.manualDialog.close());
+    });
+    refs.tokenList.addEventListener("change", () => {
+      renderTokenSelectionCount();
+      persistFormConfig();
+    });
     refs.selectAllTokens.addEventListener("click", () => {
       refs.tokenList.querySelectorAll('input[data-token-id]').forEach((checkbox) => {
         checkbox.checked = true;
       });
       renderTokenSelectionCount();
+      persistFormConfig();
     });
     refs.clearTokens.addEventListener("click", () => {
       refs.tokenList.querySelectorAll('input[data-token-id]').forEach((checkbox) => {
         checkbox.checked = false;
       });
       renderTokenSelectionCount();
+      persistFormConfig();
     });
-    refs.save.addEventListener("click", () => {
-      const previousIdentity = `${config.tokenIds.join(",")}:${config.model}`;
-      config = readFormConfig();
-      GM_setValue(STORAGE_CONFIG, config);
-      if (`${config.tokenIds.join(",")}:${config.model}` !== previousIdentity) {
-        pendingCandidates.clear();
-        state.candidates = [];
-        state.tokenResults = [];
-        state.currentGroup = "-";
-      }
-      addLog("配置已保存", "success");
-      setStatus(config.enabled ? "配置已保存，准备检查" : "配置已保存，自动切换已暂停", "success");
-      scheduleNext(config.enabled ? 250 : undefined);
-      renderOptions();
-      render();
+    refs.settingsSection.addEventListener("change", (event) => {
+      if (event.target.closest(".token-list")) return;
+      persistFormConfig();
     });
   }
 
@@ -2094,16 +2156,33 @@
         .dot[data-tone="warning"] { background: oklch(78% .14 78); box-shadow: 0 0 0 4px oklch(78% .14 78 / .12); }
         .dot[data-tone="error"] { background: oklch(69% .19 25); box-shadow: 0 0 0 4px oklch(69% .19 25 / .12); }
         .icon-button {
+          position: relative;
+          display: inline-grid;
+          place-items: center;
           width: 30px;
           height: 30px;
           border: 0;
           border-radius: 9px;
           background: transparent;
           color: oklch(72% .025 250);
-          font-size: 20px;
+          padding: 0;
           line-height: 1;
         }
         .icon-button:hover { background: oklch(28% .035 250); color: oklch(95% .02 250); }
+        .icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+        .icon-button[data-update="available"]::after {
+          position: absolute;
+          top: 4px;
+          right: 4px;
+          width: 6px;
+          height: 6px;
+          border: 1px solid oklch(18% .035 250);
+          border-radius: 50%;
+          background: oklch(78% .16 145);
+          content: "";
+        }
+        .icon-button[data-state="checking"] svg { animation: update-spin .8s linear infinite; }
+        @keyframes update-spin { to { transform: rotate(360deg); } }
         .status { padding: 11px 15px 12px; font-size: 11px; line-height: 1.45; color: oklch(70% .03 250); }
         .summary {
           display: grid;
@@ -2146,7 +2225,8 @@
           outline: none;
         }
         input:focus, select:focus { border-color: oklch(76% .16 145); box-shadow: 0 0 0 3px oklch(76% .16 145 / .14); }
-        .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .control-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+        .switch-row { display: flex; min-height: 36px; align-items: center; justify-content: space-between; gap: 12px; flex: 1; }
         .switch-row label { margin: 0; color: oklch(91% .02 250); font-size: 12px; font-weight: 700; }
         input[type="checkbox"] { width: 18px; height: 18px; accent-color: oklch(76% .16 145); }
         details { margin-top: 12px; border: 1px solid oklch(32% .03 250); border-radius: 10px; overflow: hidden; }
@@ -2154,29 +2234,51 @@
         summary:hover { color: oklch(90% .02 250); background: oklch(24% .035 250); }
         .advanced { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0 10px 10px; }
         .advanced label { display: flex; align-items: end; min-height: 24px; }
-        .token-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .token-toolbar label { margin: 0; flex: 1; }
-        .token-count { color: oklch(63% .025 250); font-size: 10px; }
+        .token-select { position: relative; }
+        .token-select-trigger {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto auto;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+          height: 36px;
+          border: 1px solid oklch(36% .035 250);
+          border-radius: 9px;
+          background: oklch(20% .035 250);
+          color: oklch(93% .02 250);
+          padding: 0 10px;
+          text-align: left;
+        }
+        .token-select-trigger:hover { border-color: oklch(48% .035 250); background: oklch(23% .035 250); }
+        .token-select-trigger:focus { border-color: oklch(76% .16 145); box-shadow: 0 0 0 3px oklch(76% .16 145 / .14); outline: none; }
+        .token-select-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .token-count { color: oklch(68% .025 250); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+        .chevron { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; transition: transform .16s ease; }
+        .token-select-trigger[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+        .token-menu {
+          position: absolute;
+          z-index: 6;
+          top: calc(100% + 6px);
+          right: 0;
+          left: 0;
+          padding: 8px;
+          border: 1px solid oklch(39% .035 250);
+          border-radius: 10px;
+          background: oklch(17% .032 250);
+          box-shadow: 0 16px 34px oklch(6% .04 250 / .58);
+        }
+        .token-menu[hidden] { display: none; }
+        .token-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 6px; }
         .text-button { border: 0; background: transparent; color: oklch(77% .14 145); padding: 2px; font-size: 10px; }
         .text-button:hover { color: oklch(88% .15 145); text-decoration: underline; }
         .text-button:disabled { cursor: wait; opacity: .5; text-decoration: none; }
-        .token-list { max-height: 116px; overflow: auto; border: 1px solid oklch(36% .035 250); border-radius: 10px; background: oklch(19% .03 250); }
+        .token-list { max-height: 184px; overflow: auto; border: 1px solid oklch(32% .03 250); border-radius: 8px; background: oklch(19% .03 250); }
         .token-option { display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 0; padding: 6px 9px; border-bottom: 1px solid oklch(29% .03 250); color: oklch(88% .02 250); cursor: pointer; }
         .token-option:last-child { border-bottom: 0; }
         .token-option:hover { background: oklch(24% .035 250); }
         .token-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .token-empty { padding: 8px; }
-        .command-stack { display: grid; gap: 10px; margin-top: 13px; }
-        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .manual-switch {
-          display: grid;
-          grid-template-columns: auto minmax(150px, 210px) auto;
-          align-items: center;
-          justify-content: start;
-          gap: 8px;
-        }
-        .manual-switch label { margin: 0; white-space: nowrap; }
-        .manual-switch select { width: 100%; }
+        .actions { display: flex; gap: 8px; margin-top: 13px; flex-wrap: wrap; }
         .button {
           min-height: 36px;
           border: 1px solid oklch(40% .035 250);
@@ -2193,6 +2295,23 @@
         .button-primary:hover { background: oklch(79% .16 145); }
         .button-switch { border-color: oklch(58% .13 75); background: oklch(31% .07 75); color: oklch(88% .13 85); }
         .button-switch:hover { background: oklch(38% .09 75); }
+        .manual-dialog {
+          width: min(380px, calc(100vw - 32px));
+          border: 1px solid oklch(39% .035 250);
+          border-radius: 16px;
+          background: oklch(17% .032 250);
+          color: oklch(92% .018 250);
+          padding: 0;
+          box-shadow: 0 24px 70px oklch(5% .04 250 / .72);
+          font-family: "Avenir Next", "Helvetica Neue", ui-sans-serif, sans-serif;
+          pointer-events: auto;
+        }
+        .manual-dialog::backdrop { background: oklch(5% .025 250 / .72); }
+        .dialog-form { padding: 16px; }
+        .dialog-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .dialog-title { flex: 1; margin: 0; font-size: 15px; letter-spacing: 0; }
+        .dialog-hint { min-height: 18px; margin: 7px 0 0; color: oklch(68% .025 250); font-size: 10px; line-height: 1.5; }
+        .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
         .candidate-head, .candidate {
           display: grid;
           grid-template-columns: minmax(78px, 1fr) 46px 52px 52px 48px minmax(62px, auto);
@@ -2236,8 +2355,7 @@
         }
         @media (max-width: 380px) {
           .selector-grid { grid-template-columns: 1fr; }
-          .manual-switch { grid-template-columns: minmax(0, 1fr) auto; }
-          .manual-switch label { grid-column: 1 / -1; }
+          .control-row { align-items: stretch; flex-direction: column; }
           .candidate-head, .candidate { grid-template-columns: minmax(72px, 1fr) 40px 48px minmax(48px, auto); gap: 5px; }
           .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
         }
@@ -2250,6 +2368,9 @@
             <span class="eyebrow">GROUP CONTROL</span>
             <span class="title">${SITE_LABEL} 分组监控</span>
           </span>
+          <button class="icon-button" data-ref="checkUpdate" data-state="idle" data-update="none" type="button" title="检查更新" aria-label="检查更新">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.2 6.2L3 15"></path><path d="M3 21v-6h6"></path><path d="M3 12a9 9 0 0 1 15.2-6.2L21 9"></path><path d="M21 3v6h-6"></path></svg>
+          </button>
           <button class="icon-button" data-ref="collapse" type="button" title="收起" aria-label="收起">−</button>
         </header>
         <div class="status" data-ref="status"></div>
@@ -2263,20 +2384,32 @@
           <div><small>今日请求</small><strong class="mono" data-ref="todayRequests">-</strong></div>
           <div><small>今日 Token</small><strong class="mono" data-ref="todayTokens">-</strong></div>
         </div>
-        <section class="section">
-          <div class="switch-row">
-            <label for="kf-enabled">自动切换</label>
-            <input id="kf-enabled" data-ref="enabled" type="checkbox">
+        <section class="section" data-ref="settingsSection">
+          <h2 class="section-title">切换控制</h2>
+          <div class="control-row">
+            <div class="switch-row">
+              <label for="kf-enabled">自动切换</label>
+              <input id="kf-enabled" data-ref="enabled" type="checkbox">
+            </div>
+            <button class="button button-switch" data-ref="manualSwitch" type="button">手动切换</button>
           </div>
           <div class="grid" style="margin-top: 10px">
             <div class="field field-wide">
-              <div class="token-toolbar">
-                <label>API 密钥（可多选）</label>
-                <span class="token-count" data-ref="tokenCount">已选 0/0</span>
-                <button class="text-button" data-ref="selectAllTokens" type="button">全选</button>
-                <button class="text-button" data-ref="clearTokens" type="button">清空</button>
+              <label id="kf-token-label">API 密钥（可多选）</label>
+              <div class="token-select" data-ref="tokenSelect">
+                <button class="token-select-trigger" data-ref="tokenSelectToggle" type="button" aria-labelledby="kf-token-label" aria-expanded="false">
+                  <span class="token-select-label" data-ref="tokenSelectLabel">请选择 API 密钥</span>
+                  <span class="token-count" data-ref="tokenCount">已选 0/0</span>
+                  <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                </button>
+                <div class="token-menu" data-ref="tokenMenu" hidden>
+                  <div class="token-toolbar">
+                    <button class="text-button" data-ref="selectAllTokens" type="button">全选</button>
+                    <button class="text-button" data-ref="clearTokens" type="button">清空</button>
+                  </div>
+                  <div class="token-list" data-ref="tokenList"></div>
+                </div>
               </div>
-              <div class="token-list" data-ref="tokenList"></div>
             </div>
           </div>
           <div class="selector-grid" style="margin-top: 10px">
@@ -2306,18 +2439,9 @@
               <div class="field"><label>故障拉黑（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
             </div>
           </details>
-          <div class="command-stack">
-            <div class="actions">
-              <button class="button" data-ref="save" type="button">保存设置</button>
-              <button class="button" data-ref="check" type="button">立即检查</button>
-              <button class="button button-primary" data-ref="switchNow" type="button">立即切换</button>
-              <button class="button" data-ref="checkUpdate" type="button">检查更新</button>
-            </div>
-            <div class="manual-switch">
-              <label for="kf-manual-group">指定分组</label>
-              <select id="kf-manual-group" data-ref="manualGroup"></select>
-              <button class="button button-switch" data-ref="manualSwitch" type="button">手动切换</button>
-            </div>
+          <div class="actions">
+            <button class="button" data-ref="check" type="button">立即检查</button>
+            <button class="button button-primary" data-ref="switchNow" type="button">切到最低可用</button>
           </div>
         </section>
         <section class="section candidate-section">
@@ -2340,15 +2464,33 @@
           </div>
         </details>
       </section>
+      <dialog class="manual-dialog" data-ref="manualDialog" aria-labelledby="kf-manual-title">
+        <form class="dialog-form" method="dialog">
+          <div class="dialog-header">
+            <h2 class="dialog-title" id="kf-manual-title">手动切换分组</h2>
+            <button class="icon-button" data-ref="manualClose" type="button" title="关闭" aria-label="关闭">×</button>
+          </div>
+          <div class="field">
+            <label for="kf-manual-group">目标分组</label>
+            <select id="kf-manual-group" data-ref="manualGroup"></select>
+            <p class="dialog-hint" data-ref="manualHint"></p>
+          </div>
+          <div class="dialog-actions">
+            <button class="button" data-ref="manualCancel" type="button">取消</button>
+            <button class="button button-primary" data-ref="manualConfirm" type="button">确认切换</button>
+          </div>
+        </form>
+      </dialog>
     `;
 
     const refNames = [
       "launcher", "panel", "header", "statusDot", "collapse", "status", "currentGroup", "bestGroup",
-      "lastCheck", "todaySpend", "todayRequests", "todayTokens", "enabled", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "allowedGroups", "pollSeconds", "metricHours",
+      "lastCheck", "todaySpend", "todayRequests", "todayTokens", "settingsSection", "enabled",
+      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "allowedGroups", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxLatencySeconds", "minThroughput", "maxGroupRatio",
       "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
-      "save", "check", "switchNow", "checkUpdate", "manualGroup", "manualSwitch",
+      "check", "switchNow", "checkUpdate", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel",
       "tokenResultRows", "candidateRows", "logs",
     ];
     refs = Object.fromEntries(
