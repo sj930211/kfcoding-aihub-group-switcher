@@ -4,6 +4,16 @@ import vm from "node:vm";
 
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 assert.equal(source.includes('data-ref="refresh"'), false, "manual refresh should be folded into immediate check");
+assert.equal(
+  source.indexOf("const manualUsageRefresh = manual ? refreshTodayUsage() : null;") < source.indexOf("if (!config.model)"),
+  true,
+  "manual checks should refresh account usage before group-check prerequisites can return early",
+);
+assert.equal(
+  source.includes('const usageLoadingText = state.todayUsage.loading ? "..." : "";'),
+  true,
+  "today usage should visibly enter a loading state during an immediate refresh",
+);
 assert.equal(source.includes('data-ref="save"'), false, "settings should save automatically without an ambiguous save button");
 assert.equal(source.includes('data-ref="tokenSelectToggle"'), true, "API keys should use a compact dropdown trigger");
 assert.equal(source.includes('<dialog class="manual-dialog"'), true, "manual group selection should use a confirmation dialog");
@@ -24,7 +34,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.4.6");
+assert.equal(api.extractUserscriptVersion(source), "0.4.7");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);

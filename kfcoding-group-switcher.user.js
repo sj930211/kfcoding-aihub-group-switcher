@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.4.6
+// @version      0.4.7
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.4.6";
+  const SCRIPT_VERSION = "0.4.7";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -1473,6 +1473,8 @@
     const manual = Boolean(options && options.manual);
     const forceSwitch = Boolean(options && options.forceSwitch);
     const targetGroup = String((options && options.targetGroup) || "").trim();
+    // A manual check must refresh account-level usage even when group checks cannot start yet.
+    const manualUsageRefresh = manual ? refreshTodayUsage() : null;
     if (running) {
       if (manual) setStatus("已有检查正在进行", "warning");
       return;
@@ -1488,7 +1490,7 @@
     const selectedTokenIds = config.tokenIds.slice();
 
     running = true;
-    const usageRefresh = refreshTodayUsage();
+    const usageRefresh = manualUsageRefresh || refreshTodayUsage();
     const tokenCatalogRefresh = manual
       ? refreshTokenCatalog()
         .then(() => true)
@@ -1902,15 +1904,18 @@
     }
     if (refs.bestGroup) refs.bestGroup.textContent = state.bestGroup;
     if (refs.lastCheck) refs.lastCheck.textContent = state.lastCheck;
-    if (refs.todaySpend) refs.todaySpend.textContent = formatSpend(state.todayUsage);
+    const usageLoadingText = state.todayUsage.loading ? "..." : "";
+    if (refs.todaySpend) {
+      refs.todaySpend.textContent = usageLoadingText || formatSpend(state.todayUsage);
+    }
     if (refs.todayRequests) {
-      refs.todayRequests.textContent = formatUsageCount(
+      refs.todayRequests.textContent = usageLoadingText || formatUsageCount(
         state.todayUsage.requests,
         state.todayUsage.available,
       );
     }
     if (refs.todayTokens) {
-      refs.todayTokens.textContent = formatTokenCount(
+      refs.todayTokens.textContent = usageLoadingText || formatTokenCount(
         state.todayUsage.tokens,
         state.todayUsage.available,
       );
