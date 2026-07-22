@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.5.0
+// @version      0.5.1
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.5.0";
+  const SCRIPT_VERSION = "0.5.1";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -2481,16 +2481,17 @@
         .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
         .candidate-head, .candidate {
           display: grid;
-          grid-template-columns: minmax(70px, 1fr) 42px 46px 46px 44px 44px 44px minmax(58px, auto);
+          grid-template-columns: minmax(70px, 1fr) 42px 46px 46px 44px 44px 44px 76px;
           align-items: center;
           gap: 6px;
           min-height: 28px;
           font-size: 10px;
         }
-        .candidate-head { color: oklch(61% .025 250); border-bottom: 1px solid oklch(31% .03 250); }
-        .candidate { border-bottom: 1px solid oklch(28% .03 250); }
+        .candidate-head { padding-left: 7px; color: oklch(61% .025 250); border-bottom: 1px solid oklch(31% .03 250); border-left: 2px solid transparent; }
+        .candidate { padding-left: 7px; border-bottom: 1px solid oklch(28% .03 250); border-left: 2px solid transparent; }
         .candidate:last-child { border-bottom: 0; }
         .candidate > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .candidate-head > span:not(:first-child), .candidate > span:not(:first-child) { text-align: center; }
         .candidate-ok .verdict { color: oklch(78% .16 145); }
         .candidate-off { color: oklch(61% .025 250); }
         .candidate-off .verdict { color: oklch(78% .14 78); }
@@ -2517,14 +2518,14 @@
           .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .selector-grid { grid-template-columns: minmax(0, 1fr) minmax(128px, .72fr); }
           .field-wide { grid-column: auto; }
-          .candidate-head, .candidate { grid-template-columns: minmax(78px, 1fr) 44px 50px 44px 44px minmax(58px, auto); }
+          .candidate-head, .candidate { grid-template-columns: minmax(78px, 1fr) 44px 50px 44px 44px 54px; }
           .candidate-head span:nth-child(3), .candidate span:nth-child(3),
           .candidate-head span:nth-child(7), .candidate span:nth-child(7) { display: none; }
         }
         @media (max-width: 380px) {
           .selector-grid { grid-template-columns: 1fr; }
           .control-row { align-items: stretch; flex-direction: column; }
-          .candidate-head, .candidate { grid-template-columns: minmax(72px, 1fr) 40px 42px 42px minmax(48px, auto); gap: 5px; }
+          .candidate-head, .candidate { grid-template-columns: minmax(72px, 1fr) 40px 42px 42px 50px; gap: 5px; }
           .candidate-head span:nth-child(4), .candidate span:nth-child(4) { display: none; }
         }
 
@@ -2757,7 +2758,7 @@
         .button-primary:hover { border-color: #b6edbe; background: #b6edbe; }
         .candidate-section { padding-bottom: 10px; }
         .candidate-head, .candidate {
-          grid-template-columns: minmax(70px, 1fr) 40px 40px 40px 43px 43px 43px minmax(54px, auto);
+          grid-template-columns: minmax(70px, 1fr) 40px 40px 40px 43px 43px 43px 76px;
           gap: 6px;
           font-size: 10px;
         }
@@ -2790,7 +2791,7 @@
           .panel { width: calc(100vw - 20px); right: 10px; bottom: 10px; max-height: calc(100vh - 20px); }
           .launcher { right: 10px; bottom: 10px; }
           .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 42px 42px 44px 44px minmax(54px, auto); }
+          .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 42px 42px 44px 44px 54px; }
           .candidate-head span:nth-child(3), .candidate span:nth-child(3),
           .candidate-head span:nth-child(7), .candidate span:nth-child(7) { display: none; }
         }
@@ -2799,7 +2800,7 @@
           .route-primary { padding-right: 0; padding-bottom: 10px; border-right: 0; border-bottom: 1px solid var(--line); }
           .control-grid { grid-template-columns: 1fr; }
           .field-wide { grid-column: auto; }
-          .candidate-head, .candidate { grid-template-columns: minmax(70px, 1fr) 40px 42px 42px minmax(50px, auto); gap: 4px; }
+          .candidate-head, .candidate { grid-template-columns: minmax(70px, 1fr) 40px 42px 42px 50px; gap: 4px; }
           .candidate-head span:nth-child(4), .candidate span:nth-child(4) { display: none; }
           .button { font-size: 11px; }
         }

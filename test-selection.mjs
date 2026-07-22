@@ -25,6 +25,16 @@ assert.equal(source.includes('data-ref="maxOutputDurationSeconds"'), true, "outp
 assert.equal(source.includes('data-ref="groupFilterWhitelist"'), true, "group filtering should expose a whitelist mode");
 assert.equal(source.includes('data-ref="groupFilterBlacklist"'), true, "group filtering should expose a blacklist mode");
 assert.equal(
+  source.includes("minmax(54px, auto)"),
+  false,
+  "verdict text length must not resize candidate grid columns",
+);
+assert.equal(
+  source.includes(".candidate-head { padding-left: 7px;"),
+  true,
+  "candidate headers and rows should reserve the same status-rail space",
+);
+assert.equal(
   source.includes("sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}))"),
   true,
   "legacy group filters must be sanitized before defaults are applied",
@@ -66,7 +76,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.5.0");
+assert.equal(api.extractUserscriptVersion(source), "0.5.1");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
