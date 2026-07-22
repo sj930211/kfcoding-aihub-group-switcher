@@ -20,6 +20,13 @@ assert.equal(source.includes('<dialog class="manual-dialog"'), true, "manual gro
 assert.equal(source.includes('<section class="overview"'), true, "the primary route state should lead the redesigned hierarchy");
 assert.equal(source.includes('<section class="usage-strip"'), true, "today usage should use a compact monitoring strip");
 assert.equal(source.includes('data-ref="balance"'), true, "the account balance should be visible in the monitoring strip");
+assert.equal(source.includes('data-ref="maxFirstTokenLatencySeconds"'), true, "first-token latency should have its own threshold");
+assert.equal(source.includes('data-ref="maxOutputLatencySeconds"'), true, "output latency should have its own threshold");
+assert.equal(
+  source.includes('<span>首字</span><span>输出</span><span>判定</span>'),
+  true,
+  "candidate status should display first-token and output latency separately",
+);
 assert.equal(
   source.includes("checkForUpdate({ silent: true })"),
   true,
@@ -52,7 +59,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.4.8");
+assert.equal(api.extractUserscriptVersion(source), "0.4.9");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
@@ -93,6 +100,10 @@ assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, rollbackChecks: 0 }).ro
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, rollbackChecks: 99 }).rollbackChecks, 10);
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG }).blacklistMinutes, 60);
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, blacklistMinutes: 0 }).blacklistMinutes, 1);
+const migratedLatencyConfig = api.sanitizeConfig({ maxLatencySeconds: 60, minThroughput: 20 });
+assert.equal(migratedLatencyConfig.maxFirstTokenLatencySeconds, 60);
+assert.equal(migratedLatencyConfig.maxOutputLatencySeconds, 0.05);
+assert.equal(api.sanitizeConfig({ maxOutputLatencySeconds: 0.025 }).maxOutputLatencySeconds, 0.025);
 
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.normalizeAihubTodayUsage({
@@ -270,7 +281,8 @@ const config = api.sanitizeConfig({
   minSuccessRate: 95,
   minLatestSuccessRate: 95,
   maxMetricAgeMinutes: 120,
-  maxLatencySeconds: 60,
+  maxFirstTokenLatencySeconds: 60,
+  maxOutputLatencySeconds: 0,
 });
 
 assert.equal(api.aihubMonitorRange(6), "6h");
@@ -379,6 +391,9 @@ const aihubCandidates = api.evaluateAihubCandidates(
 );
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").available, true);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").ratio, 0.04);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").firstTokenLatencyMs, 12000);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").outputTokensPerSecond, 42);
+assert.ok(Math.abs(aihubCandidates.find((item) => item.group === "cheap").outputLatencyMs - (1000 / 42)) < 1e-9);
 assert.equal(aihubCandidates.find((item) => item.group === "balanced").available, false);
 assert.ok(aihubCandidates.find((item) => item.group === "balanced").reasons.includes("latest-unavailable"));
 assert.equal(aihubCandidates.find((item) => item.group === "recent-bad").recentMinSuccess, 100);
@@ -400,6 +415,17 @@ const cappedAihubCandidates = api.evaluateAihubCandidates(
 );
 assert.ok(cappedAihubCandidates.find((item) => item.group === "cheap").reasons.includes("ratio-too-high"));
 assert.equal(api.selectBestCandidate(cappedAihubCandidates, "cheap").group, "recent-bad");
+
+const delayedAihubCandidates = api.evaluateAihubCandidates(
+  aihubSummary,
+  aihubSeries,
+  aihubGroups,
+  { 1: 0.04 },
+  api.sanitizeConfig({ ...config, maxFirstTokenLatencySeconds: 10, maxOutputLatencySeconds: 0.022 }),
+  aihubNow,
+);
+assert.ok(delayedAihubCandidates.find((item) => item.group === "cheap").reasons.includes("first-token-latency-high"));
+assert.ok(delayedAihubCandidates.find((item) => item.group === "cheap").reasons.includes("output-latency-high"));
 
 const pricing = {
   data: [{
@@ -471,6 +497,9 @@ const metrics = {
 
 const candidates = api.evaluateCandidates(pricing, metrics, userGroups, config, now);
 assert.equal(candidates.find((item) => item.group === "cheap").available, true);
+assert.equal(candidates.find((item) => item.group === "cheap").firstTokenLatencyMs, 12000);
+assert.equal(candidates.find((item) => item.group === "cheap").outputTokensPerSecond, 42);
+assert.ok(Math.abs(candidates.find((item) => item.group === "cheap").outputLatencyMs - (1000 / 42)) < 1e-9);
 assert.equal(candidates.find((item) => item.group === "balanced").available, true);
 assert.equal(candidates.find((item) => item.group === "recent-bad").available, true);
 assert.equal(candidates.find((item) => item.group === "recent-bad").recentMinSuccess, 100);
@@ -518,6 +547,16 @@ assert.throws(
   () => api.selectSwitchCandidate(cappedCandidates, "recent-bad", "cheap"),
   /超过倍率上限/,
 );
+
+const delayedCandidates = api.evaluateCandidates(
+  pricing,
+  metrics,
+  userGroups,
+  api.sanitizeConfig({ ...config, maxFirstTokenLatencySeconds: 10, maxOutputLatencySeconds: 0.022 }),
+  now,
+);
+assert.ok(delayedCandidates.find((item) => item.group === "cheap").reasons.includes("first-token-latency-high"));
+assert.ok(delayedCandidates.find((item) => item.group === "cheap").reasons.includes("output-latency-high"));
 
 const token = {
   id: 7,

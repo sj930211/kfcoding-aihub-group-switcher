@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.4.8
+// @version      0.4.9
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.4.8";
+  const SCRIPT_VERSION = "0.4.9";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -42,8 +42,8 @@
     minSuccessRate: 95,
     minLatestSuccessRate: 95,
     maxMetricAgeMinutes: 180,
-    maxLatencySeconds: 120,
-    minThroughput: 0,
+    maxFirstTokenLatencySeconds: 120,
+    maxOutputLatencySeconds: 0,
     maxGroupRatio: 0,
     confirmPolls: 2,
     cooldownMinutes: 10,
@@ -209,8 +209,8 @@
       "metrics-stale",
       "success-low",
       "latest-success-low",
-      "latency-high",
-      "throughput-low",
+      "first-token-latency-high",
+      "output-latency-high",
       "monitor-disabled",
       "latest-unavailable",
     ]);
@@ -259,13 +259,19 @@
         5,
         1440,
       ),
-      maxLatencySeconds: clampNumber(
-        source.maxLatencySeconds,
-        DEFAULT_CONFIG.maxLatencySeconds,
+      maxFirstTokenLatencySeconds: clampNumber(
+        source.maxFirstTokenLatencySeconds ?? source.maxLatencySeconds,
+        DEFAULT_CONFIG.maxFirstTokenLatencySeconds,
         0,
         3600,
       ),
-      minThroughput: clampNumber(source.minThroughput, DEFAULT_CONFIG.minThroughput, 0, 100000),
+      maxOutputLatencySeconds: clampNumber(
+        source.maxOutputLatencySeconds
+          ?? (Number(source.minThroughput) > 0 ? 1 / Number(source.minThroughput) : undefined),
+        DEFAULT_CONFIG.maxOutputLatencySeconds,
+        0,
+        3600,
+      ),
       maxGroupRatio: clampNumber(source.maxGroupRatio, DEFAULT_CONFIG.maxGroupRatio, 0, 100000),
       confirmPolls: Math.trunc(
         clampNumber(source.confirmPolls, DEFAULT_CONFIG.confirmPolls, 1, 10),
@@ -303,8 +309,8 @@
       "metrics-stale": "指标已过期",
       "success-low": "总成功率不足",
       "latest-success-low": "最新成功率不足",
-      "latency-high": "延迟过高",
-      "throughput-low": "吞吐量不足",
+      "first-token-latency-high": "首字延迟过高",
+      "output-latency-high": "输出延迟过高",
       "monitor-disabled": "监测已停用",
       "latest-unavailable": "最新监测不可用",
       "temporarily-blacklisted": "临时拉黑",
@@ -355,8 +361,11 @@
       const latest = series.length ? series[series.length - 1] : null;
       const aggregateSuccess = Number(metric && metric.success_rate);
       const latestSuccess = Number(latest && latest.success_rate);
-      const latencyMs = Number(metric && metric.avg_latency_ms);
-      const throughput = Number(metric && metric.avg_tps);
+      const firstTokenLatencyMs = Number(metric && metric.avg_latency_ms);
+      const outputTokensPerSecond = Number(metric && metric.avg_tps);
+      const outputLatencyMs = Number.isFinite(outputTokensPerSecond) && outputTokensPerSecond > 0
+        ? 1000 / outputTokensPerSecond
+        : NaN;
       const ageMinutes = latest ? Math.max(0, now - Number(latest.ts)) / 60 : Infinity;
 
       if (!userGroupNames.has(group)) reasons.push("not-user-selectable");
@@ -374,16 +383,20 @@
         reasons.push("latest-success-low");
       }
       if (
-        config.maxLatencySeconds > 0 &&
-        (!Number.isFinite(latencyMs) || latencyMs <= 0 || latencyMs > config.maxLatencySeconds * 1000)
+        config.maxFirstTokenLatencySeconds > 0 &&
+        (!Number.isFinite(firstTokenLatencyMs)
+          || firstTokenLatencyMs <= 0
+          || firstTokenLatencyMs > config.maxFirstTokenLatencySeconds * 1000)
       ) {
-        reasons.push("latency-high");
+        reasons.push("first-token-latency-high");
       }
       if (
-        config.minThroughput > 0 &&
-        (!Number.isFinite(throughput) || throughput < config.minThroughput)
+        config.maxOutputLatencySeconds > 0 &&
+        (!Number.isFinite(outputLatencyMs)
+          || outputLatencyMs <= 0
+          || outputLatencyMs > config.maxOutputLatencySeconds * 1000)
       ) {
-        reasons.push("throughput-low");
+        reasons.push("output-latency-high");
       }
 
       return {
@@ -396,8 +409,9 @@
         recentSuccess: latestSuccess,
         recentMinSuccess: latestSuccess,
         recentSampleCount: Number.isFinite(latestSuccess) ? 1 : 0,
-        latencyMs,
-        throughput,
+        firstTokenLatencyMs,
+        outputLatencyMs,
+        outputTokensPerSecond,
         ageMinutes,
       };
     });
@@ -480,8 +494,11 @@
         const ageMinutes = Number.isFinite(checkedAtMs)
           ? Math.max(0, now - checkedAtMs) / 60000
           : Infinity;
-        const latencyMs = Number(monitor.firstTokenLatencyMs);
-        const throughput = Number(monitor.outputTokensPerSecond);
+        const firstTokenLatencyMs = Number(monitor.firstTokenLatencyMs);
+        const outputTokensPerSecond = Number(monitor.outputTokensPerSecond);
+        const outputLatencyMs = Number.isFinite(outputTokensPerSecond) && outputTokensPerSecond > 0
+          ? 1000 / outputTokensPerSecond
+          : NaN;
 
         if (!groupMeta) reasons.push("not-user-selectable");
         if (enforceAllowList && !allowed.has(group)) reasons.push("not-allowed");
@@ -499,13 +516,17 @@
           reasons.push("latest-success-low");
         }
         if (
-          config.maxLatencySeconds > 0 &&
-          (!Number.isFinite(latencyMs) || latencyMs <= 0 || latencyMs > config.maxLatencySeconds * 1000)
-        ) reasons.push("latency-high");
+          config.maxFirstTokenLatencySeconds > 0 &&
+          (!Number.isFinite(firstTokenLatencyMs)
+            || firstTokenLatencyMs <= 0
+            || firstTokenLatencyMs > config.maxFirstTokenLatencySeconds * 1000)
+        ) reasons.push("first-token-latency-high");
         if (
-          config.minThroughput > 0 &&
-          (!Number.isFinite(throughput) || throughput < config.minThroughput)
-        ) reasons.push("throughput-low");
+          config.maxOutputLatencySeconds > 0 &&
+          (!Number.isFinite(outputLatencyMs)
+            || outputLatencyMs <= 0
+            || outputLatencyMs > config.maxOutputLatencySeconds * 1000)
+        ) reasons.push("output-latency-high");
 
         return {
           group,
@@ -518,8 +539,9 @@
           recentSuccess: latestSuccess,
           recentMinSuccess: latestSuccess,
           recentSampleCount: Number.isFinite(latestSuccess) ? 1 : 0,
-          latencyMs,
-          throughput,
+          firstTokenLatencyMs,
+          outputLatencyMs,
+          outputTokensPerSecond,
           ageMinutes,
         };
       });
@@ -534,9 +556,18 @@
         if (left.aggregateSuccess !== right.aggregateSuccess) {
           return right.aggregateSuccess - left.aggregateSuccess;
         }
-        const leftLatency = Number.isFinite(left.latencyMs) ? left.latencyMs : Infinity;
-        const rightLatency = Number.isFinite(right.latencyMs) ? right.latencyMs : Infinity;
-        return leftLatency - rightLatency;
+        const leftFirstTokenLatency = Number.isFinite(left.firstTokenLatencyMs)
+          ? left.firstTokenLatencyMs
+          : Infinity;
+        const rightFirstTokenLatency = Number.isFinite(right.firstTokenLatencyMs)
+          ? right.firstTokenLatencyMs
+          : Infinity;
+        if (leftFirstTokenLatency !== rightFirstTokenLatency) {
+          return leftFirstTokenLatency - rightFirstTokenLatency;
+        }
+        const leftOutputLatency = Number.isFinite(left.outputLatencyMs) ? left.outputLatencyMs : Infinity;
+        const rightOutputLatency = Number.isFinite(right.outputLatencyMs) ? right.outputLatencyMs : Infinity;
+        return leftOutputLatency - rightOutputLatency;
       });
 
     if (!available.length) return null;
@@ -1840,15 +1871,22 @@
       recentSuccess.className = "mono";
       recentSuccess.textContent = formatPercent(candidate.recentMinSuccess);
       recentSuccess.title = "最近一次成功率";
-      const latency = document.createElement("span");
-      latency.className = "mono";
-      latency.textContent = formatLatency(candidate.latencyMs);
+      const firstTokenLatency = document.createElement("span");
+      firstTokenLatency.className = "mono";
+      firstTokenLatency.textContent = formatLatency(candidate.firstTokenLatencyMs);
+      firstTokenLatency.title = "首字延迟";
+      const outputLatency = document.createElement("span");
+      outputLatency.className = "mono";
+      outputLatency.textContent = formatLatency(candidate.outputLatencyMs);
+      outputLatency.title = Number.isFinite(candidate.outputTokensPerSecond)
+        ? `输出延迟 · ${candidate.outputTokensPerSecond.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} Token/s`
+        : "输出延迟";
       const verdict = document.createElement("span");
       verdict.className = "verdict";
       verdict.textContent = candidate.available
         ? "可用"
         : reasonLabel(candidate.reasons[0] || "不可用");
-      row.append(name, ratio, success, recentSuccess, latency, verdict);
+      row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, verdict);
       refs.candidateRows.appendChild(row);
     });
   }
@@ -2026,8 +2064,8 @@
       minSuccessRate: refs.minSuccessRate.value,
       minLatestSuccessRate: refs.minLatestSuccessRate.value,
       maxMetricAgeMinutes: refs.maxMetricAgeMinutes.value,
-      maxLatencySeconds: refs.maxLatencySeconds.value,
-      minThroughput: refs.minThroughput.value,
+      maxFirstTokenLatencySeconds: refs.maxFirstTokenLatencySeconds.value,
+      maxOutputLatencySeconds: refs.maxOutputLatencySeconds.value,
       maxGroupRatio: refs.maxGroupRatio.value,
       confirmPolls: refs.confirmPolls.value,
       cooldownMinutes: refs.cooldownMinutes.value,
@@ -2044,8 +2082,8 @@
     refs.minSuccessRate.value = String(config.minSuccessRate);
     refs.minLatestSuccessRate.value = String(config.minLatestSuccessRate);
     refs.maxMetricAgeMinutes.value = String(config.maxMetricAgeMinutes);
-    refs.maxLatencySeconds.value = String(config.maxLatencySeconds);
-    refs.minThroughput.value = String(config.minThroughput);
+    refs.maxFirstTokenLatencySeconds.value = String(config.maxFirstTokenLatencySeconds);
+    refs.maxOutputLatencySeconds.value = String(config.maxOutputLatencySeconds);
     refs.maxGroupRatio.value = String(config.maxGroupRatio);
     refs.confirmPolls.value = String(config.confirmPolls);
     refs.cooldownMinutes.value = String(config.cooldownMinutes);
@@ -2629,7 +2667,7 @@
         .button-primary:hover { border-color: #b6edbe; background: #b6edbe; }
         .candidate-section { padding-bottom: 10px; }
         .candidate-head, .candidate {
-          grid-template-columns: minmax(86px, 1fr) 46px 46px 46px 48px minmax(62px, auto);
+          grid-template-columns: minmax(76px, 1fr) 42px 42px 42px 46px 46px minmax(58px, auto);
           gap: 6px;
           font-size: 10px;
         }
@@ -2662,17 +2700,17 @@
           .panel { width: calc(100vw - 20px); right: 10px; bottom: 10px; max-height: calc(100vh - 20px); }
           .launcher { right: 10px; bottom: 10px; }
           .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          .candidate-head, .candidate { grid-template-columns: minmax(80px, 1fr) 44px 44px 44px minmax(56px, auto); }
-          .candidate-head span:nth-child(5), .candidate span:nth-child(5) { display: none; }
+          .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 42px 42px 44px 44px minmax(54px, auto); }
+          .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
         }
         @media (max-width: 390px) {
           .overview { grid-template-columns: 1fr; gap: 10px; }
           .route-primary { padding-right: 0; padding-bottom: 10px; border-right: 0; border-bottom: 1px solid var(--line); }
           .control-grid { grid-template-columns: 1fr; }
           .field-wide { grid-column: auto; }
-          .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 42px 44px minmax(52px, auto); gap: 5px; }
+          .candidate-head, .candidate { grid-template-columns: minmax(70px, 1fr) 40px 42px 42px minmax(50px, auto); gap: 4px; }
           .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
-          .candidate-head span:nth-child(5), .candidate span:nth-child(5) { display: none; }
+          .candidate-head span:nth-child(4), .candidate span:nth-child(4) { display: none; }
           .button { font-size: 11px; }
         }
       </style>
@@ -2755,8 +2793,8 @@
               <div class="field"><label>总成功率（%）</label><input data-ref="minSuccessRate" type="number" min="0" max="100" step="0.1"></div>
               <div class="field"><label>最新成功率（%）</label><input data-ref="minLatestSuccessRate" type="number" min="0" max="100" step="0.1"></div>
               <div class="field"><label>指标时效（分钟）</label><input data-ref="maxMetricAgeMinutes" type="number" min="5"></div>
-              <div class="field"><label>最大延迟（秒）</label><input data-ref="maxLatencySeconds" type="number" min="0"></div>
-              <div class="field"><label>最低吞吐（t/s）</label><input data-ref="minThroughput" type="number" min="0" step="0.1"></div>
+              <div class="field"><label>最大首字延迟（秒）</label><input data-ref="maxFirstTokenLatencySeconds" type="number" min="0" step="0.1"></div>
+              <div class="field"><label>最大输出延迟（秒/Token）</label><input data-ref="maxOutputLatencySeconds" type="number" min="0" step="0.001"></div>
               <div class="field"><label>最大倍率（0 不限制）</label><input data-ref="maxGroupRatio" type="number" min="0" step="0.01"></div>
               <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
               <div class="field"><label>切换冷却（分钟）</label><input data-ref="cooldownMinutes" type="number" min="0"></div>
@@ -2777,7 +2815,7 @@
         </section>
         <section class="section candidate-section">
           <div class="section-head"><h2 class="section-title">分组状态</h2></div>
-          <div class="candidate-head"><span>分组</span><span>倍率</span><span>整体</span><span>近期</span><span>延迟</span><span>判定</span></div>
+          <div class="candidate-head"><span>分组</span><span>倍率</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
         <details class="secondary-details">
@@ -2817,7 +2855,7 @@
       "lastCheck", "balance", "todaySpend", "todayRequests", "todayTokens", "settingsSection", "enabled",
       "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "allowedGroups", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
-      "maxLatencySeconds", "minThroughput", "maxGroupRatio",
+      "maxFirstTokenLatencySeconds", "maxOutputLatencySeconds", "maxGroupRatio",
       "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
       "check", "switchNow", "checkUpdate", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel",
       "tokenResultRows", "candidateRows", "logs",
