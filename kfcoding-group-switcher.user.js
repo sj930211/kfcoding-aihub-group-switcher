@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.4.7
+// @version      0.4.8
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.4.7";
+  const SCRIPT_VERSION = "0.4.8";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -63,6 +63,7 @@
   const GET_REQUEST_TIMEOUT_MS = 25000;
   const MUTATION_REQUEST_TIMEOUT_MS = 30000;
   const GET_MAX_ATTEMPTS = 3;
+  const AUTO_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
   function clampNumber(value, fallback, min, max) {
     const parsed = Number(value);
@@ -685,7 +686,7 @@
     throw lastError;
   }
 
-  function normalizeAihubTodayUsage(payload) {
+  function normalizeAihubTodayUsage(payload, accountPayload) {
     const source = payload && payload.data && typeof payload.data === "object"
       ? payload.data
       : payload && typeof payload === "object"
@@ -709,7 +710,13 @@
     )
       ? tokenParts.reduce((total, value) => total + (Number(value) || 0), 0)
       : (Number(source.prompt_tokens) || 0) + (Number(source.completion_tokens) || 0);
+    const account = accountPayload && accountPayload.data && typeof accountPayload.data === "object"
+      ? accountPayload.data
+      : accountPayload && typeof accountPayload === "object"
+        ? accountPayload
+        : {};
     return {
+      balance: Math.max(0, firstNumber(account.balance, account.available_balance) || 0),
       spend: Math.max(0, firstNumber(
         source.actual_cost,
         source.total_actual_cost,
@@ -726,7 +733,7 @@
     };
   }
 
-  function normalizeKfcodingTodayUsage(payload, statusPayload) {
+  function normalizeKfcodingTodayUsage(payload, statusPayload, accountPayload) {
     const rows = payload && Array.isArray(payload.data)
       ? payload.data
       : payload && payload.data && Array.isArray(payload.data.items)
@@ -765,7 +772,14 @@
             ?? currency.customCurrencySymbol
             ?? "",
           );
+    const account = accountPayload && accountPayload.data && typeof accountPayload.data === "object"
+      ? accountPayload.data
+      : accountPayload && typeof accountPayload === "object"
+        ? accountPayload
+        : {};
+    const balanceQuota = Math.max(0, Number(account.quota) || 0);
     return {
+      balance: displayInCurrency ? balanceQuota / quotaPerUnit : balanceQuota,
       spend: displayInCurrency ? totals.quota / quotaPerUnit : totals.quota,
       requests: totals.requests,
       tokens: totals.tokens,
@@ -824,6 +838,7 @@
     evaluateAihubCandidates,
     evaluateCandidates,
     extractUserscriptVersion,
+    formatBalance,
     formatTokenCount,
     compareVersions,
     applyTemporaryBlacklist,
@@ -877,6 +892,7 @@
     candidates: [],
     tokenResults: [],
     todayUsage: {
+      balance: 0,
       spend: 0,
       requests: 0,
       tokens: 0,
@@ -891,6 +907,7 @@
     update: {
       checking: false,
       availableVersion: "",
+      lastCheckedAt: 0,
     },
   };
 
@@ -934,6 +951,46 @@
     });
   }
 
+  async function checkForUpdate(options) {
+    const request = options && typeof options === "object" ? options : {};
+    const silent = Boolean(request.silent);
+    const force = Boolean(request.force);
+    if (state.update.checking) return;
+    if (
+      silent
+      && !force
+      && state.update.lastCheckedAt > 0
+      && Date.now() - state.update.lastCheckedAt < AUTO_UPDATE_CHECK_INTERVAL_MS
+    ) return;
+
+    state.update.checking = true;
+    if (!silent) setStatus("正在检查脚本更新", "running");
+    try {
+      const remoteSource = await requestRemoteScript();
+      const remoteVersion = extractUserscriptVersion(remoteSource);
+      if (!remoteVersion) throw new Error("无法识别远端脚本版本");
+      if (compareVersions(remoteVersion, SCRIPT_VERSION) > 0) {
+        const isNewDiscovery = state.update.availableVersion !== remoteVersion;
+        state.update.availableVersion = remoteVersion;
+        if (isNewDiscovery) addLog(`发现新版本 v${remoteVersion}`, "success");
+        if (!silent) setStatus(`发现新版本 v${remoteVersion}，再次点击即可更新`, "success");
+      } else if (!silent) {
+        addLog(`当前已是最新版本 v${SCRIPT_VERSION}`, "success");
+        setStatus(`当前已是最新版本 v${SCRIPT_VERSION}`, "success");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!silent) {
+        addLog(message, "error");
+        setStatus(message, "error");
+      }
+    } finally {
+      state.update.lastCheckedAt = Date.now();
+      state.update.checking = false;
+      render();
+    }
+  }
+
   async function handleUpdateAction() {
     if (state.update.availableVersion) {
       GM_openInTab(SCRIPT_DOWNLOAD_URL, { active: true, insert: true, setParent: true });
@@ -941,30 +998,7 @@
       setStatus("请在 Tampermonkey 安装页确认更新", "success");
       return;
     }
-    if (state.update.checking) return;
-
-    state.update.checking = true;
-    setStatus("正在检查脚本更新", "running");
-    try {
-      const remoteSource = await requestRemoteScript();
-      const remoteVersion = extractUserscriptVersion(remoteSource);
-      if (!remoteVersion) throw new Error("无法识别远端脚本版本");
-      if (compareVersions(remoteVersion, SCRIPT_VERSION) > 0) {
-        state.update.availableVersion = remoteVersion;
-        addLog(`发现新版本 v${remoteVersion}`, "success");
-        setStatus(`发现新版本 v${remoteVersion}，再次点击即可更新`, "success");
-      } else {
-        addLog(`当前已是最新版本 v${SCRIPT_VERSION}`, "success");
-        setStatus(`当前已是最新版本 v${SCRIPT_VERSION}`, "success");
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      addLog(message, "error");
-      setStatus(message, "error");
-    } finally {
-      state.update.checking = false;
-      render();
-    }
+    await checkForUpdate({ force: true, silent: false });
   }
 
   function positionElement(element, kind, persist) {
@@ -1106,8 +1140,13 @@
     try {
       let usage;
       if (IS_AIHUB) {
+        const [usagePayload, account] = await Promise.all([
+          fetchJson("/api/v1/usage/stats?period=today"),
+          fetchJson("/api/v1/auth/me"),
+        ]);
         usage = normalizeAihubTodayUsage(
-          await fetchJson("/api/v1/usage/stats?period=today"),
+          usagePayload,
+          account,
         );
       } else {
         const range = todayTimestampRange();
@@ -1116,11 +1155,12 @@
           end_timestamp: String(range.end),
           default_time: "hour",
         });
-        const [payload, status] = await Promise.all([
+        const [payload, status, account] = await Promise.all([
           fetchJson(`/api/data/self?${query}`),
           fetchJson("/api/status"),
+          fetchJson("/api/user/self"),
         ]);
-        usage = normalizeKfcodingTodayUsage(payload, status);
+        usage = normalizeKfcodingTodayUsage(payload, status, account);
       }
       state.todayUsage = { ...usage, available: true, loading: false, error: "" };
       render();
@@ -1661,7 +1701,10 @@
     scheduler = null;
     if (!config.enabled) return;
     scheduler = window.setTimeout(async () => {
-      await runCheck({ manual: false });
+      await Promise.all([
+        runCheck({ manual: false }),
+        checkForUpdate({ silent: true }),
+      ]);
       scheduleNext(config.pollSeconds * 1000);
     }, delayMs == null ? config.pollSeconds * 1000 : delayMs);
   }
@@ -1684,6 +1727,13 @@
     const value = Number(usage.spend) || 0;
     const digits = value > 0 && value < 0.0001 ? 6 : 4;
     return `${usage.symbol || ""}${value.toFixed(digits)}`;
+  }
+
+  function formatBalance(usage) {
+    if (!usage || !usage.available) return "-";
+    const value = Math.max(0, Number(usage.balance) || 0);
+    if (!usage.symbol) return formatUsageCount(value, true);
+    return `${usage.symbol}${value.toFixed(2)}`;
   }
 
   function formatUsageCount(value, available) {
@@ -1905,6 +1955,9 @@
     if (refs.bestGroup) refs.bestGroup.textContent = state.bestGroup;
     if (refs.lastCheck) refs.lastCheck.textContent = state.lastCheck;
     const usageLoadingText = state.todayUsage.loading ? "..." : "";
+    if (refs.balance) {
+      refs.balance.textContent = usageLoadingText || formatBalance(state.todayUsage);
+    }
     if (refs.todaySpend) {
       refs.todaySpend.textContent = usageLoadingText || formatSpend(state.todayUsage);
     }
@@ -1920,9 +1973,15 @@
         state.todayUsage.available,
       );
     }
-    [refs.todaySpend, refs.todayRequests, refs.todayTokens].filter(Boolean).forEach((element) => {
+    [refs.balance, refs.todaySpend, refs.todayRequests, refs.todayTokens].filter(Boolean).forEach((element) => {
       element.title = state.todayUsage.error || (state.todayUsage.loading ? "正在刷新" : "");
     });
+    if (refs.balance && state.todayUsage.available && !state.todayUsage.loading && !state.todayUsage.error) {
+      const balanceValue = Math.max(0, Number(state.todayUsage.balance) || 0);
+      refs.balance.title = state.todayUsage.symbol
+        ? `${state.todayUsage.symbol}${balanceValue.toLocaleString("zh-CN", { maximumFractionDigits: 8 })}`
+        : formatUsageCount(balanceValue, true);
+    }
     if (refs.todayTokens && state.todayUsage.available && !state.todayUsage.loading && !state.todayUsage.error) {
       refs.todayTokens.title = `${formatUsageCount(state.todayUsage.tokens, true)} Token`;
     }
@@ -2474,11 +2533,11 @@
         .route-meta strong { color: var(--muted-strong); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 650; }
         .usage-strip {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-template-columns: repeat(4, minmax(0, 1fr));
           border-bottom: 1px solid var(--line-soft);
           background: var(--surface-0);
         }
-        .usage-item { min-width: 0; padding: 10px 14px 11px; }
+        .usage-item { min-width: 0; padding: 10px 11px 11px; }
         .usage-item + .usage-item { border-left: 1px solid var(--line-soft); }
         .usage-item small { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0; }
         .usage-item strong { display: block; overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
@@ -2642,7 +2701,8 @@
             <span class="route-meta">检查于 <strong data-ref="lastCheck">-</strong></span>
           </div>
         </section>
-        <section class="usage-strip" aria-label="今日用量">
+        <section class="usage-strip" aria-label="账户与今日用量">
+          <div class="usage-item"><small>余额</small><strong class="mono" data-ref="balance">-</strong></div>
           <div class="usage-item"><small>今日消费</small><strong class="mono" data-ref="todaySpend">-</strong></div>
           <div class="usage-item"><small>今日请求</small><strong class="mono" data-ref="todayRequests">-</strong></div>
           <div class="usage-item"><small>今日 Token</small><strong class="mono" data-ref="todayTokens">-</strong></div>
@@ -2754,7 +2814,7 @@
 
     const refNames = [
       "launcher", "panel", "header", "statusDot", "collapse", "status", "currentGroup", "bestGroup",
-      "lastCheck", "todaySpend", "todayRequests", "todayTokens", "settingsSection", "enabled",
+      "lastCheck", "balance", "todaySpend", "todayRequests", "todayTokens", "settingsSection", "enabled",
       "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "allowedGroups", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxLatencySeconds", "minThroughput", "maxGroupRatio",

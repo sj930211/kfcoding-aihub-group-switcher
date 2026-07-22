@@ -19,6 +19,17 @@ assert.equal(source.includes('data-ref="tokenSelectToggle"'), true, "API keys sh
 assert.equal(source.includes('<dialog class="manual-dialog"'), true, "manual group selection should use a confirmation dialog");
 assert.equal(source.includes('<section class="overview"'), true, "the primary route state should lead the redesigned hierarchy");
 assert.equal(source.includes('<section class="usage-strip"'), true, "today usage should use a compact monitoring strip");
+assert.equal(source.includes('data-ref="balance"'), true, "the account balance should be visible in the monitoring strip");
+assert.equal(
+  source.includes("checkForUpdate({ silent: true })"),
+  true,
+  "automatic group checks should also run the throttled update check",
+);
+assert.equal(
+  source.includes("const AUTO_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;"),
+  true,
+  "automatic update checks should be rate limited independently from group polling",
+);
 assert.equal(source.includes('<div class="automation-bar">'), true, "automatic and manual switching should share one control bar");
 assert.equal(source.includes('<div class="control-grid">'), true, "key and model selectors should use a compact responsive grid");
 assert.equal(source.includes('class="button button-check"'), true, "immediate checks should be the primary command");
@@ -41,7 +52,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.4.7");
+assert.equal(api.extractUserscriptVersion(source), "0.4.8");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
@@ -88,8 +99,8 @@ assert.deepEqual(
     total_actual_cost: 1.23456,
     total_requests: 42,
     total_tokens: 98765,
-  }))),
-  { spend: 1.23456, requests: 42, tokens: 98765, symbol: "$" },
+  }, { balance: 26.34020161 }))),
+  { balance: 26.34020161, spend: 1.23456, requests: 42, tokens: 98765, symbol: "$" },
 );
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.normalizeAihubTodayUsage({
@@ -99,8 +110,8 @@ assert.deepEqual(
     input_tokens: 100,
     output_tokens: 50,
     cache_read_tokens: 25,
-  }))),
-  { spend: 0.25, requests: 7, tokens: 175, symbol: "$" },
+  }, { data: { balance: 12.5 } }))),
+  { balance: 12.5, spend: 0.25, requests: 7, tokens: 175, symbol: "$" },
   "AIHub usage should tolerate field aliases used by different API versions",
 );
 assert.deepEqual(
@@ -112,9 +123,14 @@ assert.deepEqual(
     ],
   }, {
     data: { display_in_currency: true, quota_per_unit: 500000, quota_display_type: "USD" },
+  }, {
+    data: { quota: 48287708 },
   }))),
-  { spend: 1.5, requests: 5, tokens: 4600, symbol: "$" },
+  { balance: 96.575416, spend: 1.5, requests: 5, tokens: 4600, symbol: "$" },
 );
+assert.equal(api.formatBalance({ balance: 26.34020161, symbol: "$", available: true }), "$26.34");
+assert.equal(api.formatBalance({ balance: 1250000, symbol: "", available: true }), "1,250,000");
+assert.equal(api.formatBalance({ balance: 10, symbol: "$", available: false }), "-");
 assert.equal(
   api.requiresTokenSelection("aihub", { manual: true }),
   false,
