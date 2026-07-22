@@ -3,6 +3,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
+assert.equal(source.includes('data-ref="refresh"'), false, "manual refresh should be folded into immediate check");
 const sandbox = {
   __KFCODING_GROUP_SWITCHER_TEST__: true,
   AbortController,
@@ -15,6 +16,12 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
+assert.equal(api.extractUserscriptVersion(source), "0.4.5");
+assert.equal(api.extractUserscriptVersion("// no version"), "");
+assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
+assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
+assert.equal(api.compareVersions("0.4.4", "0.4.5"), -1);
+assert.equal(api.compareVersions("0.10.0", "0.9.9"), 1);
 
 const persistedLogs = Array.from({ length: 12 }, (_, index) => ({
   at: `10:00:${String(index).padStart(2, "0")}`,
@@ -45,6 +52,11 @@ assert.deepEqual(
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG }).maxGroupRatio, 0);
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, maxGroupRatio: 0.08 }).maxGroupRatio, 0.08);
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, maxGroupRatio: -1 }).maxGroupRatio, 0);
+assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG }).rollbackChecks, 2);
+assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, rollbackChecks: 0 }).rollbackChecks, 0);
+assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, rollbackChecks: 99 }).rollbackChecks, 10);
+assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG }).blacklistMinutes, 60);
+assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, blacklistMinutes: 0 }).blacklistMinutes, 1);
 
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.normalizeAihubTodayUsage({
@@ -83,6 +95,14 @@ assert.equal(
   false,
   "AIHub immediate checks should monitor groups without requiring a selected API key",
 );
+assert.equal(api.formatTokenCount(999_999, true), "999,999");
+assert.equal(api.formatTokenCount(1_000_000, true), "1M");
+assert.equal(api.formatTokenCount(1_250_000, true), "1.25M");
+assert.equal(api.formatTokenCount(12_340_000, true), "12.34M");
+assert.equal(api.formatTokenCount(100_000_000, true), "1亿");
+assert.equal(api.formatTokenCount(125_000_000, true), "1.25亿");
+assert.equal(api.formatTokenCount(12_340_000_000, true), "123.4亿");
+assert.equal(api.formatTokenCount(1_000_000, false), "-");
 
 const usageRange = api.todayTimestampRange(new Date(2026, 6, 19, 14, 30, 0));
 assert.equal(usageRange.end - usageRange.start, 15.5 * 60 * 60);
@@ -103,6 +123,60 @@ assert.deepEqual(
   }))),
   { byToken: { 7: { model: "gpt-test", group: "cheap", at: 1234 } } },
 );
+const guardState = api.normalizeSwitchGuardState({
+  byToken: {
+    7: { model: "gpt-test", fromGroup: "stable", toGroup: "cheap", remaining: 2, at: 1000 },
+    8: { model: "gpt-test", fromGroup: "same", toGroup: "same", remaining: 2, at: 1000 },
+    bad: { model: "gpt-test", fromGroup: "stable", toGroup: "cheap", remaining: 2, at: 1000 },
+  },
+  blacklist: [
+    { model: "gpt-test", group: "cheap", until: 5000 },
+    { model: "", group: "invalid", until: 5000 },
+  ],
+});
+assert.deepEqual(
+  JSON.parse(JSON.stringify(guardState)),
+  {
+    byToken: {
+      7: { model: "gpt-test", fromGroup: "stable", toGroup: "cheap", remaining: 2, at: 1000 },
+    },
+    blacklist: [{ model: "gpt-test", group: "cheap", until: 5000 }],
+  },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.pruneSwitchGuardState(guardState, 6000).blacklist)),
+  [],
+  "expired group blacklists should be discarded",
+);
+const blacklistedCandidates = api.applyTemporaryBlacklist([
+  { group: "cheap", available: true, reasons: [], ratio: 0.05 },
+  { group: "stable", available: true, reasons: [], ratio: 0.2 },
+], guardState, "gpt-test", 2000);
+assert.equal(blacklistedCandidates[0].available, false);
+assert.equal(blacklistedCandidates[0].reasons[0], "temporarily-blacklisted");
+assert.equal(blacklistedCandidates[1].available, true);
+assert.equal(
+  api.applyTemporaryBlacklist([
+    { group: "cheap", available: true, reasons: [], ratio: 0.05 },
+  ], guardState, "other-model", 2000)[0].available,
+  true,
+  "blacklists must stay scoped to a model",
+);
+assert.equal(api.candidateHasHealthFailure({ reasons: ["latest-success-low"] }), true);
+assert.equal(api.candidateHasHealthFailure({ reasons: ["ratio-too-high"] }), false);
+assert.equal(api.candidateHasHealthFailure(null), true);
+const rollbackToPrevious = api.selectRollbackCandidate([
+  { group: "cheap", available: true, aggregateSuccess: 99, latencyMs: 1000, ratio: 0.05 },
+  { group: "stable", available: true, aggregateSuccess: 99, latencyMs: 1000, ratio: 0.2 },
+], "stable");
+assert.equal(rollbackToPrevious.candidate.group, "stable");
+assert.equal(rollbackToPrevious.usedPrevious, true);
+const rollbackToAlternative = api.selectRollbackCandidate([
+  { group: "cheap", available: true, aggregateSuccess: 99, latencyMs: 1000, ratio: 0.05 },
+  { group: "stable", available: false, aggregateSuccess: 99, latencyMs: 1000, ratio: 0.2 },
+], "stable");
+assert.equal(rollbackToAlternative.candidate.group, "cheap");
+assert.equal(rollbackToAlternative.usedPrevious, false);
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.normalizeSwitchHistory({
     byToken: {

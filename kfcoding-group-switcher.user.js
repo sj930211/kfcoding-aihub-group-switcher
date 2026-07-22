@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.4.1
+// @version      0.4.5
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -16,6 +16,9 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_notification
+// @grant        GM_xmlhttpRequest
+// @grant        GM_openInTab
+// @connect      raw.githubusercontent.com
 // ==/UserScript==
 
 (function () {
@@ -26,6 +29,8 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
+  const SCRIPT_VERSION = "0.4.5";
+  const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
     enabled: false,
@@ -42,6 +47,8 @@
     maxGroupRatio: 0,
     confirmPolls: 2,
     cooldownMinutes: 10,
+    rollbackChecks: 2,
+    blacklistMinutes: 60,
   });
 
   const STORAGE_PREFIX = IS_AIHUB ? "aihub-group-switcher" : "kfcoding-group-switcher";
@@ -49,6 +56,7 @@
   const STORAGE_LAST_SWITCH = `${STORAGE_PREFIX}:last-switch:v1`;
   const STORAGE_LOGS = `${STORAGE_PREFIX}:logs:v1`;
   const STORAGE_POSITIONS = `${STORAGE_PREFIX}:positions:v1`;
+  const STORAGE_SWITCH_GUARD = `${STORAGE_PREFIX}:switch-guard:v1`;
   const MAX_LOG_ENTRIES = 10;
   const VIEWPORT_MARGIN = 8;
   const HOST_ID = `${STORAGE_PREFIX}-host`;
@@ -135,6 +143,89 @@
     return { byToken };
   }
 
+  function normalizeSwitchGuardState(value) {
+    const source = value && typeof value === "object" ? value : {};
+    const rawByToken = source.byToken && typeof source.byToken === "object"
+      ? Object.entries(source.byToken)
+      : [];
+    const byToken = {};
+    rawByToken.forEach(([tokenId, entry]) => {
+      const id = Math.trunc(Number(tokenId) || 0);
+      if (id <= 0 || !entry || typeof entry !== "object") return;
+      const fromGroup = String(entry.fromGroup || "").trim();
+      const toGroup = String(entry.toGroup || "").trim();
+      const remaining = Math.trunc(clampNumber(entry.remaining, 0, 0, 10));
+      if (!fromGroup || !toGroup || fromGroup === toGroup || remaining <= 0) return;
+      byToken[id] = {
+        model: String(entry.model || ""),
+        fromGroup,
+        toGroup,
+        remaining,
+        at: Math.max(0, Number(entry.at) || 0),
+      };
+    });
+    const blacklist = (Array.isArray(source.blacklist) ? source.blacklist : [])
+      .filter((entry) => entry && typeof entry === "object")
+      .map((entry) => ({
+        model: String(entry.model || ""),
+        group: String(entry.group || "").trim(),
+        until: Math.max(0, Number(entry.until) || 0),
+      }))
+      .filter((entry) => entry.model && entry.group && entry.until > 0)
+      .slice(0, 100);
+    return { byToken, blacklist };
+  }
+
+  function pruneSwitchGuardState(value, now) {
+    const state = normalizeSwitchGuardState(value);
+    state.blacklist = state.blacklist.filter((entry) => entry.until > now);
+    return state;
+  }
+
+  function applyTemporaryBlacklist(candidates, guardState, model, now) {
+    const blocked = new Set(
+      normalizeSwitchGuardState(guardState).blacklist
+        .filter((entry) => entry.model === model && entry.until > now)
+        .map((entry) => entry.group),
+    );
+    return candidates.map((candidate) => {
+      if (!blocked.has(candidate.group)) return candidate;
+      return {
+        ...candidate,
+        available: false,
+        reasons: [
+          "temporarily-blacklisted",
+          ...candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted"),
+        ],
+      };
+    });
+  }
+
+  function candidateHasHealthFailure(candidate) {
+    if (!candidate) return true;
+    const healthReasons = new Set([
+      "metrics-missing",
+      "metrics-stale",
+      "success-low",
+      "latest-success-low",
+      "latency-high",
+      "throughput-low",
+      "monitor-disabled",
+      "latest-unavailable",
+    ]);
+    return candidate.reasons.some((reason) => healthReasons.has(reason));
+  }
+
+  function selectRollbackCandidate(candidates, previousGroup) {
+    const previous = candidates.find(
+      (candidate) => candidate.group === previousGroup && candidate.available,
+    );
+    return {
+      candidate: previous || selectBestCandidate(candidates, ""),
+      usedPrevious: Boolean(previous),
+    };
+  }
+
   function clampPosition(position, viewportWidth, viewportHeight, elementWidth, elementHeight) {
     const source = normalizePosition(position) || { x: VIEWPORT_MARGIN, y: VIEWPORT_MARGIN };
     const maxX = Math.max(VIEWPORT_MARGIN, Number(viewportWidth) - Number(elementWidth) - VIEWPORT_MARGIN);
@@ -184,6 +275,15 @@
         0,
         1440,
       ),
+      rollbackChecks: Math.trunc(
+        clampNumber(source.rollbackChecks, DEFAULT_CONFIG.rollbackChecks, 0, 10),
+      ),
+      blacklistMinutes: clampNumber(
+        source.blacklistMinutes,
+        DEFAULT_CONFIG.blacklistMinutes,
+        1,
+        1440,
+      ),
     };
   }
 
@@ -206,6 +306,7 @@
       "throughput-low": "吞吐量不足",
       "monitor-disabled": "监测已停用",
       "latest-unavailable": "最新监测不可用",
+      "temporarily-blacklisted": "临时拉黑",
     };
     return labels[reason] || reason;
   }
@@ -684,6 +785,37 @@
     };
   }
 
+  function formatTokenCount(value, available) {
+    if (!available) return "-";
+    const count = Math.max(0, Number(value) || 0);
+    if (count >= 100_000_000) {
+      return `${Number((count / 100_000_000).toFixed(2))}亿`;
+    }
+    if (count >= 1_000_000) {
+      return `${Number((count / 1_000_000).toFixed(2))}M`;
+    }
+    return count.toLocaleString("zh-CN");
+  }
+
+  function extractUserscriptVersion(source) {
+    const match = String(source || "").match(/^\/\/\s*@version\s+([^\s]+)\s*$/m);
+    return match ? match[1].trim() : "";
+  }
+
+  function compareVersions(left, right) {
+    const leftParts = String(left || "").replace(/^v/i, "").split(".");
+    const rightParts = String(right || "").replace(/^v/i, "").split(".");
+    const length = Math.max(leftParts.length, rightParts.length);
+    for (let index = 0; index < length; index += 1) {
+      const leftPart = Number.parseInt(leftParts[index] || "0", 10);
+      const rightPart = Number.parseInt(rightParts[index] || "0", 10);
+      const normalizedLeft = Number.isFinite(leftPart) ? leftPart : 0;
+      const normalizedRight = Number.isFinite(rightPart) ? rightPart : 0;
+      if (normalizedLeft !== normalizedRight) return normalizedLeft > normalizedRight ? 1 : -1;
+    }
+    return 0;
+  }
+
   const TEST_API = Object.freeze({
     DEFAULT_CONFIG,
     aihubMonitorRange,
@@ -691,18 +823,26 @@
     clampPosition,
     evaluateAihubCandidates,
     evaluateCandidates,
+    extractUserscriptVersion,
+    formatTokenCount,
+    compareVersions,
+    applyTemporaryBlacklist,
+    candidateHasHealthFailure,
     normalizeLogs,
     normalizeAihubTodayUsage,
     normalizeAihubToken,
     normalizeKfcodingTodayUsage,
     normalizeSwitchHistory,
+    normalizeSwitchGuardState,
     normalizeUiPositions,
     parseAllowedGroups,
     parseTokenIds,
+    pruneSwitchGuardState,
     requestJsonWithRetry,
     requiresTokenSelection,
     sanitizeConfig,
     selectBestCandidate,
+    selectRollbackCandidate,
     selectSwitchCandidate,
     shouldSwitchCandidate,
     summarizeTokenGroups,
@@ -748,6 +888,10 @@
     logs: normalizeLogs(GM_getValue(STORAGE_LOGS, [])),
     positions: normalizeUiPositions(GM_getValue(STORAGE_POSITIONS, {})),
     collapsed: false,
+    update: {
+      checking: false,
+      availableVersion: "",
+    },
   };
 
   function addLog(message, tone) {
@@ -764,6 +908,63 @@
     state.status = message;
     state.tone = tone || "idle";
     render();
+  }
+
+  function requestRemoteScript() {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: `${SCRIPT_DOWNLOAD_URL}?update=${Date.now()}`,
+        timeout: GET_REQUEST_TIMEOUT_MS,
+        headers: { Accept: "text/plain" },
+        onload(response) {
+          if (response.status >= 200 && response.status < 300) {
+            resolve(String(response.responseText || ""));
+            return;
+          }
+          reject(new Error(`更新检查失败（HTTP ${response.status}）`));
+        },
+        onerror() {
+          reject(new Error("更新检查网络错误"));
+        },
+        ontimeout() {
+          reject(new Error("更新检查请求超时"));
+        },
+      });
+    });
+  }
+
+  async function handleUpdateAction() {
+    if (state.update.availableVersion) {
+      GM_openInTab(SCRIPT_DOWNLOAD_URL, { active: true, insert: true, setParent: true });
+      addLog(`已打开 v${state.update.availableVersion} 更新页面`, "success");
+      setStatus("请在 Tampermonkey 安装页确认更新", "success");
+      return;
+    }
+    if (state.update.checking) return;
+
+    state.update.checking = true;
+    setStatus("正在检查脚本更新", "running");
+    try {
+      const remoteSource = await requestRemoteScript();
+      const remoteVersion = extractUserscriptVersion(remoteSource);
+      if (!remoteVersion) throw new Error("无法识别远端脚本版本");
+      if (compareVersions(remoteVersion, SCRIPT_VERSION) > 0) {
+        state.update.availableVersion = remoteVersion;
+        addLog(`发现新版本 v${remoteVersion}`, "success");
+        setStatus(`发现新版本 v${remoteVersion}，再次点击即可更新`, "success");
+      } else {
+        addLog(`当前已是最新版本 v${SCRIPT_VERSION}`, "success");
+        setStatus(`当前已是最新版本 v${SCRIPT_VERSION}`, "success");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      addLog(message, "error");
+      setStatus(message, "error");
+    } finally {
+      state.update.checking = false;
+      render();
+    }
   }
 
   function positionElement(element, kind, persist) {
@@ -959,6 +1160,15 @@
     render();
   }
 
+  async function refreshTokenCatalog() {
+    const payload = IS_AIHUB
+      ? await fetchJson("/api/v1/keys?page=1&page_size=100")
+      : await fetchJson("/api/token/?p=1&size=100");
+    tokensCache = normalizeTokenList(payload);
+    renderOptions(true);
+    render();
+  }
+
   async function getTokenDetail(tokenId) {
     if (IS_AIHUB) {
       const payload = await fetchJson(`/api/v1/keys/${tokenId}`);
@@ -993,6 +1203,44 @@
     GM_setValue(STORAGE_LAST_SWITCH, history);
   }
 
+  function getSwitchGuardState(now) {
+    return pruneSwitchGuardState(
+      GM_getValue(STORAGE_SWITCH_GUARD, {}),
+      now == null ? Date.now() : now,
+    );
+  }
+
+  function saveSwitchGuardState(value) {
+    GM_setValue(STORAGE_SWITCH_GUARD, normalizeSwitchGuardState(value));
+  }
+
+  function recordRollbackGuard(token, candidate) {
+    const tokenId = Number(token.id);
+    const state = getSwitchGuardState();
+    const fromGroup = String(token.group || "").trim();
+    const toGroup = String(candidate.group || "").trim();
+    if (
+      config.rollbackChecks <= 0 ||
+      !Number.isFinite(tokenId) ||
+      tokenId <= 0 ||
+      !fromGroup ||
+      !toGroup ||
+      fromGroup === toGroup
+    ) {
+      delete state.byToken[tokenId];
+      saveSwitchGuardState(state);
+      return;
+    }
+    state.byToken[tokenId] = {
+      model: config.model,
+      fromGroup,
+      toGroup,
+      remaining: config.rollbackChecks,
+      at: Date.now(),
+    };
+    saveSwitchGuardState(state);
+  }
+
   function tokenLabel(token) {
     return String(token.name || `#${token.id}`);
   }
@@ -1011,7 +1259,8 @@
     return `${results.length} 个密钥 · ${groups}`;
   }
 
-  async function switchTokenGroup(token, candidate) {
+  async function switchTokenGroup(token, candidate, options) {
+    const switchOptions = options || {};
     if (IS_AIHUB) {
       if (!Number.isFinite(Number(candidate.groupId)) || Number(candidate.groupId) <= 0) {
         throw new Error(`目标分组 ${candidate.group} 缺少有效 ID`);
@@ -1025,8 +1274,12 @@
         throw new Error(`切换校验失败，服务端当前分组为 ${verified.group || "空"}`);
       }
       recordSwitch(token.id, candidate);
+      if (switchOptions.trackRollback !== false) recordRollbackGuard(token, candidate);
       pendingCandidates.delete(Number(token.id));
-      addLog(`${tokenLabel(token)} 已切换到 ${candidate.group} (${formatRatio(candidate.ratio)})`, "success");
+      addLog(
+        switchOptions.logMessage || `${tokenLabel(token)} 已切换到 ${candidate.group} (${formatRatio(candidate.ratio)})`,
+        switchOptions.logTone || "success",
+      );
       return verified;
     }
     const payload = buildTokenUpdatePayload(token, candidate.group);
@@ -1036,8 +1289,12 @@
       throw new Error(`切换校验失败，服务端当前分组为 ${verified.group || "空"}`);
     }
     recordSwitch(token.id, candidate);
+    if (switchOptions.trackRollback !== false) recordRollbackGuard(token, candidate);
     pendingCandidates.delete(Number(token.id));
-    addLog(`${tokenLabel(token)} 已切换到 ${candidate.group} (${formatRatio(candidate.ratio)})`, "success");
+    addLog(
+      switchOptions.logMessage || `${tokenLabel(token)} 已切换到 ${candidate.group} (${formatRatio(candidate.ratio)})`,
+      switchOptions.logTone || "success",
+    );
     return verified;
   }
 
@@ -1054,11 +1311,87 @@
     }
   }
 
+  async function handleRollbackGuard(token, candidates) {
+    const tokenId = Number(token.id);
+    const now = Date.now();
+    const guardState = getSwitchGuardState(now);
+    const guard = guardState.byToken[tokenId];
+    if (!guard) return null;
+    if (
+      config.rollbackChecks <= 0 ||
+      guard.model !== config.model ||
+      guard.toGroup !== String(token.group || "")
+    ) {
+      delete guardState.byToken[tokenId];
+      saveSwitchGuardState(guardState);
+      return null;
+    }
+
+    const current = candidates.find((candidate) => candidate.group === guard.toGroup);
+    if (current && current.available) {
+      guard.remaining -= 1;
+      if (guard.remaining <= 0) {
+        delete guardState.byToken[tokenId];
+        addLog(`${tokenLabel(token)} 的 ${guard.toGroup} 已通过切换观察`, "success");
+        saveSwitchGuardState(guardState);
+        return {
+          outcome: "observed",
+          group: guard.toGroup,
+          tone: "success",
+          message: "切换观察完成",
+        };
+      }
+      guardState.byToken[tokenId] = guard;
+      saveSwitchGuardState(guardState);
+      return {
+        outcome: "observing",
+        group: guard.toGroup,
+        tone: "warning",
+        message: `切换观察中，剩余 ${guard.remaining} 次`,
+      };
+    }
+
+    if (candidateHasHealthFailure(current)) {
+      guardState.blacklist = guardState.blacklist.filter(
+        (entry) => entry.model !== config.model || entry.group !== guard.toGroup,
+      );
+      guardState.blacklist.push({
+        model: config.model,
+        group: guard.toGroup,
+        until: now + config.blacklistMinutes * 60000,
+      });
+    }
+    delete guardState.byToken[tokenId];
+    saveSwitchGuardState(guardState);
+
+    const eligible = applyTemporaryBlacklist(candidates, guardState, config.model, now);
+    const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup);
+    const fallback = rollbackTarget.candidate;
+    if (!fallback) return null;
+
+    const destination = rollbackTarget.usedPrevious ? "原分组" : "其他可用分组";
+    await switchTokenGroup(token, fallback, {
+      trackRollback: false,
+      logTone: "warning",
+      logMessage: `${tokenLabel(token)} 的 ${guard.toGroup} 观察失败，已回滚到${destination} ${fallback.group}`,
+    });
+    return {
+      outcome: "rolled-back",
+      group: fallback.group,
+      tone: "warning",
+      message: `观察失败，已回滚到 ${fallback.group}`,
+    };
+  }
+
   async function processToken(token, candidates, options) {
     const forceSwitch = Boolean(options && options.forceSwitch);
     const targetGroup = String((options && options.targetGroup) || "").trim();
     const tokenId = Number(token.id);
     validateToken(token);
+    if (config.enabled && !forceSwitch) {
+      const rollback = await handleRollbackGuard(token, candidates);
+      if (rollback) return rollback;
+    }
     const selected = selectSwitchCandidate(candidates, token.group, targetGroup);
     const current = candidates.find((candidate) => candidate.group === token.group);
 
@@ -1156,6 +1489,15 @@
 
     running = true;
     const usageRefresh = refreshTodayUsage();
+    const tokenCatalogRefresh = manual
+      ? refreshTokenCatalog()
+        .then(() => true)
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          addLog(`API 密钥列表刷新失败：${message}`, "error");
+          return false;
+        })
+      : Promise.resolve(true);
     setStatus(
       targetGroup
         ? `正在检查目标分组 ${targetGroup}...`
@@ -1195,6 +1537,14 @@
         userGroupsCache = unwrapUserGroups(userGroups);
         candidates = evaluateCandidates(pricing, metrics, userGroups, config, Date.now() / 1000);
       }
+      const candidateTimestamp = Date.now();
+      candidates = applyTemporaryBlacklist(
+        candidates,
+        getSwitchGuardState(candidateTimestamp),
+        config.model,
+        candidateTimestamp,
+      );
+      if (manual) renderOptions(true);
       const lowestAvailable = selectBestCandidate(candidates, "");
       state.candidates = candidates;
       state.bestGroup = lowestAvailable
@@ -1202,7 +1552,7 @@
         : "无可用分组";
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (targetGroup) selectSwitchCandidate(candidates, "", targetGroup);
-      if (!targetGroup && !lowestAvailable) {
+      if (!targetGroup && !lowestAvailable && !selectedTokenIds.length) {
         const reasonSummary = summarizeFailures(candidates);
         throw new Error(`没有满足条件的分组${reasonSummary ? `：${reasonSummary}` : ""}`);
       }
@@ -1255,6 +1605,7 @@
       state.currentGroup = summarizeTokenGroups(state.tokenResults);
       const failedCount = state.tokenResults.filter((result) => result.outcome === "error").length;
       const switchedCount = state.tokenResults.filter((result) => result.outcome === "switched").length;
+      const rolledBackCount = state.tokenResults.filter((result) => result.outcome === "rolled-back").length;
       const warningCount = state.tokenResults.filter((result) => result.tone === "warning").length;
       if (switchedCount > 0) {
         GM_notification({
@@ -1263,21 +1614,29 @@
           timeout: 8000,
         });
       }
+      if (rolledBackCount > 0) {
+        GM_notification({
+          title: `${SITE_LABEL} 分组已自动回滚`,
+          text: `${config.model}: 已回滚 ${rolledBackCount} 个 API 密钥`,
+          timeout: 10000,
+        });
+      }
+      const actionSummary = `切换 ${switchedCount} 个${rolledBackCount ? `，回滚 ${rolledBackCount} 个` : ""}`;
       if (failedCount === state.tokenResults.length) {
         setStatus(`${failedCount} 个 API 密钥处理失败`, "error");
       } else if (failedCount > 0) {
-        setStatus(`处理完成：切换 ${switchedCount} 个，失败 ${failedCount} 个`, "warning");
+        setStatus(`处理完成：${actionSummary}，失败 ${failedCount} 个`, "warning");
       } else if (warningCount > 0) {
-        setStatus(`已检查 ${state.tokenResults.length} 个 API 密钥，切换 ${switchedCount} 个`, "warning");
+        setStatus(`已检查 ${state.tokenResults.length} 个 API 密钥，${actionSummary}`, "warning");
       } else {
-        setStatus(`已检查 ${state.tokenResults.length} 个 API 密钥，切换 ${switchedCount} 个`, "success");
+        setStatus(`已检查 ${state.tokenResults.length} 个 API 密钥，${actionSummary}`, "success");
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       addLog(message, "error");
       setStatus(message, "error");
     } finally {
-      await usageRefresh;
+      await Promise.all([usageRefresh, tokenCatalogRefresh]);
       running = false;
       render();
     }
@@ -1336,10 +1695,16 @@
     return option;
   }
 
-  function renderOptions() {
+  function renderOptions(preserveFormState) {
     if (!refs.tokenList || !refs.model) return;
 
-    const selectedTokens = new Set(config.tokenIds.map(Number));
+    const selectedTokens = new Set(
+      preserveFormState
+        ? [...refs.tokenList.querySelectorAll('input[data-token-id]:checked')]
+          .map((checkbox) => Number(checkbox.value))
+        : config.tokenIds.map(Number),
+    );
+    const selectedModel = preserveFormState ? refs.model.value : config.model;
     refs.tokenList.replaceChildren();
     if (!tokensCache.length) {
       const empty = document.createElement("div");
@@ -1362,7 +1727,6 @@
     });
     renderTokenSelectionCount();
 
-    const selectedModel = config.model;
     refs.model.replaceChildren(createOption("", "请选择模型"));
     const models = pricingCache && Array.isArray(pricingCache.data)
       ? pricingCache.data.map((item) => item.model_name).filter(Boolean).sort()
@@ -1526,7 +1890,7 @@
       );
     }
     if (refs.todayTokens) {
-      refs.todayTokens.textContent = formatUsageCount(
+      refs.todayTokens.textContent = formatTokenCount(
         state.todayUsage.tokens,
         state.todayUsage.available,
       );
@@ -1534,11 +1898,19 @@
     [refs.todaySpend, refs.todayRequests, refs.todayTokens].filter(Boolean).forEach((element) => {
       element.title = state.todayUsage.error || (state.todayUsage.loading ? "正在刷新" : "");
     });
+    if (refs.todayTokens && state.todayUsage.available && !state.todayUsage.loading && !state.todayUsage.error) {
+      refs.todayTokens.title = `${formatUsageCount(state.todayUsage.tokens, true)} Token`;
+    }
     if (refs.enabled) refs.enabled.checked = config.enabled;
     if (refs.check) refs.check.disabled = running;
     if (refs.switchNow) refs.switchNow.disabled = running;
     if (refs.save) refs.save.disabled = running;
-    if (refs.refresh) refs.refresh.disabled = running;
+    if (refs.checkUpdate) {
+      refs.checkUpdate.disabled = state.update.checking || running;
+      refs.checkUpdate.textContent = state.update.checking
+        ? "检查中..."
+        : (state.update.availableVersion ? `更新至 v${state.update.availableVersion}` : "检查更新");
+    }
     if (refs.selectAllTokens) refs.selectAllTokens.disabled = running;
     if (refs.clearTokens) refs.clearTokens.disabled = running;
     if (refs.model) refs.model.disabled = running || IS_AIHUB;
@@ -1572,6 +1944,8 @@
       maxGroupRatio: refs.maxGroupRatio.value,
       confirmPolls: refs.confirmPolls.value,
       cooldownMinutes: refs.cooldownMinutes.value,
+      rollbackChecks: refs.rollbackChecks.value,
+      blacklistMinutes: refs.blacklistMinutes.value,
     });
   }
 
@@ -1588,6 +1962,8 @@
     refs.maxGroupRatio.value = String(config.maxGroupRatio);
     refs.confirmPolls.value = String(config.confirmPolls);
     refs.cooldownMinutes.value = String(config.cooldownMinutes);
+    refs.rollbackChecks.value = String(config.rollbackChecks);
+    refs.blacklistMinutes.value = String(config.blacklistMinutes);
   }
 
   function bindUi() {
@@ -1606,6 +1982,7 @@
       render();
     });
     refs.check.addEventListener("click", () => runCheck({ manual: true }));
+    refs.checkUpdate.addEventListener("click", handleUpdateAction);
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
     refs.manualGroup.addEventListener("change", render);
     refs.manualSwitch.addEventListener("click", () => {
@@ -1628,18 +2005,6 @@
         checkbox.checked = false;
       });
       renderTokenSelectionCount();
-    });
-    refs.refresh.addEventListener("click", async () => {
-      setStatus("正在刷新列表...", "running");
-      try {
-        const [, usageLoaded] = await Promise.all([refreshCatalogs(), refreshTodayUsage()]);
-        setStatus(
-          usageLoaded ? "列表和今日用量已刷新" : "列表已刷新，今日用量读取失败",
-          usageLoaded ? "success" : "warning",
-        );
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error), "error");
-      }
     });
     refs.save.addEventListener("click", () => {
       const previousIdentity = `${config.tokenIds.join(",")}:${config.model}`;
@@ -1759,6 +2124,12 @@
         .section:last-child { border-bottom: 0; }
         .section-title { margin: 0 0 10px; font-size: 11px; font-weight: 750; color: oklch(84% .02 250); letter-spacing: .05em; text-transform: uppercase; }
         .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .selector-grid {
+          display: grid;
+          grid-template-columns: minmax(190px, 1.15fr) minmax(150px, .85fr);
+          align-items: end;
+          gap: 10px;
+        }
         .field { min-width: 0; }
         .field-wide { grid-column: 1 / -1; }
         label { display: block; margin-bottom: 5px; color: oklch(69% .025 250); font-size: 10px; font-weight: 600; }
@@ -1781,7 +2152,8 @@
         details { margin-top: 12px; border: 1px solid oklch(32% .03 250); border-radius: 10px; overflow: hidden; }
         summary { cursor: pointer; padding: 9px 10px; color: oklch(77% .025 250); font-size: 10px; font-weight: 700; list-style-position: inside; }
         summary:hover { color: oklch(90% .02 250); background: oklch(24% .035 250); }
-        .advanced { padding: 0 10px 10px; }
+        .advanced { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0 10px 10px; }
+        .advanced label { display: flex; align-items: end; min-height: 24px; }
         .token-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
         .token-toolbar label { margin: 0; flex: 1; }
         .token-count { color: oklch(63% .025 250); font-size: 10px; }
@@ -1794,8 +2166,17 @@
         .token-option:hover { background: oklch(24% .035 250); }
         .token-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .token-empty { padding: 8px; }
-        .actions { display: flex; gap: 8px; margin-top: 13px; flex-wrap: wrap; }
-        .manual-switch { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; margin-top: 12px; }
+        .command-stack { display: grid; gap: 10px; margin-top: 13px; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .manual-switch {
+          display: grid;
+          grid-template-columns: auto minmax(150px, 210px) auto;
+          align-items: center;
+          justify-content: start;
+          gap: 8px;
+        }
+        .manual-switch label { margin: 0; white-space: nowrap; }
+        .manual-switch select { width: 100%; }
         .button {
           min-height: 36px;
           border: 1px solid oklch(40% .035 250);
@@ -1808,11 +2189,10 @@
         }
         .button:hover { background: oklch(28% .035 250); border-color: oklch(48% .035 250); }
         .button:disabled { cursor: wait; opacity: .55; }
-        .button-primary { border-color: oklch(71% .16 145); background: oklch(72% .16 145); color: oklch(15% .04 145); box-shadow: 0 6px 18px oklch(72% .16 145 / .16); }
+        .button-primary { border-color: oklch(71% .16 145); background: oklch(72% .16 145); color: oklch(15% .04 145); }
         .button-primary:hover { background: oklch(79% .16 145); }
         .button-switch { border-color: oklch(58% .13 75); background: oklch(31% .07 75); color: oklch(88% .13 85); }
         .button-switch:hover { background: oklch(38% .09 75); }
-        .button-spacer { margin-left: auto; }
         .candidate-head, .candidate {
           display: grid;
           grid-template-columns: minmax(78px, 1fr) 46px 52px 52px 48px minmax(62px, auto);
@@ -1848,9 +2228,18 @@
           .panel { right: 12px; bottom: 12px; max-height: calc(100vh - 24px); }
           .launcher { right: 12px; bottom: 12px; }
           .grid { grid-template-columns: 1fr; }
+          .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .selector-grid { grid-template-columns: minmax(0, 1fr) minmax(128px, .72fr); }
           .field-wide { grid-column: auto; }
           .candidate-head, .candidate { grid-template-columns: minmax(78px, 1fr) 44px 50px 50px minmax(58px, auto); }
           .candidate-head span:nth-child(5), .candidate span:nth-child(5) { display: none; }
+        }
+        @media (max-width: 380px) {
+          .selector-grid { grid-template-columns: 1fr; }
+          .manual-switch { grid-template-columns: minmax(0, 1fr) auto; }
+          .manual-switch label { grid-column: 1 / -1; }
+          .candidate-head, .candidate { grid-template-columns: minmax(72px, 1fr) 40px 48px minmax(48px, auto); gap: 5px; }
+          .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
         }
       </style>
       <button class="launcher" type="button" title="打开 ${SITE_LABEL} 分组监控" hidden>${IS_AIHUB ? "AH" : "KF"}</button>
@@ -1889,11 +2278,13 @@
               </div>
               <div class="token-list" data-ref="tokenList"></div>
             </div>
-            <div class="field field-wide">
+          </div>
+          <div class="selector-grid" style="margin-top: 10px">
+            <div class="field">
               <label for="kf-model">${IS_AIHUB ? "监测来源（站点未提供模型维度）" : "目标模型"}</label>
               <select id="kf-model" data-ref="model"></select>
             </div>
-            <div class="field field-wide">
+            <div class="field">
               <label for="kf-groups">允许分组（留空为全部）</label>
               <input id="kf-groups" data-ref="allowedGroups" type="text" placeholder="gpt低价, gpt均衡">
             </div>
@@ -1911,20 +2302,22 @@
               <div class="field"><label>最大倍率（0 不限制）</label><input data-ref="maxGroupRatio" type="number" min="0" step="0.01"></div>
               <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
               <div class="field"><label>切换冷却（分钟）</label><input data-ref="cooldownMinutes" type="number" min="0"></div>
+              <div class="field"><label>回滚观察次数（0 关闭）</label><input data-ref="rollbackChecks" type="number" min="0" max="10"></div>
+              <div class="field"><label>故障拉黑（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
             </div>
           </details>
-          <div class="actions">
-            <button class="button" data-ref="save" type="button">保存设置</button>
-            <button class="button" data-ref="check" type="button">立即检查</button>
-            <button class="button button-primary" data-ref="switchNow" type="button">立即切换</button>
-            <button class="button button-spacer" data-ref="refresh" type="button">刷新</button>
-          </div>
-          <div class="manual-switch">
-            <div class="field">
-              <label for="kf-manual-group">手动选择分组</label>
-              <select id="kf-manual-group" data-ref="manualGroup"></select>
+          <div class="command-stack">
+            <div class="actions">
+              <button class="button" data-ref="save" type="button">保存设置</button>
+              <button class="button" data-ref="check" type="button">立即检查</button>
+              <button class="button button-primary" data-ref="switchNow" type="button">立即切换</button>
+              <button class="button" data-ref="checkUpdate" type="button">检查更新</button>
             </div>
-            <button class="button button-switch" data-ref="manualSwitch" type="button">手动切换</button>
+            <div class="manual-switch">
+              <label for="kf-manual-group">指定分组</label>
+              <select id="kf-manual-group" data-ref="manualGroup"></select>
+              <button class="button button-switch" data-ref="manualSwitch" type="button">手动切换</button>
+            </div>
           </div>
         </section>
         <section class="section candidate-section">
@@ -1954,8 +2347,9 @@
       "lastCheck", "todaySpend", "todayRequests", "todayTokens", "enabled", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "allowedGroups", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxLatencySeconds", "minThroughput", "maxGroupRatio",
-      "confirmPolls", "cooldownMinutes", "save", "check", "switchNow", "manualGroup", "manualSwitch",
-      "refresh", "tokenResultRows", "candidateRows", "logs",
+      "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
+      "save", "check", "switchNow", "checkUpdate", "manualGroup", "manualSwitch",
+      "tokenResultRows", "candidateRows", "logs",
     ];
     refs = Object.fromEntries(
       refNames.map((name) => [name, root.querySelector(`[data-ref="${name}"]`) || root.querySelector(`.${name}`)]),
@@ -1972,6 +2366,7 @@
       render();
     });
     GM_registerMenuCommand("立即检查分组", () => runCheck({ manual: true }));
+    GM_registerMenuCommand("检查脚本更新", handleUpdateAction);
     GM_registerMenuCommand("切换自动运行状态", () => {
       config = { ...config, enabled: !config.enabled };
       GM_setValue(STORAGE_CONFIG, config);
