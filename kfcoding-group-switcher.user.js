@@ -2364,6 +2364,258 @@
           .candidate-head, .candidate { grid-template-columns: minmax(72px, 1fr) 40px 48px minmax(48px, auto); gap: 5px; }
           .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
         }
+
+        /* Monitoring console redesign */
+        :host {
+          --surface-0: #0b0d0e;
+          --surface-1: #111516;
+          --surface-2: #181d1e;
+          --surface-3: #202728;
+          --line: #303839;
+          --line-soft: #232a2b;
+          --text: #f2f5f3;
+          --muted: #a5afaa;
+          --muted-strong: #c8cfcb;
+          --green: #8bd697;
+          --green-deep: #1e492b;
+          --amber: #f0bf62;
+          --amber-deep: #5b4217;
+          --red: #ff8278;
+        }
+        .launcher, .panel {
+          font-family: Inter, "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+          color: var(--text);
+        }
+        .launcher {
+          width: 46px;
+          height: 46px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--surface-2);
+          color: var(--green);
+          box-shadow: 0 16px 34px rgb(0 0 0 / 42%);
+          font-size: 12px;
+          letter-spacing: 0;
+        }
+        .panel {
+          width: min(488px, calc(100vw - 24px));
+          max-height: min(840px, calc(100vh - 24px));
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--surface-0);
+          box-shadow: 0 26px 72px rgb(0 0 0 / 56%);
+        }
+        .header {
+          min-height: 58px;
+          padding: 11px 14px;
+          gap: 9px;
+          border-bottom-color: var(--line-soft);
+          background: var(--surface-1);
+        }
+        .header-copy { gap: 1px; }
+        .eyebrow {
+          color: var(--muted);
+          font-size: 9px;
+          letter-spacing: 0;
+        }
+        .title { font-size: 14px; font-weight: 750; }
+        .dot { width: 8px; height: 8px; background: var(--muted); box-shadow: 0 0 0 3px rgb(165 175 170 / 14%); }
+        .dot[data-tone="running"] { background: var(--amber); box-shadow: 0 0 0 3px rgb(240 191 98 / 14%); }
+        .dot[data-tone="success"] { background: var(--green); box-shadow: 0 0 0 3px rgb(139 214 151 / 14%); }
+        .dot[data-tone="warning"] { background: var(--amber); box-shadow: 0 0 0 3px rgb(240 191 98 / 14%); }
+        .dot[data-tone="error"] { background: var(--red); box-shadow: 0 0 0 3px rgb(255 130 120 / 14%); }
+        .icon-button {
+          width: 30px;
+          height: 30px;
+          border: 1px solid transparent;
+          border-radius: 6px;
+          color: var(--muted);
+        }
+        .icon-button:hover { border-color: var(--line); background: var(--surface-2); color: var(--text); }
+        .icon-button[data-update="available"]::after { border-color: var(--surface-1); background: var(--green); }
+        .status {
+          display: flex;
+          align-items: center;
+          min-height: 34px;
+          padding: 7px 14px;
+          border-bottom: 1px solid var(--line-soft);
+          color: var(--muted-strong);
+          font-size: 11px;
+        }
+        .overview {
+          display: grid;
+          grid-template-columns: minmax(0, 1.25fr) minmax(0, .95fr);
+          gap: 14px;
+          padding: 14px;
+          border-bottom: 1px solid var(--line-soft);
+          background: var(--surface-1);
+        }
+        .route-primary, .route-best { min-width: 0; }
+        .route-primary { padding-right: 14px; border-right: 1px solid var(--line); }
+        .metric-label {
+          display: block;
+          margin-bottom: 6px;
+          color: var(--muted);
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0;
+        }
+        .route-value, .route-best-value {
+          display: block;
+          overflow: hidden;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-variant-numeric: tabular-nums;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .route-value { color: var(--text); font-size: 18px; line-height: 1.2; }
+        .route-best-value { color: var(--green); font-size: 14px; line-height: 1.45; }
+        .route-meta { display: flex; align-items: center; gap: 5px; margin-top: 7px; color: var(--muted); font-size: 10px; }
+        .route-meta strong { color: var(--muted-strong); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 650; }
+        .usage-strip {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          border-bottom: 1px solid var(--line-soft);
+          background: var(--surface-0);
+        }
+        .usage-item { min-width: 0; padding: 10px 14px 11px; }
+        .usage-item + .usage-item { border-left: 1px solid var(--line-soft); }
+        .usage-item small { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0; }
+        .usage-item strong { display: block; overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+        .usage-item:first-child strong { color: var(--amber); }
+        .section { padding: 14px; border-bottom-color: var(--line-soft); }
+        .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+        .section-title { margin: 0; color: var(--text); font-size: 12px; font-weight: 750; letter-spacing: 0; }
+        .automation-bar {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-height: 44px;
+          margin-bottom: 12px;
+          padding: 8px 9px 8px 11px;
+          border: 1px solid var(--line);
+          border-radius: 7px;
+          background: var(--surface-2);
+        }
+        .automation-name { margin-right: auto; color: var(--text); font-size: 12px; font-weight: 720; }
+        .toggle { display: inline-flex; align-items: center; cursor: pointer; }
+        .toggle input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; }
+        .toggle-track { display: grid; align-items: center; width: 34px; height: 20px; padding: 2px; border: 1px solid #52605b; border-radius: 999px; background: #303836; transition: background .16s ease, border-color .16s ease; }
+        .toggle-thumb { width: 14px; height: 14px; border-radius: 50%; background: #d9dfdc; transition: transform .16s ease; }
+        .toggle input:checked + .toggle-track { border-color: var(--green); background: var(--green-deep); }
+        .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(14px); background: var(--green); }
+        .toggle input:focus-visible + .toggle-track { outline: 2px solid var(--green); outline-offset: 2px; }
+        .control-grid {
+          display: grid;
+          grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+          gap: 10px;
+        }
+        .field-wide { grid-column: 1 / -1; }
+        label { margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
+        input[type="number"], input[type="text"], select {
+          height: 35px;
+          border-color: var(--line);
+          border-radius: 6px;
+          background: var(--surface-2);
+          color: var(--text);
+          font-size: 12px;
+        }
+        input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgb(139 214 151 / 18%); }
+        .token-select-trigger {
+          height: 35px;
+          border-color: var(--line);
+          border-radius: 6px;
+          background: var(--surface-2);
+          color: var(--text);
+          font-size: 12px;
+        }
+        .token-select-trigger:hover { border-color: #53615c; background: var(--surface-3); }
+        .token-select-trigger:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgb(139 214 151 / 18%); }
+        .token-count { color: var(--muted); font-size: 9px; }
+        .token-menu { border-color: var(--line); border-radius: 7px; background: var(--surface-1); box-shadow: 0 18px 36px rgb(0 0 0 / 52%); }
+        .token-list { border-color: var(--line-soft); border-radius: 5px; background: var(--surface-0); }
+        .token-option { min-height: 35px; border-bottom-color: var(--line-soft); color: var(--muted-strong); }
+        .token-option:hover { background: var(--surface-2); }
+        .text-button { color: var(--green); font-size: 10px; }
+        .text-button:hover { color: #b6edbe; }
+        details { margin-top: 12px; border-color: var(--line); border-radius: 7px; background: var(--surface-1); }
+        summary { padding: 10px 11px; color: var(--muted-strong); font-size: 11px; letter-spacing: 0; }
+        summary:hover { color: var(--text); background: var(--surface-2); }
+        .advanced { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0 10px 10px; }
+        .advanced label { min-height: 25px; line-height: 1.25; }
+        .actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 8px; margin-top: 12px; }
+        .button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 7px;
+          min-height: 37px;
+          border-color: var(--line);
+          border-radius: 6px;
+          background: var(--surface-2);
+          color: var(--text);
+          padding: 7px 10px;
+          font-size: 12px;
+          font-weight: 720;
+        }
+        .button:hover { border-color: #52605a; background: var(--surface-3); }
+        .button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+        .button-check { border-color: #dce4df; background: #eef3f0; color: #111614; }
+        .button-check:hover { border-color: #ffffff; background: #ffffff; }
+        .button-route { border-color: var(--green); background: var(--green-deep); color: #c7f3ce; }
+        .button-route:hover { border-color: #a4e9ad; background: #285d35; }
+        .button-manual { min-height: 30px; padding: 5px 8px; border-color: #74531f; background: var(--amber-deep); color: #ffe1a7; font-size: 11px; }
+        .button-manual:hover { border-color: var(--amber); background: #6b4c1b; }
+        .button-primary { border-color: var(--green); background: var(--green); color: #102014; }
+        .button-primary:hover { border-color: #b6edbe; background: #b6edbe; }
+        .candidate-section { padding-bottom: 10px; }
+        .candidate-head, .candidate {
+          grid-template-columns: minmax(86px, 1fr) 46px 46px 46px 48px minmax(62px, auto);
+          gap: 6px;
+          font-size: 10px;
+        }
+        .candidate-head { min-height: 27px; color: var(--muted); border-bottom-color: var(--line); }
+        .candidate { min-height: 35px; padding-left: 7px; border-bottom-color: var(--line-soft); border-left: 2px solid transparent; }
+        .candidate-ok { border-left-color: var(--green); background: rgb(139 214 151 / 5%); }
+        .candidate-ok .verdict { color: #c2f0c9; }
+        .candidate-off { color: var(--muted); }
+        .candidate-off .verdict { color: #ffd88f; }
+        .verdict { overflow: hidden; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+        .secondary-details { margin: 0; border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: var(--surface-0); }
+        .secondary-details > summary { padding: 12px 14px; }
+        .secondary-details > div { padding: 0 14px 14px; }
+        .token-result { min-height: 34px; border-bottom-color: var(--line-soft); font-size: 10px; }
+        .token-result-success span:last-child { color: var(--green); }
+        .token-result-warning span:last-child { color: var(--amber); }
+        .token-result-error span:last-child { color: var(--red); }
+        .logs { gap: 8px; }
+        .log { grid-template-columns: 54px 1fr; color: var(--muted); font-size: 10px; }
+        .log-success { color: var(--green); }
+        .log-error { color: var(--red); }
+        .empty { color: var(--muted); }
+        .manual-dialog { border-color: var(--line); border-radius: 8px; background: var(--surface-1); color: var(--text); box-shadow: 0 26px 72px rgb(0 0 0 / 62%); }
+        .manual-dialog::backdrop { background: rgb(0 0 0 / 68%); }
+        .dialog-form { padding: 15px; }
+        .dialog-header { margin-bottom: 14px; }
+        .dialog-title { font-size: 14px; }
+        .dialog-hint { color: var(--muted); font-size: 10px; }
+        @media (max-width: 520px) {
+          .panel { width: calc(100vw - 20px); right: 10px; bottom: 10px; max-height: calc(100vh - 20px); }
+          .launcher { right: 10px; bottom: 10px; }
+          .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .candidate-head, .candidate { grid-template-columns: minmax(80px, 1fr) 44px 44px 44px minmax(56px, auto); }
+          .candidate-head span:nth-child(5), .candidate span:nth-child(5) { display: none; }
+        }
+        @media (max-width: 390px) {
+          .overview { grid-template-columns: 1fr; gap: 10px; }
+          .route-primary { padding-right: 0; padding-bottom: 10px; border-right: 0; border-bottom: 1px solid var(--line); }
+          .control-grid { grid-template-columns: 1fr; }
+          .field-wide { grid-column: auto; }
+          .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 42px 44px minmax(52px, auto); gap: 5px; }
+          .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
+          .candidate-head span:nth-child(5), .candidate span:nth-child(5) { display: none; }
+          .button { font-size: 11px; }
+        }
       </style>
       <button class="launcher" type="button" title="打开 ${SITE_LABEL} 分组监控" hidden>${IS_AIHUB ? "AH" : "KF"}</button>
       <section class="panel" aria-label="${SITE_LABEL} 分组监控">
@@ -2378,28 +2630,38 @@
           </button>
           <button class="icon-button" data-ref="collapse" type="button" title="收起" aria-label="收起">−</button>
         </header>
-        <div class="status" data-ref="status"></div>
-        <div class="summary">
-          <div><small>密钥分组</small><strong data-ref="currentGroup">-</strong></div>
-          <div><small>最低可用</small><strong data-ref="bestGroup">-</strong></div>
-          <div><small>检查时间</small><strong data-ref="lastCheck">-</strong></div>
-        </div>
-        <div class="summary today-summary">
-          <div><small>今日消费</small><strong class="mono" data-ref="todaySpend">-</strong></div>
-          <div><small>今日请求</small><strong class="mono" data-ref="todayRequests">-</strong></div>
-          <div><small>今日 Token</small><strong class="mono" data-ref="todayTokens">-</strong></div>
-        </div>
-        <section class="section" data-ref="settingsSection">
-          <h2 class="section-title">切换控制</h2>
-          <div class="control-row">
-            <div class="switch-row">
-              <label for="kf-enabled">自动切换</label>
-              <input id="kf-enabled" data-ref="enabled" type="checkbox">
-            </div>
-            <button class="button button-switch" data-ref="manualSwitch" type="button">手动切换</button>
+        <div class="status" data-ref="status" role="status" aria-live="polite"></div>
+        <section class="overview" aria-label="当前分组概览">
+          <div class="route-primary">
+            <span class="metric-label">当前密钥分组</span>
+            <strong class="route-value" data-ref="currentGroup">-</strong>
           </div>
-          <div class="grid" style="margin-top: 10px">
-            <div class="field field-wide">
+          <div class="route-best">
+            <span class="metric-label">最低可用</span>
+            <strong class="route-best-value" data-ref="bestGroup">-</strong>
+            <span class="route-meta">检查于 <strong data-ref="lastCheck">-</strong></span>
+          </div>
+        </section>
+        <section class="usage-strip" aria-label="今日用量">
+          <div class="usage-item"><small>今日消费</small><strong class="mono" data-ref="todaySpend">-</strong></div>
+          <div class="usage-item"><small>今日请求</small><strong class="mono" data-ref="todayRequests">-</strong></div>
+          <div class="usage-item"><small>今日 Token</small><strong class="mono" data-ref="todayTokens">-</strong></div>
+        </section>
+        <section class="section control-section" data-ref="settingsSection">
+          <div class="section-head"><h2 class="section-title">切换控制</h2></div>
+          <div class="automation-bar">
+            <span class="automation-name">自动切换</span>
+            <label class="toggle" for="kf-enabled" title="自动切换">
+              <input id="kf-enabled" data-ref="enabled" type="checkbox" aria-label="自动切换">
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </label>
+            <button class="button button-manual" data-ref="manualSwitch" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 3-4 4 4 4"></path><path d="M4 7h16"></path><path d="m16 21 4-4-4-4"></path><path d="M20 17H4"></path></svg>
+              手动切换
+            </button>
+          </div>
+          <div class="control-grid">
+            <div class="field">
               <label id="kf-token-label">API 密钥（可多选）</label>
               <div class="token-select" data-ref="tokenSelect">
                 <button class="token-select-trigger" data-ref="tokenSelectToggle" type="button" aria-labelledby="kf-token-label" aria-expanded="false">
@@ -2416,19 +2678,17 @@
                 </div>
               </div>
             </div>
-          </div>
-          <div class="selector-grid" style="margin-top: 10px">
             <div class="field">
               <label for="kf-model">${IS_AIHUB ? "监测来源（站点未提供模型维度）" : "目标模型"}</label>
               <select id="kf-model" data-ref="model"></select>
             </div>
-            <div class="field">
+            <div class="field field-wide">
               <label for="kf-groups">允许分组（留空为全部）</label>
               <input id="kf-groups" data-ref="allowedGroups" type="text" placeholder="gpt低价, gpt均衡">
             </div>
           </div>
           <details>
-            <summary>判定参数</summary>
+            <summary>判定与保护参数</summary>
             <div class="grid advanced">
               <div class="field"><label>轮询（秒）</label><input data-ref="pollSeconds" type="number" min="15"></div>
               <div class="field"><label>统计窗口（小时）</label><input data-ref="metricHours" type="number" min="1"></div>
@@ -2445,26 +2705,30 @@
             </div>
           </details>
           <div class="actions">
-            <button class="button" data-ref="check" type="button">立即检查</button>
-            <button class="button button-primary" data-ref="switchNow" type="button">切到最低可用</button>
+            <button class="button button-check" data-ref="check" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>
+              立即检查
+            </button>
+            <button class="button button-route" data-ref="switchNow" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v13"></path><path d="m7 11 5 5 5-5"></path><path d="M5 21h14"></path></svg>
+              切到最低可用
+            </button>
           </div>
         </section>
         <section class="section candidate-section">
-          <h2 class="section-title">分组状态</h2>
+          <div class="section-head"><h2 class="section-title">分组状态</h2></div>
           <div class="candidate-head"><span>分组</span><span>倍率</span><span>整体</span><span>近期</span><span>延迟</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
         <details class="secondary-details">
           <summary>密钥状态</summary>
           <div>
-          <h2 class="section-title">密钥状态</h2>
           <div data-ref="tokenResultRows"></div>
           </div>
         </details>
         <details class="secondary-details">
           <summary>最近事件</summary>
           <div>
-            <h2 class="section-title">最近 10 条</h2>
             <div class="logs" data-ref="logs"></div>
           </div>
         </details>

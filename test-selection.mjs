@@ -17,6 +17,13 @@ assert.equal(
 assert.equal(source.includes('data-ref="save"'), false, "settings should save automatically without an ambiguous save button");
 assert.equal(source.includes('data-ref="tokenSelectToggle"'), true, "API keys should use a compact dropdown trigger");
 assert.equal(source.includes('<dialog class="manual-dialog"'), true, "manual group selection should use a confirmation dialog");
+assert.equal(source.includes('<section class="overview"'), true, "the primary route state should lead the redesigned hierarchy");
+assert.equal(source.includes('<section class="usage-strip"'), true, "today usage should use a compact monitoring strip");
+assert.equal(source.includes('<div class="automation-bar">'), true, "automatic and manual switching should share one control bar");
+assert.equal(source.includes('<div class="control-grid">'), true, "key and model selectors should use a compact responsive grid");
+assert.equal(source.includes('class="button button-check"'), true, "immediate checks should be the primary command");
+assert.equal(source.includes('class="button button-route"'), true, "lowest-route switching should remain directly accessible");
+assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
   source.indexOf('data-ref="checkUpdate"') < source.indexOf('data-ref="settingsSection"'),
   true,
