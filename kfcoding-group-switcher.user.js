@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.4.9
+// @version      0.5.0
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,21 +29,22 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.4.9";
+  const SCRIPT_VERSION = "0.5.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
     enabled: false,
     tokenIds: [],
     model: "",
-    allowedGroups: [],
+    groupFilterMode: "whitelist",
+    groupFilterGroups: [],
     pollSeconds: 30,
     metricHours: 24,
     minSuccessRate: 95,
     minLatestSuccessRate: 95,
     maxMetricAgeMinutes: 180,
     maxFirstTokenLatencySeconds: 120,
-    maxOutputLatencySeconds: 0,
+    maxOutputDurationSeconds: 0,
     maxGroupRatio: 0,
     confirmPolls: 2,
     cooldownMinutes: 10,
@@ -239,11 +240,16 @@
 
   function sanitizeConfig(value) {
     const source = value && typeof value === "object" ? value : {};
+    const groupFilterMode = source.groupFilterMode === "blacklist" ? "blacklist" : "whitelist";
+    const groupFilterGroups = parseAllowedGroups(
+      source.groupFilterGroups !== undefined ? source.groupFilterGroups : source.allowedGroups,
+    );
     return {
       enabled: Boolean(source.enabled),
       tokenIds: parseTokenIds(source.tokenIds, source.tokenId),
       model: String(source.model || "").trim(),
-      allowedGroups: parseAllowedGroups(source.allowedGroups),
+      groupFilterMode,
+      groupFilterGroups,
       pollSeconds: clampNumber(source.pollSeconds, DEFAULT_CONFIG.pollSeconds, 15, 3600),
       metricHours: clampNumber(source.metricHours, DEFAULT_CONFIG.metricHours, 1, 168),
       minSuccessRate: clampNumber(source.minSuccessRate, DEFAULT_CONFIG.minSuccessRate, 0, 100),
@@ -265,10 +271,9 @@
         0,
         3600,
       ),
-      maxOutputLatencySeconds: clampNumber(
-        source.maxOutputLatencySeconds
-          ?? (Number(source.minThroughput) > 0 ? 1 / Number(source.minThroughput) : undefined),
-        DEFAULT_CONFIG.maxOutputLatencySeconds,
+      maxOutputDurationSeconds: clampNumber(
+        source.maxOutputDurationSeconds,
+        DEFAULT_CONFIG.maxOutputDurationSeconds,
         0,
         3600,
       ),
@@ -302,7 +307,8 @@
   function reasonLabel(reason) {
     const labels = {
       "not-user-selectable": "账号不可选",
-      "not-allowed": "不在允许名单",
+      "not-whitelisted": "不在白名单",
+      "blocked-group": "已被黑名单排除",
       "ratio-unknown": "倍率未知",
       "ratio-too-high": "超过倍率上限",
       "metrics-missing": "无性能数据",
@@ -318,6 +324,14 @@
     return labels[reason] || reason;
   }
 
+  function parsePercentValue(value) {
+    if (value == null || value === "") return NaN;
+    const source = String(value).trim();
+    const parsed = Number(source.endsWith("%") ? source.slice(0, -1) : source);
+    if (!Number.isFinite(parsed) || parsed < 0) return NaN;
+    return source.endsWith("%") || parsed > 1 ? parsed : parsed * 100;
+  }
+
   function evaluateCandidates(pricingPayload, metricsPayload, userGroupsPayload, config, nowSeconds) {
     const pricing = pricingPayload && typeof pricingPayload === "object" ? pricingPayload : {};
     const metricsData = metricsPayload && metricsPayload.data ? metricsPayload.data : {};
@@ -331,8 +345,8 @@
 
     const userGroups = unwrapUserGroups(userGroupsPayload);
     const userGroupNames = new Set(Object.keys(userGroups));
-    const allowed = new Set(config.allowedGroups || []);
-    const enforceAllowList = allowed.size > 0;
+    const filteredGroups = new Set(config.groupFilterGroups || []);
+    const enforceGroupFilter = filteredGroups.size > 0;
     const publicRatios = pricing.group_ratio && typeof pricing.group_ratio === "object"
       ? pricing.group_ratio
       : {};
@@ -361,15 +375,25 @@
       const latest = series.length ? series[series.length - 1] : null;
       const aggregateSuccess = Number(metric && metric.success_rate);
       const latestSuccess = Number(latest && latest.success_rate);
-      const firstTokenLatencyMs = Number(metric && metric.avg_latency_ms);
+      const firstTokenLatencyMs = Number(metric && metric.avg_ttft_ms);
       const outputTokensPerSecond = Number(metric && metric.avg_tps);
-      const outputLatencyMs = Number.isFinite(outputTokensPerSecond) && outputTokensPerSecond > 0
-        ? 1000 / outputTokensPerSecond
-        : NaN;
+      const outputLatencyMs = Number(metric && metric.avg_latency_ms);
+      const cacheHitRate = parsePercentValue(
+        metric && (metric.cache_hit_rate ?? metric.cacheHitRate),
+      );
       const ageMinutes = latest ? Math.max(0, now - Number(latest.ts)) / 60 : Infinity;
 
       if (!userGroupNames.has(group)) reasons.push("not-user-selectable");
-      if (enforceAllowList && !allowed.has(group)) reasons.push("not-allowed");
+      if (
+        enforceGroupFilter
+        && config.groupFilterMode === "whitelist"
+        && !filteredGroups.has(group)
+      ) reasons.push("not-whitelisted");
+      if (
+        enforceGroupFilter
+        && config.groupFilterMode === "blacklist"
+        && filteredGroups.has(group)
+      ) reasons.push("blocked-group");
       if (!Number.isFinite(ratio) || ratio <= 0) reasons.push("ratio-unknown");
       if (config.maxGroupRatio > 0 && Number.isFinite(ratio) && ratio > config.maxGroupRatio) {
         reasons.push("ratio-too-high");
@@ -391,14 +415,13 @@
         reasons.push("first-token-latency-high");
       }
       if (
-        config.maxOutputLatencySeconds > 0 &&
+        config.maxOutputDurationSeconds > 0 &&
         (!Number.isFinite(outputLatencyMs)
           || outputLatencyMs <= 0
-          || outputLatencyMs > config.maxOutputLatencySeconds * 1000)
+          || outputLatencyMs > config.maxOutputDurationSeconds * 1000)
       ) {
         reasons.push("output-latency-high");
       }
-
       return {
         group,
         ratio,
@@ -412,6 +435,7 @@
         firstTokenLatencyMs,
         outputLatencyMs,
         outputTokensPerSecond,
+        cacheHitRate,
         ageMinutes,
       };
     });
@@ -453,8 +477,8 @@
     const groups = normalizeAihubGroups(groupsPayload);
     const groupMap = new Map(groups.map((group) => [Number(group.id), group]));
     const rates = normalizeAihubRates(ratesPayload);
-    const allowed = new Set(config.allowedGroups || []);
-    const enforceAllowList = allowed.size > 0;
+    const filteredGroups = new Set(config.groupFilterGroups || []);
+    const enforceGroupFilter = filteredGroups.size > 0;
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
     const seenGroups = new Set();
 
@@ -496,12 +520,26 @@
           : Infinity;
         const firstTokenLatencyMs = Number(monitor.firstTokenLatencyMs);
         const outputTokensPerSecond = Number(monitor.outputTokensPerSecond);
-        const outputLatencyMs = Number.isFinite(outputTokensPerSecond) && outputTokensPerSecond > 0
-          ? 1000 / outputTokensPerSecond
+        const outputTokens = Number(monitor.outputTokens);
+        const outputLatencyMs = Number.isFinite(outputTokens)
+          && outputTokens > 0
+          && Number.isFinite(outputTokensPerSecond)
+          && outputTokensPerSecond > 0
+          ? outputTokens / outputTokensPerSecond * 1000
           : NaN;
+        const cacheHitRate = parsePercentValue(monitor.cacheHitRate);
 
         if (!groupMeta) reasons.push("not-user-selectable");
-        if (enforceAllowList && !allowed.has(group)) reasons.push("not-allowed");
+        if (
+          enforceGroupFilter
+          && config.groupFilterMode === "whitelist"
+          && !filteredGroups.has(group)
+        ) reasons.push("not-whitelisted");
+        if (
+          enforceGroupFilter
+          && config.groupFilterMode === "blacklist"
+          && filteredGroups.has(group)
+        ) reasons.push("blocked-group");
         if (!Number.isFinite(ratio) || ratio <= 0) reasons.push("ratio-unknown");
         if (config.maxGroupRatio > 0 && Number.isFinite(ratio) && ratio > config.maxGroupRatio) {
           reasons.push("ratio-too-high");
@@ -522,12 +560,11 @@
             || firstTokenLatencyMs > config.maxFirstTokenLatencySeconds * 1000)
         ) reasons.push("first-token-latency-high");
         if (
-          config.maxOutputLatencySeconds > 0 &&
+          config.maxOutputDurationSeconds > 0 &&
           (!Number.isFinite(outputLatencyMs)
             || outputLatencyMs <= 0
-            || outputLatencyMs > config.maxOutputLatencySeconds * 1000)
+            || outputLatencyMs > config.maxOutputDurationSeconds * 1000)
         ) reasons.push("output-latency-high");
-
         return {
           group,
           groupId,
@@ -542,6 +579,8 @@
           firstTokenLatencyMs,
           outputLatencyMs,
           outputTokensPerSecond,
+          outputTokens,
+          cacheHitRate,
           ageMinutes,
         };
       });
@@ -871,6 +910,7 @@
     extractUserscriptVersion,
     formatBalance,
     formatTokenCount,
+    parsePercentValue,
     compareVersions,
     applyTemporaryBlacklist,
     candidateHasHealthFailure,
@@ -901,7 +941,7 @@
     return;
   }
 
-  let config = sanitizeConfig({ ...DEFAULT_CONFIG, ...GM_getValue(STORAGE_CONFIG, {}) });
+  let config = sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}));
   if (IS_AIHUB) config = { ...config, model: AIHUB_MONITOR_MODEL };
   let scheduler = null;
   let root = null;
@@ -1878,15 +1918,28 @@
       const outputLatency = document.createElement("span");
       outputLatency.className = "mono";
       outputLatency.textContent = formatLatency(candidate.outputLatencyMs);
-      outputLatency.title = Number.isFinite(candidate.outputTokensPerSecond)
-        ? `输出延迟 · ${candidate.outputTokensPerSecond.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} Token/s`
-        : "输出延迟";
+      const outputDetails = [];
+      if (Number.isFinite(candidate.outputTokens)) {
+        outputDetails.push(`${candidate.outputTokens.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 输出 Token`);
+      }
+      if (Number.isFinite(candidate.outputTokensPerSecond)) {
+        outputDetails.push(`${candidate.outputTokensPerSecond.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} Token/s`);
+      }
+      outputLatency.title = outputDetails.length
+        ? `完整输出耗时 · ${outputDetails.join(" / ")}`
+        : "完整输出耗时";
+      const cacheHitRate = document.createElement("span");
+      cacheHitRate.className = "mono";
+      cacheHitRate.textContent = formatPercent(candidate.cacheHitRate);
+      cacheHitRate.title = Number.isFinite(candidate.cacheHitRate)
+        ? "缓存命中率"
+        : `${SITE_LABEL} 当前分组指标未提供缓存命中率`;
       const verdict = document.createElement("span");
       verdict.className = "verdict";
       verdict.textContent = candidate.available
         ? "可用"
         : reasonLabel(candidate.reasons[0] || "不可用");
-      row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, verdict);
+      row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, cacheHitRate, verdict);
       refs.candidateRows.appendChild(row);
     });
   }
@@ -2058,14 +2111,15 @@
       tokenIds: [...refs.tokenList.querySelectorAll('input[data-token-id]:checked')]
         .map((checkbox) => checkbox.value),
       model: refs.model.value,
-      allowedGroups: refs.allowedGroups.value,
+      groupFilterMode: refs.groupFilterBlacklist.checked ? "blacklist" : "whitelist",
+      groupFilterGroups: refs.groupFilterGroups.value,
       pollSeconds: refs.pollSeconds.value,
       metricHours: refs.metricHours.value,
       minSuccessRate: refs.minSuccessRate.value,
       minLatestSuccessRate: refs.minLatestSuccessRate.value,
       maxMetricAgeMinutes: refs.maxMetricAgeMinutes.value,
       maxFirstTokenLatencySeconds: refs.maxFirstTokenLatencySeconds.value,
-      maxOutputLatencySeconds: refs.maxOutputLatencySeconds.value,
+      maxOutputDurationSeconds: refs.maxOutputDurationSeconds.value,
       maxGroupRatio: refs.maxGroupRatio.value,
       confirmPolls: refs.confirmPolls.value,
       cooldownMinutes: refs.cooldownMinutes.value,
@@ -2076,14 +2130,17 @@
 
   function syncForm() {
     refs.enabled.checked = config.enabled;
-    refs.allowedGroups.value = config.allowedGroups.join(", ");
+    refs.groupFilterWhitelist.checked = config.groupFilterMode === "whitelist";
+    refs.groupFilterBlacklist.checked = config.groupFilterMode === "blacklist";
+    refs.groupFilterGroups.value = config.groupFilterGroups.join(", ");
+    syncGroupFilterUi();
     refs.pollSeconds.value = String(config.pollSeconds);
     refs.metricHours.value = String(config.metricHours);
     refs.minSuccessRate.value = String(config.minSuccessRate);
     refs.minLatestSuccessRate.value = String(config.minLatestSuccessRate);
     refs.maxMetricAgeMinutes.value = String(config.maxMetricAgeMinutes);
     refs.maxFirstTokenLatencySeconds.value = String(config.maxFirstTokenLatencySeconds);
-    refs.maxOutputLatencySeconds.value = String(config.maxOutputLatencySeconds);
+    refs.maxOutputDurationSeconds.value = String(config.maxOutputDurationSeconds);
     refs.maxGroupRatio.value = String(config.maxGroupRatio);
     refs.confirmPolls.value = String(config.confirmPolls);
     refs.cooldownMinutes.value = String(config.cooldownMinutes);
@@ -2095,6 +2152,7 @@
     const previousIdentity = `${config.tokenIds.join(",")}:${config.model}`;
     const wasEnabled = config.enabled;
     config = readFormConfig();
+    syncGroupFilterUi();
     GM_setValue(STORAGE_CONFIG, config);
     if (`${config.tokenIds.join(",")}:${config.model}` !== previousIdentity) {
       pendingCandidates.clear();
@@ -2110,6 +2168,13 @@
       setStatus("设置已自动保存", "success");
     }
     render();
+  }
+
+  function syncGroupFilterUi() {
+    if (!refs.groupFilterLabel || !refs.groupFilterGroups) return;
+    const blacklisting = refs.groupFilterBlacklist.checked;
+    refs.groupFilterLabel.textContent = blacklisting ? "排除分组（空 = 不限制）" : "仅允许分组（空 = 不限制）";
+    refs.groupFilterGroups.placeholder = blacklisting ? "例如：高价, 测试" : "例如：低价, 均衡";
   }
 
   function setTokenMenuOpen(open) {
@@ -2416,7 +2481,7 @@
         .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
         .candidate-head, .candidate {
           display: grid;
-          grid-template-columns: minmax(78px, 1fr) 46px 52px 52px 48px minmax(62px, auto);
+          grid-template-columns: minmax(70px, 1fr) 42px 46px 46px 44px 44px 44px minmax(58px, auto);
           align-items: center;
           gap: 6px;
           min-height: 28px;
@@ -2452,14 +2517,15 @@
           .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .selector-grid { grid-template-columns: minmax(0, 1fr) minmax(128px, .72fr); }
           .field-wide { grid-column: auto; }
-          .candidate-head, .candidate { grid-template-columns: minmax(78px, 1fr) 44px 50px 50px minmax(58px, auto); }
-          .candidate-head span:nth-child(5), .candidate span:nth-child(5) { display: none; }
+          .candidate-head, .candidate { grid-template-columns: minmax(78px, 1fr) 44px 50px 44px 44px minmax(58px, auto); }
+          .candidate-head span:nth-child(3), .candidate span:nth-child(3),
+          .candidate-head span:nth-child(7), .candidate span:nth-child(7) { display: none; }
         }
         @media (max-width: 380px) {
           .selector-grid { grid-template-columns: 1fr; }
           .control-row { align-items: stretch; flex-direction: column; }
-          .candidate-head, .candidate { grid-template-columns: minmax(72px, 1fr) 40px 48px minmax(48px, auto); gap: 5px; }
-          .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
+          .candidate-head, .candidate { grid-template-columns: minmax(72px, 1fr) 40px 42px 42px minmax(48px, auto); gap: 5px; }
+          .candidate-head span:nth-child(4), .candidate span:nth-child(4) { display: none; }
         }
 
         /* Monitoring console redesign */
@@ -2609,6 +2675,30 @@
         }
         .field-wide { grid-column: 1 / -1; }
         label { margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
+        .group-filter-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; }
+        .group-filter-heading > label { margin: 0; }
+        .segment-control {
+          display: inline-grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          width: 126px;
+          padding: 2px;
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: var(--surface-0);
+        }
+        .segment-option { position: relative; margin: 0; cursor: pointer; }
+        .segment-option input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; }
+        .segment-option span {
+          display: grid;
+          place-items: center;
+          min-height: 25px;
+          border-radius: 4px;
+          color: var(--muted);
+          font-size: 10px;
+          font-weight: 700;
+        }
+        .segment-option input:checked + span { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 3px rgb(0 0 0 / 30%); }
+        .segment-option input:focus-visible + span { outline: 2px solid var(--green); outline-offset: 1px; }
         input[type="number"], input[type="text"], select {
           height: 35px;
           border-color: var(--line);
@@ -2667,7 +2757,7 @@
         .button-primary:hover { border-color: #b6edbe; background: #b6edbe; }
         .candidate-section { padding-bottom: 10px; }
         .candidate-head, .candidate {
-          grid-template-columns: minmax(76px, 1fr) 42px 42px 42px 46px 46px minmax(58px, auto);
+          grid-template-columns: minmax(70px, 1fr) 40px 40px 40px 43px 43px 43px minmax(54px, auto);
           gap: 6px;
           font-size: 10px;
         }
@@ -2701,7 +2791,8 @@
           .launcher { right: 10px; bottom: 10px; }
           .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 42px 42px 44px 44px minmax(54px, auto); }
-          .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
+          .candidate-head span:nth-child(3), .candidate span:nth-child(3),
+          .candidate-head span:nth-child(7), .candidate span:nth-child(7) { display: none; }
         }
         @media (max-width: 390px) {
           .overview { grid-template-columns: 1fr; gap: 10px; }
@@ -2709,7 +2800,6 @@
           .control-grid { grid-template-columns: 1fr; }
           .field-wide { grid-column: auto; }
           .candidate-head, .candidate { grid-template-columns: minmax(70px, 1fr) 40px 42px 42px minmax(50px, auto); gap: 4px; }
-          .candidate-head span:nth-child(3), .candidate span:nth-child(3) { display: none; }
           .candidate-head span:nth-child(4), .candidate span:nth-child(4) { display: none; }
           .button { font-size: 11px; }
         }
@@ -2780,9 +2870,21 @@
               <label for="kf-model">${IS_AIHUB ? "监测来源（站点未提供模型维度）" : "目标模型"}</label>
               <select id="kf-model" data-ref="model"></select>
             </div>
-            <div class="field field-wide">
-              <label for="kf-groups">允许分组（留空为全部）</label>
-              <input id="kf-groups" data-ref="allowedGroups" type="text" placeholder="gpt低价, gpt均衡">
+            <div class="field field-wide group-filter-field">
+              <div class="group-filter-heading">
+                <label for="kf-groups" data-ref="groupFilterLabel">仅允许分组（空 = 不限制）</label>
+                <div class="segment-control" role="radiogroup" aria-label="分组过滤方式">
+                  <label class="segment-option">
+                    <input data-ref="groupFilterWhitelist" type="radio" name="kf-group-filter-mode" value="whitelist">
+                    <span>白名单</span>
+                  </label>
+                  <label class="segment-option">
+                    <input data-ref="groupFilterBlacklist" type="radio" name="kf-group-filter-mode" value="blacklist">
+                    <span>黑名单</span>
+                  </label>
+                </div>
+              </div>
+              <input id="kf-groups" data-ref="groupFilterGroups" type="text" placeholder="例如：低价, 均衡">
             </div>
           </div>
           <details>
@@ -2794,7 +2896,7 @@
               <div class="field"><label>最新成功率（%）</label><input data-ref="minLatestSuccessRate" type="number" min="0" max="100" step="0.1"></div>
               <div class="field"><label>指标时效（分钟）</label><input data-ref="maxMetricAgeMinutes" type="number" min="5"></div>
               <div class="field"><label>最大首字延迟（秒）</label><input data-ref="maxFirstTokenLatencySeconds" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>最大输出延迟（秒/Token）</label><input data-ref="maxOutputLatencySeconds" type="number" min="0" step="0.001"></div>
+              <div class="field"><label>最大输出耗时（秒）</label><input data-ref="maxOutputDurationSeconds" type="number" min="0" step="0.1"></div>
               <div class="field"><label>最大倍率（0 不限制）</label><input data-ref="maxGroupRatio" type="number" min="0" step="0.01"></div>
               <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
               <div class="field"><label>切换冷却（分钟）</label><input data-ref="cooldownMinutes" type="number" min="0"></div>
@@ -2815,7 +2917,7 @@
         </section>
         <section class="section candidate-section">
           <div class="section-head"><h2 class="section-title">分组状态</h2></div>
-          <div class="candidate-head"><span>分组</span><span>倍率</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>判定</span></div>
+          <div class="candidate-head"><span>分组</span><span>倍率</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
         <details class="secondary-details">
@@ -2853,9 +2955,9 @@
     const refNames = [
       "launcher", "panel", "header", "statusDot", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpend", "todayRequests", "todayTokens", "settingsSection", "enabled",
-      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "allowedGroups", "pollSeconds", "metricHours",
+      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "groupFilterLabel", "groupFilterWhitelist", "groupFilterBlacklist", "groupFilterGroups", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
-      "maxFirstTokenLatencySeconds", "maxOutputLatencySeconds", "maxGroupRatio",
+      "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
       "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
       "check", "switchNow", "checkUpdate", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel",
       "tokenResultRows", "candidateRows", "logs",
