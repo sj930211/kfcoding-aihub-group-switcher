@@ -17,13 +17,29 @@
     <div class="line"></div><div class="line"></div><div class="line"></div><div class="line"></div>
   </main>
   <script>
+    const updateNoticeKey = "kfcoding-aihub-group-switcher:update-notice:v1";
+    const previewParams = new URLSearchParams(location.search);
+    if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
+    values.set("kfcoding-group-switcher:config:v1", { theme: "dark" });
+    if (sessionStorage.getItem(updateNoticeKey)) {
+      values.set(updateNoticeKey, sessionStorage.getItem(updateNoticeKey));
+    }
     window.GM_getValue = (key, fallback) => values.has(key) ? values.get(key) : fallback;
-    window.GM_setValue = (key, value) => values.set(key, value);
+    window.GM_setValue = (key, value) => {
+      values.set(key, value);
+      if (key === updateNoticeKey) sessionStorage.setItem(key, String(value));
+    };
     window.GM_registerMenuCommand = () => {};
-    window.GM_notification = () => {};
+    window.GM_notification = (notification) => {
+      document.documentElement.dataset.notificationCount = String(
+        Number(document.documentElement.dataset.notificationCount || 0) + 1,
+      );
+      document.documentElement.dataset.notificationTitle = String(notification.title || "");
+    };
     window.GM_openInTab = () => {};
-    window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: "// @version 0.9.0" }), 20);
+    const previewVersion = previewParams.has("update") ? "0.12.0" : "0.11.1";
+    window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     window.fetch = async () => ({
       ok: true,
       status: 200,
@@ -60,11 +76,11 @@
       set("logCount", "3");
       const rows = root.querySelector('[data-ref="candidateRows"]');
       if (rows) rows.innerHTML = `
-        <div class="candidate candidate-ok"><span>economy</span><span class="mono">0.2x</span><span class="mono">99.4%</span><span class="mono">100%</span><span class="mono">680ms</span><span class="mono">4.2s</span><span class="mono">42.8%</span><span class="verdict">可用</span></div>
-        <div class="candidate candidate-ok"><span>default</span><span class="mono">1x</span><span class="mono">99.8%</span><span class="mono">100%</span><span class="mono">420ms</span><span class="mono">3.8s</span><span class="mono">51.3%</span><span class="verdict">可用</span></div>
-        <div class="candidate candidate-ok"><span>stable-pro</span><span class="mono">1.5x</span><span class="mono">100%</span><span class="mono">100%</span><span class="mono">310ms</span><span class="mono">3.1s</span><span class="mono">63.5%</span><span class="verdict">可用</span></div>
-        <div class="candidate candidate-off"><span>promo-night</span><span class="mono">0.1x</span><span class="mono">83.7%</span><span class="mono">0%</span><span class="mono">-</span><span class="mono">-</span><span class="mono">-</span><span class="verdict">近期失败</span></div>
-        <div class="candidate candidate-off"><span>legacy-free</span><span class="mono">0x</span><span class="mono">92.1%</span><span class="mono">100%</span><span class="mono">18.4s</span><span class="mono">42.0s</span><span class="mono">8.2%</span><span class="verdict">总成功率</span></div>`;
+        <div class="candidate candidate-ok"><span class="candidate-name"><span class="candidate-signal"></span><span class="candidate-name-label">economy</span></span><span class="mono">0.2x</span><span class="mono">99.4%</span><span class="mono health-value" style="--health:100%">100%</span><span class="mono">680ms</span><span class="mono">4.2s</span><span class="mono">42.8%</span><span class="verdict">可用</span></div>
+        <div class="candidate candidate-ok"><span class="candidate-name"><span class="candidate-signal"></span><span class="candidate-name-label">default</span></span><span class="mono">1x</span><span class="mono">99.8%</span><span class="mono health-value" style="--health:100%">100%</span><span class="mono">420ms</span><span class="mono">3.8s</span><span class="mono">51.3%</span><span class="verdict">可用</span></div>
+        <div class="candidate candidate-ok"><span class="candidate-name"><span class="candidate-signal"></span><span class="candidate-name-label">stable-pro</span></span><span class="mono">1.5x</span><span class="mono">100%</span><span class="mono health-value" style="--health:100%">100%</span><span class="mono">310ms</span><span class="mono">3.1s</span><span class="mono">63.5%</span><span class="verdict">可用</span></div>
+        <div class="candidate candidate-off"><span class="candidate-name"><span class="candidate-signal"></span><span class="candidate-name-label">promo-night</span></span><span class="mono">0.1x</span><span class="mono">83.7%</span><span class="mono health-value" style="--health:0%">0%</span><span class="mono">-</span><span class="mono">-</span><span class="mono">-</span><span class="verdict">近期失败</span></div>
+        <div class="candidate candidate-off"><span class="candidate-name"><span class="candidate-signal"></span><span class="candidate-name-label">legacy-free</span></span><span class="mono">0x</span><span class="mono">92.1%</span><span class="mono health-value" style="--health:100%">100%</span><span class="mono">18.4s</span><span class="mono">42.0s</span><span class="mono">8.2%</span><span class="verdict">总成功率</span></div>`;
       const tokenRows = root.querySelector('[data-ref="tokenResultRows"]');
       if (tokenRows) tokenRows.innerHTML = `
         <div class="token-result token-result-success"><span>生产密钥</span><span class="mono">economy</span><span>已切换至策略推荐分组</span></div>
@@ -81,6 +97,16 @@
       };
       const restorePreviewRows = () => {
         setTimeout(() => {
+          set("status", "监控正常，5 个分组中 3 个可用");
+          if (status) status.dataset.tone = "success";
+          if (statusDot) statusDot.dataset.tone = "success";
+          set("currentGroup", "default");
+          set("bestGroup", "economy");
+          set("lastCheck", "11:24:08");
+          set("balance", "¥128.42");
+          set("todaySpend", "¥6.3800");
+          set("todayRequests", "1,284");
+          set("todayTokens", "8.42M");
           set("candidateCount", "5");
           set("candidateSummary", "3 可用 / 5 总计");
           set("tokenResultCount", "2");

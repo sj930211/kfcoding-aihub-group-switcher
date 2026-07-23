@@ -21,7 +21,20 @@ assert.equal(source.includes('<section class="overview"'), true, "the primary ro
 assert.equal(source.includes('<section class="usage-strip"'), true, "today usage should use a compact monitoring strip");
 assert.equal(source.includes('data-ref="balance"'), true, "the account balance should be visible in the monitoring strip");
 assert.equal(source.includes('data-ref="version"'), true, "the current version should be visible in the panel header");
-assert.equal(source.includes('data-ref="theme"'), true, "the panel header should expose a compact theme selector");
+assert.equal(source.includes('data-ref="updateBadge"'), true, "available updates should be visible beside the current version");
+assert.equal(source.includes('GM_notification({\n      title: "分组监控脚本有新版本"'), true, "new versions should trigger a userscript notification");
+assert.equal(source.includes('GM_getValue(STORAGE_UPDATE_NOTICE, "") === version'), true, "update notifications should be deduplicated across reloads");
+assert.equal(source.includes('GM_setValue(STORAGE_UPDATE_NOTICE, version)'), true, "the last notified version should be persisted");
+assert.equal(source.includes('class="settings-appearance"'), true, "theme selection should live in the settings dialog");
+assert.equal(source.includes('data-ref="settings"'), true, "the panel header should expose a settings button");
+assert.equal(source.includes('<dialog class="settings-dialog"'), true, "routing configuration should live in a dedicated settings dialog");
+assert.equal(source.includes('data-ref="layoutMode"'), false, "the panel should use one stable narrow layout");
+assert.equal(source.includes('data-layout-mode'), false, "legacy wide layout selectors must not override responsive rules");
+assert.equal(source.includes('class="monitor-command-row"'), false, "wide monitoring wrappers should be removed");
+assert.equal(source.includes('class="route-settings-layout"'), false, "wide settings wrappers should be removed");
+assert.equal(source.includes('width: min(560px, calc(100vw - 24px));'), true, "the panel should use the narrow desktop width");
+assert.equal(source.includes('width: min(560px, calc(100vw - 28px));'), true, "the settings dialog should share the narrow width");
+assert.equal(source.includes('.diagnostics-grid { display: grid; grid-template-columns: 1fr; }'), true, "diagnostics should stay in one column");
 assert.equal(
   source.includes('theme: refs.theme.value,'),
   true,
@@ -61,10 +74,14 @@ assert.equal(source.includes("border-left: 2px"), false, "candidate rows should 
 assert.equal(source.includes("font-family: Inter"), false, "the console should not use the default AI dashboard typeface");
 assert.equal(source.includes("GROUP CONTROL"), false, "the header should not use a decorative English eyebrow");
 assert.equal(
-  source.includes("border-radius: 8px;\n          background: var(--canvas);"),
+  source.includes("border-radius: 6px;\n          background: var(--canvas);"),
   true,
-  "the console should use a restrained system-style shell radius",
+  "the console should use a precise technical shell radius",
 );
+assert.equal(source.includes('class="brand-mark"'), true, "the console should expose a compact provider identity");
+assert.equal(source.includes('class="route-connector"'), true, "current and recommended groups should form a visible route");
+assert.equal(source.includes('signal.className = "candidate-signal"'), true, "candidate health should use a dedicated status signal");
+assert.equal(source.includes('recentSuccess.className = "mono health-value"'), true, "recent health should expose a compact trajectory");
 assert.equal(
   source.includes("sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}))"),
   true,
@@ -110,8 +127,8 @@ assert.equal(source.includes('class="button button-route"'), true, "lowest-route
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
   (source.match(/<section class="work-view"/g) || []).length,
-  3,
-  "monitoring, routing settings, and diagnostics should be three contiguous workspaces",
+  2,
+  "the primary navigation should contain only monitoring and diagnostics workspaces",
 );
 assert.equal(source.includes('role="tabpanel" aria-labelledby="kf-tab-monitor"'), true, "tabs should identify their monitor panel");
 assert.equal(source.includes('aria-controls="kf-view-diagnostics"'), true, "workspace tabs should expose their controlled panels");
@@ -123,9 +140,9 @@ assert.equal(source.includes('.work-nav button[data-active="true"]::after'), fal
 assert.equal(source.includes('Math.hypot(deltaX, deltaY) < 10'), true, "panel dragging should use touch-friendly hysteresis");
 assert.equal(source.includes('refs.status.dataset.tone = state.tone'), true, "status feedback should communicate its semantic state");
 assert.equal(
-  source.indexOf('data-ref="checkUpdate"') < source.indexOf('data-ref="settingsSection"'),
+  source.indexOf('data-ref="checkUpdate"') > source.indexOf('data-ref="settingsSection"'),
   true,
-  "the update icon should live in the panel header",
+  "update controls should live inside the settings dialog",
 );
 const sandbox = {
   __KFCODING_GROUP_SWITCHER_TEST__: true,
@@ -139,12 +156,12 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.9.0");
+assert.equal(api.extractUserscriptVersion(source), "0.11.1");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
 assert.equal(api.compareVersions("0.4.4", "0.4.5"), -1);
-assert.equal(api.compareVersions("0.10.0", "0.9.9"), 1);
+assert.equal(api.compareVersions("0.11.0", "0.9.9"), 1);
 assert.equal(api.DEFAULT_CONFIG.theme, "system");
 assert.equal(api.sanitizeConfig({ theme: "light" }).theme, "light");
 assert.equal(api.sanitizeConfig({ theme: "dark" }).theme, "dark");

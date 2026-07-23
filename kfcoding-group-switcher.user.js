@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.9.0
+// @version      0.11.1
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.9.0";
+  const SCRIPT_VERSION = "0.11.1";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -65,6 +65,7 @@
   const STORAGE_UI = `${STORAGE_PREFIX}:ui:v1`;
   const STORAGE_SWITCH_GUARD = `${STORAGE_PREFIX}:switch-guard:v1`;
   const STORAGE_SPEND_GUARD = `${STORAGE_PREFIX}:spend-guard:v1`;
+  const STORAGE_UPDATE_NOTICE = "kfcoding-aihub-group-switcher:update-notice:v1";
   const MAX_LOG_ENTRIES = 10;
   const VIEWPORT_MARGIN = 8;
   const HOST_ID = `${STORAGE_PREFIX}-host`;
@@ -85,7 +86,7 @@
   }
 
   function normalizeActiveView(value) {
-    return ["monitor", "route", "diagnostics"].includes(value) ? value : "monitor";
+    return ["monitor", "diagnostics"].includes(value) ? value : "monitor";
   }
 
   function normalizeSelectionMode(value) {
@@ -1102,6 +1103,7 @@
   let aihubRatesCache = {};
   const inflightGetRequests = new Map();
   const pendingCandidates = new Map();
+  const storedUi = GM_getValue(STORAGE_UI, {}) || {};
   const state = {
     tone: "idle",
     status: config.enabled ? "等待首次检查" : "自动切换已暂停",
@@ -1131,7 +1133,7 @@
     },
     logs: normalizeLogs(GM_getValue(STORAGE_LOGS, [])),
     positions: normalizeUiPositions(GM_getValue(STORAGE_POSITIONS, {})),
-    activeView: normalizeActiveView((GM_getValue(STORAGE_UI, {}) || {}).activeView),
+    activeView: normalizeActiveView(storedUi.activeView),
     collapsed: false,
     update: {
       checking: false,
@@ -1239,6 +1241,17 @@
     });
   }
 
+  function notifyUpdateAvailable(remoteVersion) {
+    const version = String(remoteVersion || "").trim();
+    if (!version || GM_getValue(STORAGE_UPDATE_NOTICE, "") === version) return;
+    GM_notification({
+      title: "分组监控脚本有新版本",
+      text: `可由 v${SCRIPT_VERSION} 升级到 v${version}，请打开插件设置完成更新`,
+      timeout: 10000,
+    });
+    GM_setValue(STORAGE_UPDATE_NOTICE, version);
+  }
+
   async function checkForUpdate(options) {
     const request = options && typeof options === "object" ? options : {};
     const silent = Boolean(request.silent);
@@ -1260,7 +1273,10 @@
       if (compareVersions(remoteVersion, SCRIPT_VERSION) > 0) {
         const isNewDiscovery = state.update.availableVersion !== remoteVersion;
         state.update.availableVersion = remoteVersion;
-        if (isNewDiscovery) addLog(`发现新版本 v${remoteVersion}`, "success");
+        if (isNewDiscovery) {
+          addLog(`发现新版本 v${remoteVersion}`, "success");
+          notifyUpdateAvailable(remoteVersion);
+        }
         if (!silent) setStatus(`发现新版本 v${remoteVersion}，再次点击即可更新`, "success");
       } else if (!silent) {
         addLog(`当前已是最新版本 v${SCRIPT_VERSION}`, "success");
@@ -2206,7 +2222,14 @@
       const row = document.createElement("div");
       row.className = `candidate ${candidate.available ? "candidate-ok" : "candidate-off"}`;
       const name = document.createElement("span");
-      name.textContent = candidate.group;
+      name.className = "candidate-name";
+      const signal = document.createElement("span");
+      signal.className = "candidate-signal";
+      signal.setAttribute("aria-hidden", "true");
+      const nameLabel = document.createElement("span");
+      nameLabel.className = "candidate-name-label";
+      nameLabel.textContent = candidate.group;
+      name.append(signal, nameLabel);
       const ratio = document.createElement("span");
       ratio.className = "mono";
       ratio.textContent = formatRatio(candidate.ratio);
@@ -2214,9 +2237,13 @@
       success.className = "mono";
       success.textContent = formatPercent(candidate.aggregateSuccess);
       const recentSuccess = document.createElement("span");
-      recentSuccess.className = "mono";
+      recentSuccess.className = "mono health-value";
       recentSuccess.textContent = formatPercent(candidate.recentMinSuccess);
       recentSuccess.title = "最近一次成功率";
+      recentSuccess.style.setProperty(
+        "--health",
+        `${Math.max(0, Math.min(100, Number(candidate.recentMinSuccess) || 0))}%`,
+      );
       const firstTokenLatency = document.createElement("span");
       firstTokenLatency.className = "mono";
       firstTokenLatency.textContent = formatLatency(candidate.firstTokenLatencyMs);
@@ -2345,6 +2372,19 @@
     if (refs.status) refs.status.textContent = state.status;
     if (refs.status) refs.status.dataset.tone = state.tone;
     if (refs.statusDot) refs.statusDot.dataset.tone = state.tone;
+    if (refs.version) {
+      refs.version.title = state.update.availableVersion
+        ? `当前版本 v${SCRIPT_VERSION}，可更新至 v${state.update.availableVersion}`
+        : `当前插件版本 v${SCRIPT_VERSION}`;
+    }
+    if (refs.updateBadge) {
+      refs.updateBadge.hidden = !state.update.availableVersion;
+      const updateBadgeLabel = state.update.availableVersion
+        ? `发现新版本 v${state.update.availableVersion}，请前往设置更新`
+        : "";
+      refs.updateBadge.title = updateBadgeLabel;
+      refs.updateBadge.setAttribute("aria-label", updateBadgeLabel);
+    }
     if (root) {
       root.querySelectorAll("[data-view-target]").forEach((button) => {
         const active = button.dataset.viewTarget === state.activeView;
@@ -2436,6 +2476,7 @@
         : (state.update.availableVersion ? `更新至 v${state.update.availableVersion}` : "检查更新");
       refs.checkUpdate.title = updateLabel;
       refs.checkUpdate.setAttribute("aria-label", updateLabel);
+      if (refs.updateLabel) refs.updateLabel.textContent = updateLabel;
     }
     if (refs.selectAllTokens) refs.selectAllTokens.disabled = running;
     if (refs.clearTokens) refs.clearTokens.disabled = running;
@@ -2550,7 +2591,7 @@
 
   function setActiveView(view, options) {
     state.activeView = normalizeActiveView(view);
-    GM_setValue(STORAGE_UI, { activeView: state.activeView });
+    persistUiState();
     setTokenMenuOpen(false);
     setGroupFilterMenuOpen(false);
     if (refs.workspace) refs.workspace.scrollTop = 0;
@@ -2559,6 +2600,12 @@
       const activeTab = root.querySelector(`[data-view-target="${state.activeView}"]`);
       if (activeTab) activeTab.focus();
     }
+  }
+
+  function persistUiState() {
+    GM_setValue(STORAGE_UI, {
+      activeView: state.activeView,
+    });
   }
 
   function bindUi() {
@@ -2595,6 +2642,12 @@
     });
     refs.check.addEventListener("click", () => runCheck({ manual: true }));
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
+    refs.settings.addEventListener("click", () => refs.settingsDialog.showModal());
+    refs.settingsClose.addEventListener("click", () => refs.settingsDialog.close());
+    refs.settingsDialog.addEventListener("close", () => {
+      setTokenMenuOpen(false);
+      setGroupFilterMenuOpen(false);
+    });
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
     refs.resetSpendProtection.addEventListener("click", resetSpendProtection);
     refs.tokenSelectToggle.addEventListener("click", () => {
@@ -2713,54 +2766,58 @@
           z-index: 2147483000;
           pointer-events: none;
           color-scheme: dark;
-          --canvas: oklch(15% .008 165);
-          --surface: oklch(18% .009 165);
-          --surface-raised: oklch(21% .01 165);
-          --surface-active: oklch(25% .012 165);
-          --line: oklch(31% .012 165);
-          --line-soft: oklch(25% .009 165);
-          --line-strong: oklch(41% .014 165);
-          --text: oklch(92% .008 165);
-          --text-soft: oklch(76% .009 165);
-          --muted: oklch(66% .008 165);
-          --accent: oklch(72% .105 154);
-          --accent-ink: oklch(18% .025 154);
-          --accent-soft: oklch(26% .035 154);
-          --warning: oklch(77% .105 76);
-          --warning-soft: oklch(25% .03 76);
-          --danger: oklch(68% .13 28);
-          --danger-soft: oklch(24% .035 28);
-          --focus: oklch(72% .105 154 / .42);
-          --toolbar: oklch(19% .009 165 / .88);
-          --control: oklch(24% .011 165 / .92);
-          --shadow-panel: 0 12px 34px rgb(0 0 0 / 38%);
-          --shadow-menu: 0 10px 24px rgb(0 0 0 / 34%);
+          --canvas: oklch(11% .012 155);
+          --surface: oklch(15% .014 155);
+          --surface-raised: oklch(19% .018 155);
+          --surface-active: oklch(24% .022 155);
+          --line: oklch(30% .022 155);
+          --line-soft: oklch(22% .014 155);
+          --line-strong: oklch(43% .03 155);
+          --text: oklch(94% .012 155);
+          --text-soft: oklch(78% .018 155);
+          --muted: oklch(61% .018 155);
+          --accent: oklch(82% .18 142);
+          --accent-ink: oklch(14% .035 142);
+          --accent-soft: oklch(23% .052 142);
+          --info: oklch(76% .105 215);
+          --info-soft: oklch(22% .035 215);
+          --warning: oklch(80% .14 82);
+          --warning-soft: oklch(24% .042 82);
+          --danger: oklch(70% .17 28);
+          --danger-soft: oklch(23% .05 28);
+          --focus: oklch(82% .18 142 / .36);
+          --toolbar: oklch(14% .014 155 / .96);
+          --control: oklch(19% .018 155 / .96);
+          --shadow-panel: 0 28px 72px rgb(0 0 0 / 56%), 0 1px 0 rgb(255 255 255 / 4%) inset;
+          --shadow-menu: 0 14px 32px rgb(0 0 0 / 42%);
           --dialog-backdrop: rgb(0 0 0 / 62%);
         }
         :host([data-resolved-theme="light"]) {
           color-scheme: light;
-          --canvas: oklch(96% .006 155);
-          --surface: oklch(99% .003 155);
-          --surface-raised: oklch(94% .008 155);
-          --surface-active: oklch(90% .012 155);
-          --line: oklch(79% .013 155);
-          --line-soft: oklch(88% .009 155);
-          --line-strong: oklch(65% .018 155);
-          --text: oklch(24% .018 155);
-          --text-soft: oklch(40% .016 155);
-          --muted: oklch(48% .012 155);
-          --accent: oklch(48% .105 151);
-          --accent-ink: oklch(98% .004 151);
-          --accent-soft: oklch(91% .035 151);
-          --warning: oklch(52% .105 70);
-          --warning-soft: oklch(93% .03 70);
-          --danger: oklch(50% .13 28);
-          --danger-soft: oklch(93% .035 28);
-          --focus: oklch(48% .105 151 / .3);
-          --toolbar: oklch(98% .004 155 / .86);
-          --control: oklch(92% .009 155 / .9);
-          --shadow-panel: 0 12px 34px rgb(28 45 37 / 16%);
-          --shadow-menu: 0 10px 24px rgb(28 45 37 / 14%);
+          --canvas: oklch(94% .012 155);
+          --surface: oklch(98% .008 155);
+          --surface-raised: oklch(91% .018 155);
+          --surface-active: oklch(87% .026 155);
+          --line: oklch(75% .028 155);
+          --line-soft: oklch(85% .018 155);
+          --line-strong: oklch(57% .045 155);
+          --text: oklch(20% .024 155);
+          --text-soft: oklch(36% .025 155);
+          --muted: oklch(49% .022 155);
+          --accent: oklch(46% .145 142);
+          --accent-ink: oklch(98% .008 142);
+          --accent-soft: oklch(88% .06 142);
+          --info: oklch(48% .11 215);
+          --info-soft: oklch(89% .035 215);
+          --warning: oklch(54% .13 72);
+          --warning-soft: oklch(91% .045 72);
+          --danger: oklch(51% .16 28);
+          --danger-soft: oklch(91% .045 28);
+          --focus: oklch(46% .145 142 / .28);
+          --toolbar: oklch(98% .008 155 / .94);
+          --control: oklch(91% .018 155 / .95);
+          --shadow-panel: 0 20px 48px rgb(20 44 32 / 20%);
+          --shadow-menu: 0 12px 28px rgb(20 44 32 / 18%);
           --dialog-backdrop: rgb(28 36 32 / 38%);
         }
         *, *::before, *::after { box-sizing: border-box; }
@@ -2770,7 +2827,7 @@
           font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
           font-variant-numeric: tabular-nums slashed-zero;
         }
-        .launcher, .panel, .manual-dialog {
+        .launcher, .panel, .manual-dialog, .settings-dialog {
           font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei UI", sans-serif;
           font-optical-sizing: auto;
           color: var(--text);
@@ -2788,29 +2845,30 @@
           height: 44px;
           padding: 0;
           border: 1px solid var(--line-strong);
-          border-radius: 8px;
+          border-radius: 5px;
           background: var(--toolbar);
           color: var(--accent);
           box-shadow: var(--shadow-panel);
           font-family: SFMono-Regular, Consolas, monospace;
           font-size: 11px;
           font-weight: 700;
-          letter-spacing: .04em;
+          letter-spacing: 0;
           cursor: grab;
           touch-action: none;
         }
         .launcher:hover { border-color: var(--accent); background: var(--surface-raised); }
         .launcher:active { cursor: grabbing; transform: scale(.96); }
         .panel {
-          width: min(516px, calc(100vw - 24px));
+          width: min(560px, calc(100vw - 24px));
           max-height: min(848px, calc(100vh - 24px));
           overflow: auto;
           border: 1px solid var(--line-strong);
-          border-radius: 8px;
+          border-radius: 6px;
           background: var(--canvas);
           box-shadow: var(--shadow-panel);
           scrollbar-color: var(--line-strong) transparent;
           scrollbar-width: thin;
+          transition: width 180ms cubic-bezier(.2, .8, .2, 1), height 180ms cubic-bezier(.2, .8, .2, 1), box-shadow 160ms ease;
         }
         .header {
           position: sticky;
@@ -2818,16 +2876,25 @@
           z-index: 4;
           display: flex;
           align-items: center;
-          gap: 8px;
-          min-height: 50px;
-          padding: 8px 10px 8px 14px;
-          border-bottom: 0;
+          gap: 10px;
+          min-height: 56px;
+          padding: 9px 10px 9px 12px;
+          border-bottom: 1px solid var(--line);
           background: var(--toolbar);
           -webkit-backdrop-filter: blur(22px) saturate(150%);
           backdrop-filter: blur(22px) saturate(150%);
           cursor: grab;
           touch-action: none;
           user-select: none;
+        }
+        .header::before {
+          position: absolute;
+          top: 0;
+          left: 12px;
+          width: 72px;
+          height: 2px;
+          background: var(--accent);
+          content: "";
         }
         .header:active { cursor: grabbing; }
         .panel[data-dragging="true"] { box-shadow: 0 18px 44px rgb(0 0 0 / 34%); opacity: .96; }
@@ -2837,22 +2904,58 @@
           overflow: hidden;
           color: var(--text);
           font-size: 13px;
-          font-weight: 650;
+          font-weight: 700;
           line-height: 1.2;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
         .version { flex: 0 0 auto; color: var(--muted); font-size: 9px; font-weight: 500; }
-        .dot {
-          width: 6px;
-          height: 6px;
+        .update-badge {
           flex: 0 0 auto;
-          border-radius: 1px;
+          border: 1px solid color-mix(in oklch, var(--accent) 58%, var(--line));
+          border-radius: 3px;
+          background: var(--accent-soft);
+          color: var(--accent);
+          padding: 1px 4px;
+          font-size: 8px;
+          font-weight: 750;
+          line-height: 1.2;
+        }
+        .brand-mark {
+          display: grid;
+          width: 30px;
+          height: 30px;
+          flex: 0 0 auto;
+          place-items: center;
+          border: 1px solid var(--accent);
+          background: var(--accent-soft);
+          color: var(--accent);
+          clip-path: polygon(0 0, 22px 0, 30px 8px, 30px 30px, 8px 30px, 0 22px);
+          font-family: SFMono-Regular, Consolas, monospace;
+          font-size: 9px;
+          font-weight: 800;
+          letter-spacing: 0;
+        }
+        .header-health {
+          display: grid;
+          width: 22px;
+          height: 30px;
+          flex: 0 0 auto;
+          place-items: center;
+          border-right: 1px solid var(--line-soft);
+        }
+        .dot {
+          width: 7px;
+          height: 7px;
+          flex: 0 0 auto;
+          border-radius: 0;
           background: var(--muted);
         }
         .dot[data-tone="running"], .dot[data-tone="warning"] { background: var(--warning); }
+        .dot[data-tone="running"] { animation: status-pulse 1.2s ease-in-out infinite; }
         .dot[data-tone="success"] { background: var(--accent); }
         .dot[data-tone="error"] { background: var(--danger); }
+        @keyframes status-pulse { 50% { opacity: .35; transform: scale(.72); } }
         .theme-select {
           width: 64px;
           height: 32px;
@@ -2908,68 +3011,77 @@
         .status {
           display: flex;
           align-items: center;
-          min-height: 32px;
-          padding: 7px 14px;
+          min-height: 30px;
+          gap: 8px;
+          padding: 6px 12px;
           border-bottom: 1px solid var(--line-soft);
           color: var(--text-soft);
-          font-size: 11px;
+          font-size: 10px;
           line-height: 1.4;
         }
+        .status::before { width: 4px; height: 4px; flex: 0 0 auto; background: currentColor; content: ""; }
         .status[data-tone="success"] { color: var(--accent); background: color-mix(in oklch, var(--accent) 5%, transparent); }
         .status[data-tone="warning"], .status[data-tone="running"] { color: var(--warning); background: var(--warning-soft); }
         .status[data-tone="error"] { color: var(--danger); background: var(--danger-soft); }
         .overview {
           display: grid;
-          grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+          grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr);
           border-bottom: 1px solid var(--line);
           background: var(--surface);
         }
         .route-primary, .route-best {
           display: grid;
-          grid-template-columns: 88px minmax(0, 1fr);
-          align-items: baseline;
-          gap: 8px;
+          grid-template-columns: 1fr;
+          align-content: center;
+          gap: 5px;
           min-width: 0;
-          padding: 10px 12px;
+          min-height: 82px;
+          padding: 13px 14px;
         }
-        .route-primary { border-right: 1px solid var(--line); }
+        .route-primary { border-right: 0; }
+        .route-node { position: relative; }
+        .route-node::before { position: absolute; top: 14px; right: 12px; width: 5px; height: 5px; background: var(--muted); content: ""; }
+        .route-best::before { background: var(--accent); }
+        .route-connector { display: grid; place-items: center; color: var(--line-strong); }
+        .route-connector span { position: absolute; width: 42px; height: 1px; background: var(--line); }
+        .route-connector svg { position: relative; width: 22px; height: 22px; padding: 4px; background: var(--surface); fill: none; stroke: var(--accent); stroke-width: 1.6; }
         .metric-label {
           color: var(--muted);
-          font-size: 10px;
-          font-weight: 600;
+          font-size: 9px;
+          font-weight: 650;
           white-space: nowrap;
         }
         .route-value, .route-best-value {
           display: block;
           overflow: hidden;
-          font-size: 12px;
-          font-weight: 600;
+          font-size: 15px;
+          font-weight: 700;
           line-height: 1.35;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
         .route-best-value { color: var(--accent); }
         .route-meta {
-          grid-column: 2;
+          grid-column: auto;
           display: flex;
           gap: 4px;
           color: var(--muted);
-          font-size: 10px;
+          font-size: 9px;
         }
         .route-meta strong { color: var(--text-soft); font-size: 10px; font-weight: 500; }
         .usage-strip {
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
           border-bottom: 1px solid var(--line);
-          background: var(--canvas);
+          background: var(--surface-raised);
         }
-        .usage-item { position: relative; min-width: 0; padding: 8px 10px 9px; }
+        .usage-item { position: relative; min-width: 0; padding: 10px 11px 11px; }
         .usage-item + .usage-item { border-left: 1px solid var(--line-soft); }
         .usage-item small {
           display: block;
           margin-bottom: 3px;
           color: var(--muted);
-          font-size: 9px;
+          font-size: 8px;
           font-weight: 600;
         }
         .usage-item strong {
@@ -2977,7 +3089,7 @@
           overflow: hidden;
           color: var(--text);
           font-size: 12px;
-          font-weight: 550;
+          font-weight: 650;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
@@ -2997,9 +3109,10 @@
           content: "";
         }
         .usage-item[data-spend-tone="reached"]::after { background: var(--danger); }
-        .section { padding: 12px; border-bottom: 1px solid var(--line); }
-        .section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
-        .section-title { margin: 0; color: var(--text-soft); font-size: 11px; font-weight: 650; }
+        .section { padding: 13px 14px; border-bottom: 1px solid var(--line); }
+        .section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+        .section-title { margin: 0; color: var(--text); font-size: 11px; font-weight: 700; }
+        .section-title::before { display: inline-block; width: 5px; height: 5px; margin-right: 7px; background: var(--accent); content: ""; vertical-align: 1px; }
         .automation-bar, .protection-bar {
           display: flex;
           align-items: center;
@@ -3007,8 +3120,8 @@
           min-height: 36px;
           border-top: 1px solid var(--line-soft);
         }
-        .automation-bar { padding: 7px 0; }
-        .protection-bar { margin-bottom: 10px; padding: 7px 0; border-bottom: 1px solid var(--line-soft); }
+        .automation-bar { padding: 9px 0; }
+        .protection-bar { margin-bottom: 12px; padding: 9px 0; border-bottom: 1px solid var(--line-soft); }
         .automation-name { margin-right: auto; color: var(--text); font-size: 12px; font-weight: 600; }
         .strategy-select { width: 94px; height: 28px; flex: 0 0 auto; font-size: 10px; }
         .toggle { display: inline-flex; align-items: center; margin: 0; cursor: pointer; }
@@ -3020,10 +3133,10 @@
           height: 18px;
           padding: 2px;
           border: 1px solid var(--line-strong);
-          border-radius: 9px;
+          border-radius: 3px;
           background: var(--surface-raised);
         }
-        .toggle-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: transform .14s ease; }
+        .toggle-thumb { width: 12px; height: 12px; border-radius: 1px; background: var(--muted); transition: transform .14s ease; }
         .toggle input:checked + .toggle-track { border-color: var(--accent); background: var(--accent-soft); }
         .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(12px); background: var(--accent); }
         .toggle input:focus-visible + .toggle-track { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -3051,7 +3164,7 @@
           min-width: 0;
           height: 32px;
           border: 1px solid var(--line);
-          border-radius: 7px;
+          border-radius: 4px;
           background: var(--control);
           color: var(--text);
           padding: 0 8px;
@@ -3081,7 +3194,7 @@
           left: 0;
           padding: 6px;
           border: 1px solid var(--line-strong);
-          border-radius: 8px;
+          border-radius: 4px;
           background: var(--toolbar);
           -webkit-backdrop-filter: blur(18px) saturate(145%);
           backdrop-filter: blur(18px) saturate(145%);
@@ -3108,11 +3221,11 @@
         .token-option:hover { background: var(--surface-raised); color: var(--text); }
         .token-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .token-empty { padding: 7px; }
-        details { margin-top: 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-        summary { min-height: 36px; padding: 9px 1px; color: var(--text-soft); font-size: 11px; font-weight: 600; cursor: pointer; }
+        details { margin-top: 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+        summary { min-height: 38px; padding: 10px 1px; color: var(--text-soft); font-size: 10px; font-weight: 650; cursor: pointer; }
         summary:hover { color: var(--text); }
         .grid { display: grid; }
-        .advanced { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; padding: 0 0 9px; }
+        .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 0 0 9px; }
         .advanced label { display: flex; align-items: end; min-height: 23px; line-height: 1.25; }
         .actions { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 7px; margin-top: 10px; }
         .button {
@@ -3122,7 +3235,7 @@
           gap: 6px;
           min-height: 34px;
           border: 1px solid var(--line-strong);
-          border-radius: 7px;
+          border-radius: 4px;
           background: var(--control);
           color: var(--text-soft);
           padding: 6px 9px;
@@ -3133,29 +3246,37 @@
         .button:hover { background: var(--surface-active); color: var(--text); }
         .button:active { transform: scale(.97); transition-duration: 80ms; }
         .button:disabled { cursor: wait; opacity: .45; transform: none; }
-        .button-check { border-color: var(--text-soft); background: var(--text); color: var(--canvas); }
-        .button-check:hover { background: var(--text-soft); color: var(--canvas); }
-        .button-route { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+        .button-check { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+        .button-check:hover { border-color: var(--text); background: var(--text); color: var(--canvas); }
+        .button-route { border-color: var(--info); background: var(--info-soft); color: var(--info); }
         .button-route:hover { background: var(--accent); color: var(--accent-ink); }
         .button-manual { min-height: 28px; border-color: var(--line); background: transparent; color: var(--text-soft); }
         .button-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
-        .candidate-section { padding-bottom: 8px; }
+        .candidate-section { padding: 0 0 8px; }
+        .candidate-section .section-head { margin: 0; padding: 12px 14px 10px; }
         .candidate-head, .candidate {
           display: grid;
           grid-template-columns: minmax(72px, 1fr) 40px 40px 40px 43px 43px 43px 70px;
           align-items: center;
           gap: 5px;
-          min-height: 27px;
+          min-height: 30px;
           font-size: 10px;
         }
-        .candidate-head { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); }
-        .candidate { min-height: 34px; border-bottom: 1px solid var(--line-soft); color: var(--text-soft); }
+        .candidate-head { padding: 0 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-raised); color: var(--muted); font-size: 8px; font-weight: 650; }
+        .candidate { min-height: 39px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); color: var(--text-soft); }
         .candidate:last-child { border-bottom: 0; }
         .candidate:hover { background: var(--surface-raised); }
         .candidate > span:first-child { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
         .candidate-head > span:not(:first-child), .candidate > span:not(:first-child) { text-align: center; }
-        .candidate-ok { background: color-mix(in oklch, var(--accent) 4%, transparent); }
+        .candidate-ok { background: transparent; }
         .candidate-off { color: var(--muted); }
+        .candidate-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .candidate-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .candidate-signal { width: 6px; height: 6px; flex: 0 0 auto; background: var(--warning); }
+        .candidate-ok .candidate-signal { background: var(--accent); }
+        .health-value { position: relative; padding-bottom: 5px; }
+        .health-value::after { position: absolute; right: 0; bottom: 1px; left: 0; width: var(--health); height: 1px; background: var(--accent); content: ""; }
+        .candidate-off .health-value::after { background: var(--warning); }
         .verdict { overflow: hidden; color: var(--warning); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
         .candidate-ok .verdict { color: var(--accent); }
         .secondary-details { margin: 0; border: 0; border-bottom: 1px solid var(--line); background: var(--canvas); }
@@ -3163,7 +3284,7 @@
         .secondary-details > div { padding: 0 12px 10px; }
         .token-result {
           display: grid;
-          grid-template-columns: minmax(80px, .8fr) minmax(58px, .6fr) minmax(110px, 1.2fr);
+          grid-template-columns: 6px minmax(80px, .8fr) minmax(58px, .6fr) minmax(110px, 1.2fr);
           align-items: center;
           gap: 7px;
           min-height: 30px;
@@ -3171,21 +3292,26 @@
           color: var(--text-soft);
           font-size: 10px;
         }
+        .token-result::before { width: 5px; height: 5px; background: var(--muted); content: ""; }
+        .token-result-success::before { background: var(--accent); }
+        .token-result-warning::before { background: var(--warning); }
+        .token-result-error::before { background: var(--danger); }
         .token-result:last-child { border-bottom: 0; }
         .token-result span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .token-result-success span:last-child { color: var(--accent); }
         .token-result-warning span:last-child { color: var(--warning); }
         .token-result-error span:last-child { color: var(--danger); }
-        .logs { display: grid; gap: 5px; }
-        .log { display: grid; grid-template-columns: 52px 1fr; gap: 7px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+        .logs { display: grid; gap: 0; }
+        .log { display: grid; grid-template-columns: 5px 56px 1fr; align-items: baseline; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); color: var(--muted); font-size: 10px; line-height: 1.4; }
+        .log::before { width: 4px; height: 4px; background: currentColor; content: ""; }
         .log-success { color: var(--accent); }
         .log-error { color: var(--danger); }
         .empty { padding: 8px 0; color: var(--muted); font-size: 10px; }
-        .manual-dialog {
+        .manual-dialog, .settings-dialog {
           width: min(380px, calc(100vw - 28px));
           border: 1px solid var(--line-strong);
-          border-radius: 8px;
-          background: var(--toolbar);
+          border-radius: 6px;
+          background: var(--canvas);
           color: var(--text);
           padding: 0;
           box-shadow: var(--shadow-panel);
@@ -3193,13 +3319,46 @@
           backdrop-filter: blur(24px) saturate(150%);
         }
         .manual-dialog::backdrop { background: var(--dialog-backdrop); }
+        .settings-dialog {
+          width: min(560px, calc(100vw - 28px));
+          max-height: min(760px, calc(100vh - 28px));
+          overflow: hidden;
+        }
+        .settings-dialog::backdrop { background: var(--dialog-backdrop); }
+        .settings-form { display: flex; max-height: min(760px, calc(100vh - 28px)); flex-direction: column; }
+        .settings-dialog-header { flex: 0 0 auto; margin: 0; padding: 13px 14px; border-bottom: 1px solid var(--line); }
+        .settings-dialog .control-section { min-height: 0; overflow: auto; padding: 14px 16px; }
+        .settings-appearance {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin: -2px 0 14px;
+          padding: 9px 0 12px;
+          border-bottom: 1px solid var(--line-soft);
+        }
+        .settings-appearance-copy { display: grid; gap: 2px; min-width: 0; margin-right: auto; }
+        .settings-appearance-copy strong { color: var(--text); font-size: 11px; font-weight: 650; }
+        .settings-appearance-copy small { color: var(--muted); font-size: 9px; }
+        .settings-appearance .theme-select { width: 104px; border-color: var(--line); background: var(--control); }
+        .settings-footer {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 11px 16px;
+          border-top: 1px solid var(--line);
+          background: var(--surface);
+        }
+        .settings-version { display: grid; gap: 2px; min-width: 0; margin-right: auto; }
+        .settings-version strong { font-size: 10px; font-weight: 650; }
+        .settings-version small { color: var(--muted); font-size: 9px; }
+        .settings-update { min-width: 132px; }
         .dialog-form { padding: 13px; }
         .dialog-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
         .dialog-title { flex: 1; margin: 0; font-size: 12px; font-weight: 650; }
         .dialog-hint { min-height: 18px; margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
         .dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
         .panel {
-          width: min(640px, calc(100vw - 24px));
+          width: min(560px, calc(100vw - 24px));
           height: min(760px, calc(100vh - 24px));
           max-height: none;
           display: flex;
@@ -3208,37 +3367,39 @@
         }
         .work-nav {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          min-height: 42px;
-          gap: 4px;
-          padding: 5px 6px;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          min-height: 38px;
+          gap: 0;
+          padding: 0;
           border-bottom: 1px solid var(--line);
-          background: var(--toolbar);
+          background: var(--surface);
           -webkit-backdrop-filter: blur(22px) saturate(150%);
           backdrop-filter: blur(22px) saturate(150%);
         }
         .work-nav button {
-          border: 1px solid transparent;
-          border-radius: 7px;
+          border: 0;
+          border-right: 1px solid var(--line-soft);
+          border-radius: 0;
           background: transparent;
           color: var(--muted);
-          font-size: 10px;
+          font-size: 9px;
           font-weight: 650;
           transition: transform 100ms ease-out, background-color 140ms ease-out, color 140ms ease-out;
         }
-        .work-nav button:hover { color: var(--text); background: color-mix(in oklch, var(--control) 72%, transparent); }
+        .work-nav button:last-child { border-right: 0; }
+        .work-nav button:hover { color: var(--text); background: var(--surface-raised); }
         .work-nav button:active { transform: scale(.97); transition-duration: 80ms; }
-        .work-nav button[data-active="true"] { border-color: var(--line); color: var(--text); background: var(--control); box-shadow: 0 1px 3px rgb(0 0 0 / 12%); }
-        .nav-count { margin-left: 4px; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+        .work-nav button[data-active="true"] { color: var(--accent); background: var(--accent-soft); box-shadow: 0 -2px 0 var(--accent) inset; }
+        .nav-count { margin-left: 6px; color: inherit; font-size: 8px; font-variant-numeric: tabular-nums; opacity: .72; }
         .workspace { min-height: 0; flex: 1; overflow: auto; outline: none; scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
         .work-view[hidden] { display: none; }
         .work-view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
         .work-view > .section:last-child { border-bottom: 0; }
-        .view-intro { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 12px 8px; }
-        .view-intro h2 { margin: 0; color: var(--text); font-size: 13px; font-weight: 650; }
-        .view-intro p { margin: 0; color: var(--muted); font-size: 10px; }
-        .command-deck { display: grid; grid-template-columns: 1.2fr 1fr .9fr; gap: 7px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
-        .command-deck .button { min-height: 38px; }
+        .view-intro { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 14px 10px; border-bottom: 1px solid var(--line-soft); }
+        .view-intro h2 { margin: 0; color: var(--text); font-size: 13px; font-weight: 700; }
+        .view-intro p { margin: 0; color: var(--muted); font-size: 9px; }
+        .command-deck { display: grid; grid-template-columns: 1.2fr 1fr .9fr; gap: 7px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--canvas); }
+        .command-deck .button { min-height: 36px; }
         .command-deck .button-manual { background: transparent; }
         .route-summary { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); border-bottom: 1px solid var(--line); background: var(--surface); }
         .route-summary > div { display: grid; gap: 3px; padding: 10px 12px; min-width: 0; }
@@ -3247,20 +3408,21 @@
         .route-summary strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
         .route-summary .recommendation strong { color: var(--accent); }
         .status { flex: 0 0 auto; }
-        .monitor-candidates { padding-top: 9px; }
+        .monitor-candidates { padding-top: 0; }
         .section-meta { margin-left: auto; color: var(--muted); font-size: 9px; font-weight: 500; }
         .route-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; border-bottom: 1px solid var(--line); }
         .route-grid > .section { border-bottom: 0; }
         .route-grid > .section + .section { border-left: 1px solid var(--line); }
         .route-grid .control-grid { grid-template-columns: 1fr; }
         .route-grid .protection-bar { margin-bottom: 0; }
-        .diagnostics-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        .diagnostics-grid { display: grid; grid-template-columns: 1fr; }
         .diagnostics-grid > .section { border-bottom: 0; }
-        .diagnostics-grid > .section + .section { border-left: 1px solid var(--line); }
-        .diagnostic-caption { margin: -3px 0 9px; color: var(--muted); font-size: 10px; }
-        .diagnostic-list { min-height: 180px; max-height: 260px; overflow: auto; }
+        .diagnostics-grid > .section + .section { border-top: 1px solid var(--line); }
+        .diagnostic-caption { margin: -3px 0 10px; color: var(--muted); font-size: 9px; }
+        .diagnostic-list { min-height: 160px; max-height: 240px; overflow: auto; }
         .diagnostic-list .logs { padding-right: 2px; }
         .settings-section { background: var(--canvas); }
+        .route-settings-advanced { min-width: 0; }
         @media (max-width: 520px) {
           .panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: calc(100vh - 16px); }
           .command-deck { grid-template-columns: 1fr 1fr; }
@@ -3286,7 +3448,11 @@
           .header { gap: 6px; padding-inline: 9px; }
           .theme-select { width: 54px; padding-inline: 3px; }
           .overview { grid-template-columns: 1fr; }
-          .route-primary { border-right: 0; border-bottom: 1px solid var(--line-soft); }
+          .route-primary { border-right: 0; border-bottom: 0; }
+          .route-node { min-height: 72px; padding-block: 11px; }
+          .route-connector { min-height: 28px; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+          .route-connector span { width: 28px; transform: rotate(90deg); }
+          .route-connector svg { transform: rotate(90deg); }
           .usage-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .usage-item:nth-child(3) { border-left: 0; border-top: 1px solid var(--line-soft); }
           .usage-item:nth-child(4) { border-top: 1px solid var(--line-soft); }
@@ -3302,14 +3468,14 @@
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
         }
         @media (prefers-reduced-transparency: reduce) {
-          .header, .work-nav, .token-menu, .manual-dialog {
+          .header, .work-nav, .token-menu, .manual-dialog, .settings-dialog {
             -webkit-backdrop-filter: none;
             backdrop-filter: none;
             background: var(--surface);
           }
         }
         @media (prefers-contrast: more) {
-          .panel, .manual-dialog { border-color: var(--text-soft); }
+          .panel, .manual-dialog, .settings-dialog { border-color: var(--text-soft); }
           .work-nav button[data-active="true"], input, select, .token-select-trigger { border-color: var(--line-strong); }
           .header, .work-nav { background: var(--surface); }
         }
@@ -3318,37 +3484,37 @@
       <button class="launcher" type="button" title="打开 ${SITE_LABEL} 分组监控" hidden>${IS_AIHUB ? "AH" : "KF"}</button>
       <section class="panel" aria-label="${SITE_LABEL} 分组监控">
         <header class="header" data-ref="header">
-          <span class="dot" data-ref="statusDot"></span>
+          <span class="brand-mark" aria-hidden="true">${IS_AIHUB ? "AH" : "KF"}</span>
           <span class="header-copy">
             <span class="header-title-row">
               <span class="title">${SITE_LABEL} 分组监控</span>
               <span class="version" data-ref="version" title="当前插件版本">v${SCRIPT_VERSION}</span>
+              <span class="update-badge" data-ref="updateBadge" role="status" aria-live="polite" title="" hidden>NEW</span>
             </span>
           </span>
-          <select class="theme-select" data-ref="theme" aria-label="插件皮肤">
-            <option value="system">系统</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </select>
-          <button class="icon-button" data-ref="checkUpdate" data-state="idle" data-update="none" type="button" title="检查更新" aria-label="检查更新">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.2 6.2L3 15"></path><path d="M3 21v-6h6"></path><path d="M3 12a9 9 0 0 1 15.2-6.2L21 9"></path><path d="M21 3v6h-6"></path></svg>
+          <span class="header-health" title="监控状态"><span class="dot" data-ref="statusDot"></span></span>
+          <button class="icon-button" data-ref="settings" type="button" title="设置" aria-label="打开设置">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"></path></svg>
           </button>
           <button class="icon-button" data-ref="collapse" type="button" title="收起" aria-label="收起">−</button>
         </header>
         <nav class="work-nav" aria-label="插件工作区" role="tablist">
           <button id="kf-tab-monitor" data-view-target="monitor" data-active="true" role="tab" aria-controls="kf-view-monitor" aria-selected="true" type="button">监控 <span class="nav-count" data-ref="candidateCount">0</span></button>
-          <button id="kf-tab-route" data-view-target="route" data-active="false" role="tab" aria-controls="kf-view-route" aria-selected="false" type="button">路由设置</button>
           <button id="kf-tab-diagnostics" data-view-target="diagnostics" data-active="false" role="tab" aria-controls="kf-view-diagnostics" aria-selected="false" type="button">诊断 <span class="nav-count" data-ref="logCount">0</span></button>
         </nav>
         <div class="status" data-ref="status" role="status" aria-live="polite"></div>
         <main class="workspace" data-ref="workspace">
         <section class="work-view" id="kf-view-monitor" data-view="monitor" role="tabpanel" aria-labelledby="kf-tab-monitor" tabindex="0">
         <section class="overview" aria-label="当前分组概览">
-          <div class="route-primary">
+          <div class="route-primary route-node">
             <span class="metric-label">当前分组</span>
             <strong class="route-value" data-ref="currentGroup">-</strong>
           </div>
-          <div class="route-best">
+          <div class="route-connector" aria-hidden="true">
+            <span></span>
+            <svg viewBox="0 0 24 24"><path d="M5 12h13"></path><path d="m14 8 4 4-4 4"></path></svg>
+          </div>
+          <div class="route-best route-node">
             <span class="metric-label">策略推荐</span>
             <strong class="route-best-value" data-ref="bestGroup">-</strong>
             <span class="route-meta">检查 <strong data-ref="lastCheck">-</strong></span>
@@ -3380,12 +3546,21 @@
           <div data-ref="candidateRows"></div>
         </section>
         </section>
-        <section class="work-view" id="kf-view-route" data-view="route" role="tabpanel" aria-labelledby="kf-tab-route" tabindex="0" hidden>
-          <div class="view-intro">
-            <h2>路由设置</h2>
-            <p>修改后自动保存并重新检查</p>
+        <dialog class="settings-dialog" data-ref="settingsDialog" aria-labelledby="kf-settings-title">
+          <form class="settings-form" method="dialog">
+          <div class="dialog-header settings-dialog-header">
+            <h2 class="dialog-title" id="kf-settings-title">设置</h2>
+            <button class="icon-button" data-ref="settingsClose" type="button" title="关闭" aria-label="关闭设置">×</button>
           </div>
         <section class="section control-section" data-ref="settingsSection">
+          <div class="settings-appearance">
+            <span class="settings-appearance-copy"><strong>界面主题</strong><small>可跟随系统自动切换</small></span>
+            <select class="theme-select" data-ref="theme" aria-label="插件皮肤">
+              <option value="system">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </div>
           <div class="section-head"><h2 class="section-title">自动路由</h2><span class="section-meta">运行策略与保护</span></div>
           <div class="automation-bar">
             <span class="automation-name">自动切换</span>
@@ -3461,7 +3636,7 @@
               </div>
             </div>
           </div>
-          <details>
+          <details class="route-settings-advanced">
             <summary>判定与保护参数</summary>
             <div class="grid advanced">
               <div class="field"><label>轮询（秒）</label><input data-ref="pollSeconds" type="number" min="15"></div>
@@ -3479,7 +3654,15 @@
             </div>
           </details>
         </section>
-        </section>
+          <div class="settings-footer">
+            <span class="settings-version"><strong>脚本更新</strong><small>当前版本 v${SCRIPT_VERSION}</small></span>
+            <button class="button settings-update" data-ref="checkUpdate" data-state="idle" data-update="none" type="button" title="检查更新" aria-label="检查更新">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.2 6.2L3 15"></path><path d="M3 21v-6h6"></path><path d="M3 12a9 9 0 0 1 15.2-6.2L21 9"></path><path d="M21 3v6h-6"></path></svg>
+              <span data-ref="updateLabel">检查更新</span>
+            </button>
+          </div>
+          </form>
+        </dialog>
         <section class="work-view" id="kf-view-diagnostics" data-view="diagnostics" role="tabpanel" aria-labelledby="kf-tab-diagnostics" tabindex="0" hidden>
           <div class="view-intro">
             <h2>诊断历史</h2>
@@ -3520,13 +3703,13 @@
     `;
 
     const refNames = [
-      "launcher", "panel", "header", "workspace", "statusDot", "version", "theme", "collapse", "status", "currentGroup", "bestGroup",
+      "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "settings", "settingsDialog", "settingsClose", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "selectionMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
       "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
       "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
-      "check", "switchNow", "checkUpdate", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel",
+      "check", "switchNow", "checkUpdate", "updateLabel", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel",
       "tokenResultRows", "candidateRows", "logs",
     ];
     refs = Object.fromEntries(
