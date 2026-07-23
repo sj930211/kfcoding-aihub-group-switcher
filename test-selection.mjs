@@ -53,9 +53,17 @@ assert.equal(
   "verdict text length must not resize candidate grid columns",
 );
 assert.equal(
-  source.includes(".candidate-head { padding-left: 7px;"),
+  source.includes(".candidate-head, .candidate {"),
   true,
-  "candidate headers and rows should reserve the same status-rail space",
+  "candidate headers and rows should share one grid definition",
+);
+assert.equal(source.includes("border-left: 2px"), false, "candidate rows should not use decorative status rails");
+assert.equal(source.includes("font-family: Inter"), false, "the console should not use the default AI dashboard typeface");
+assert.equal(source.includes("GROUP CONTROL"), false, "the header should not use a decorative English eyebrow");
+assert.equal(
+  source.includes("border-radius: 8px;\n          background: var(--canvas);"),
+  true,
+  "the console should use a restrained system-style shell radius",
 );
 assert.equal(
   source.includes("sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}))"),
@@ -95,11 +103,25 @@ assert.equal(
   true,
   "update checks should start even when automatic group switching is disabled",
 );
-assert.equal(source.includes('<div class="automation-bar">'), true, "automatic and manual switching should share one control bar");
+assert.equal(source.includes('<div class="automation-bar">'), true, "automatic routing should remain a dedicated settings row");
 assert.equal(source.includes('<div class="control-grid">'), true, "key and model selectors should use a compact responsive grid");
 assert.equal(source.includes('class="button button-check"'), true, "immediate checks should be the primary command");
 assert.equal(source.includes('class="button button-route"'), true, "lowest-route switching should remain directly accessible");
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
+assert.equal(
+  (source.match(/<section class="work-view"/g) || []).length,
+  3,
+  "monitoring, routing settings, and diagnostics should be three contiguous workspaces",
+);
+assert.equal(source.includes('role="tabpanel" aria-labelledby="kf-tab-monitor"'), true, "tabs should identify their monitor panel");
+assert.equal(source.includes('aria-controls="kf-view-diagnostics"'), true, "workspace tabs should expose their controlled panels");
+assert.equal(source.includes('function setActiveView(view, options)'), true, "all workspace navigation should share one state transition");
+assert.equal(source.includes('["ArrowLeft", "ArrowRight", "Home", "End"]'), true, "workspace tabs should support keyboard navigation");
+assert.equal(source.includes('font-family: -apple-system, BlinkMacSystemFont'), true, "the Apple pass should use platform typography");
+assert.equal(source.includes('@media (prefers-reduced-transparency: reduce)'), true, "translucent chrome should have a solid accessibility fallback");
+assert.equal(source.includes('.work-nav button[data-active="true"]::after'), false, "selected tabs should use a familiar segmented state instead of a web underline");
+assert.equal(source.includes('Math.hypot(deltaX, deltaY) < 10'), true, "panel dragging should use touch-friendly hysteresis");
+assert.equal(source.includes('refs.status.dataset.tone = state.tone'), true, "status feedback should communicate its semantic state");
 assert.equal(
   source.indexOf('data-ref="checkUpdate"') < source.indexOf('data-ref="settingsSection"'),
   true,
@@ -117,7 +139,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.7.1");
+assert.equal(api.extractUserscriptVersion(source), "0.9.0");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
