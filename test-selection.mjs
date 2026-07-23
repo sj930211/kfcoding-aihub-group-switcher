@@ -68,14 +68,32 @@ assert.equal(
   "candidate status should display latency and cache metrics separately",
 );
 assert.equal(
-  source.includes("checkForUpdate({ silent: true })"),
+  source.includes("const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;"),
   true,
-  "automatic group checks should also run the throttled update check",
+  "automatic update checks should run every five minutes",
+);
+const groupSchedulerSource = source.slice(
+  source.indexOf("function scheduleNext("),
+  source.indexOf("function scheduleUpdateCheck("),
 );
 assert.equal(
-  source.includes("const AUTO_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;"),
+  groupSchedulerSource.includes("checkForUpdate("),
+  false,
+  "update checks should not depend on the automatic group scheduler",
+);
+const updateSchedulerSource = source.slice(
+  source.indexOf("function scheduleUpdateCheck("),
+  source.indexOf("function formatRatio("),
+);
+assert.equal(
+  updateSchedulerSource.includes("checkForUpdate({ silent: true })"),
   true,
-  "automatic update checks should be rate limited independently from group polling",
+  "the independent update scheduler should perform silent update checks",
+);
+assert.equal(
+  source.includes("scheduleUpdateCheck(0);"),
+  true,
+  "update checks should start even when automatic group switching is disabled",
 );
 assert.equal(source.includes('<div class="automation-bar">'), true, "automatic and manual switching should share one control bar");
 assert.equal(source.includes('<div class="control-grid">'), true, "key and model selectors should use a compact responsive grid");
@@ -99,7 +117,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.7.0");
+assert.equal(api.extractUserscriptVersion(source), "0.7.1");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);

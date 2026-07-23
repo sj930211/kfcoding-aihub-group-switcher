@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.7.0
+// @version      0.7.1
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.7.0";
+  const SCRIPT_VERSION = "0.7.1";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -70,7 +70,7 @@
   const GET_REQUEST_TIMEOUT_MS = 25000;
   const MUTATION_REQUEST_TIMEOUT_MS = 30000;
   const GET_MAX_ATTEMPTS = 3;
-  const AUTO_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+  const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
   const SPEND_WARNING_RATIO = 0.8;
 
   function clampNumber(value, fallback, min, max) {
@@ -1086,6 +1086,7 @@
   if (IS_AIHUB) config = { ...config, model: AIHUB_MONITOR_MODEL };
   const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let scheduler = null;
+  let updateScheduler = null;
   let root = null;
   let refs = {};
   let running = false;
@@ -1988,12 +1989,20 @@
     scheduler = null;
     if (!config.enabled) return;
     scheduler = window.setTimeout(async () => {
-      await Promise.all([
-        runCheck({ manual: false }),
-        checkForUpdate({ silent: true }),
-      ]);
+      await runCheck({ manual: false });
       scheduleNext(config.pollSeconds * 1000);
     }, delayMs == null ? config.pollSeconds * 1000 : delayMs);
+  }
+
+  function scheduleUpdateCheck(delayMs) {
+    if (updateScheduler) window.clearTimeout(updateScheduler);
+    updateScheduler = window.setTimeout(async () => {
+      try {
+        await checkForUpdate({ silent: true });
+      } finally {
+        scheduleUpdateCheck(AUTO_UPDATE_CHECK_INTERVAL_MS);
+      }
+    }, delayMs == null ? AUTO_UPDATE_CHECK_INTERVAL_MS : delayMs);
   }
 
   function formatRatio(value) {
@@ -3552,6 +3561,7 @@
     positionElement(state.collapsed ? refs.launcher : refs.panel, state.collapsed ? "launcher" : "panel", true);
   });
   registerMenus();
+  scheduleUpdateCheck(0);
   Promise.all([refreshCatalogs(), refreshTodayUsage()])
     .then(([, usageLoaded]) => {
       const suffix = usageLoaded ? "" : "，今日用量读取失败";
