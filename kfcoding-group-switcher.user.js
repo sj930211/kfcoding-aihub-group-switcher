@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.5.1
+// @version      0.7.0
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,15 +29,20 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.5.1";
+  const SCRIPT_VERSION = "0.7.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
+    theme: "system",
     enabled: false,
     tokenIds: [],
     model: "",
+    selectionMode: "saving",
     groupFilterMode: "whitelist",
-    groupFilterGroups: [],
+    groupWhitelist: [],
+    groupBlacklist: [],
+    spendProtectionEnabled: false,
+    dailySpendLimit: 0,
     pollSeconds: 30,
     metricHours: 24,
     minSuccessRate: 95,
@@ -58,6 +63,7 @@
   const STORAGE_LOGS = `${STORAGE_PREFIX}:logs:v1`;
   const STORAGE_POSITIONS = `${STORAGE_PREFIX}:positions:v1`;
   const STORAGE_SWITCH_GUARD = `${STORAGE_PREFIX}:switch-guard:v1`;
+  const STORAGE_SPEND_GUARD = `${STORAGE_PREFIX}:spend-guard:v1`;
   const MAX_LOG_ENTRIES = 10;
   const VIEWPORT_MARGIN = 8;
   const HOST_ID = `${STORAGE_PREFIX}-host`;
@@ -65,11 +71,73 @@
   const MUTATION_REQUEST_TIMEOUT_MS = 30000;
   const GET_MAX_ATTEMPTS = 3;
   const AUTO_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+  const SPEND_WARNING_RATIO = 0.8;
 
   function clampNumber(value, fallback, min, max) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return fallback;
     return Math.min(max, Math.max(min, parsed));
+  }
+
+  function normalizeThemeMode(value) {
+    return ["system", "light", "dark"].includes(value) ? value : DEFAULT_CONFIG.theme;
+  }
+
+  function normalizeSelectionMode(value) {
+    return ["saving", "stable", "balanced"].includes(value) ? value : DEFAULT_CONFIG.selectionMode;
+  }
+
+  function selectionModeLabel(value) {
+    return { saving: "省钱优先", stable: "稳定优先", balanced: "均衡推荐" }[normalizeSelectionMode(value)];
+  }
+
+  function resolveThemeMode(value, prefersDark) {
+    const theme = normalizeThemeMode(value);
+    return theme === "system" ? (prefersDark ? "dark" : "light") : theme;
+  }
+
+  function localDateKey(value) {
+    const date = value instanceof Date ? value : new Date(value || Date.now());
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function normalizeSpendGuard(value, dateKey) {
+    const source = value && typeof value === "object" ? value : {};
+    const today = String(dateKey || localDateKey());
+    if (source.dateKey !== today) {
+      return { dateKey: today, baselineSpend: 0, warnedApproaching: false, warnedReached: false };
+    }
+    return {
+      dateKey: today,
+      baselineSpend: Math.max(0, Number(source.baselineSpend) || 0),
+      warnedApproaching: Boolean(source.warnedApproaching),
+      warnedReached: Boolean(source.warnedReached),
+    };
+  }
+
+  function evaluateSpendProtection(usage, config, guard, dateKey) {
+    const today = String(dateKey || localDateKey());
+    const normalizedGuard = normalizeSpendGuard(guard, today);
+    const limit = Math.max(0, Number(config && config.dailySpendLimit) || 0);
+    const available = Boolean(usage && usage.available);
+    const active = Boolean(config && config.spendProtectionEnabled && limit > 0 && available);
+    const actualSpend = available ? Math.max(0, Number(usage.spend) || 0) : 0;
+    const trackedSpend = Math.max(0, actualSpend - normalizedGuard.baselineSpend);
+    const ratio = active ? trackedSpend / limit : 0;
+    const tone = !active ? "none" : ratio >= 1 ? "reached" : ratio >= SPEND_WARNING_RATIO ? "approaching" : "normal";
+    return {
+      active,
+      tone,
+      actualSpend,
+      trackedSpend,
+      limit,
+      ratio,
+      remaining: active ? Math.max(0, limit - trackedSpend) : 0,
+      guard: normalizedGuard,
+    };
   }
 
   function parseAllowedGroups(value) {
@@ -85,6 +153,12 @@
         .map((item) => Math.trunc(Number(item) || 0))
         .filter((item) => item > 0),
     )];
+  }
+
+  function activeGroupFilter(config) {
+    return config.groupFilterMode === "blacklist"
+      ? config.groupBlacklist || []
+      : config.groupWhitelist || [];
   }
 
   function requiresTokenSelection(siteId, options) {
@@ -218,12 +292,12 @@
     return candidate.reasons.some((reason) => healthReasons.has(reason));
   }
 
-  function selectRollbackCandidate(candidates, previousGroup) {
+  function selectRollbackCandidate(candidates, previousGroup, mode) {
     const previous = candidates.find(
       (candidate) => candidate.group === previousGroup && candidate.available,
     );
     return {
-      candidate: previous || selectBestCandidate(candidates, ""),
+      candidate: previous || selectBestCandidate(candidates, "", mode),
       usedPrevious: Boolean(previous),
     };
   }
@@ -241,15 +315,31 @@
   function sanitizeConfig(value) {
     const source = value && typeof value === "object" ? value : {};
     const groupFilterMode = source.groupFilterMode === "blacklist" ? "blacklist" : "whitelist";
-    const groupFilterGroups = parseAllowedGroups(
-      source.groupFilterGroups !== undefined ? source.groupFilterGroups : source.allowedGroups,
+    const hasModeAwareLegacyFilter = source.groupFilterGroups !== undefined;
+    const legacyGroupFilter = parseAllowedGroups(
+      hasModeAwareLegacyFilter ? source.groupFilterGroups : source.allowedGroups,
+    );
+    const groupWhitelist = parseAllowedGroups(
+      source.groupWhitelist !== undefined
+        ? source.groupWhitelist
+        : (!hasModeAwareLegacyFilter || groupFilterMode === "whitelist" ? legacyGroupFilter : []),
+    );
+    const groupBlacklist = parseAllowedGroups(
+      source.groupBlacklist !== undefined
+        ? source.groupBlacklist
+        : (hasModeAwareLegacyFilter && groupFilterMode === "blacklist" ? legacyGroupFilter : []),
     );
     return {
+      theme: normalizeThemeMode(source.theme),
       enabled: Boolean(source.enabled),
       tokenIds: parseTokenIds(source.tokenIds, source.tokenId),
       model: String(source.model || "").trim(),
+      selectionMode: normalizeSelectionMode(source.selectionMode),
       groupFilterMode,
-      groupFilterGroups,
+      groupWhitelist,
+      groupBlacklist,
+      spendProtectionEnabled: Boolean(source.spendProtectionEnabled),
+      dailySpendLimit: clampNumber(source.dailySpendLimit, DEFAULT_CONFIG.dailySpendLimit, 0, 1000000000),
       pollSeconds: clampNumber(source.pollSeconds, DEFAULT_CONFIG.pollSeconds, 15, 3600),
       metricHours: clampNumber(source.metricHours, DEFAULT_CONFIG.metricHours, 1, 168),
       minSuccessRate: clampNumber(source.minSuccessRate, DEFAULT_CONFIG.minSuccessRate, 0, 100),
@@ -345,7 +435,7 @@
 
     const userGroups = unwrapUserGroups(userGroupsPayload);
     const userGroupNames = new Set(Object.keys(userGroups));
-    const filteredGroups = new Set(config.groupFilterGroups || []);
+    const filteredGroups = new Set(activeGroupFilter(config));
     const enforceGroupFilter = filteredGroups.size > 0;
     const publicRatios = pricing.group_ratio && typeof pricing.group_ratio === "object"
       ? pricing.group_ratio
@@ -477,7 +567,7 @@
     const groups = normalizeAihubGroups(groupsPayload);
     const groupMap = new Map(groups.map((group) => [Number(group.id), group]));
     const rates = normalizeAihubRates(ratesPayload);
-    const filteredGroups = new Set(config.groupFilterGroups || []);
+    const filteredGroups = new Set(activeGroupFilter(config));
     const enforceGroupFilter = filteredGroups.size > 0;
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
     const seenGroups = new Set();
@@ -586,44 +676,85 @@
       });
   }
 
-  function selectBestCandidate(candidates, currentGroup) {
-    const available = candidates
-      .filter((candidate) => candidate.available)
-      .slice()
-      .sort((left, right) => {
+  function boundedPercent(value, fallback) {
+    return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : fallback;
+  }
+
+  function inverseLatencyScore(value, referenceMs) {
+    if (!Number.isFinite(value) || value <= 0) return 25;
+    return 100 / (1 + value / referenceMs);
+  }
+
+  function candidateHealthScore(candidate) {
+    if (!candidate) return 0;
+    const recent = boundedPercent(candidate.recentMinSuccess, 0);
+    const aggregate = boundedPercent(candidate.aggregateSuccess, 0);
+    const firstToken = inverseLatencyScore(candidate.firstTokenLatencyMs, 2000);
+    const output = inverseLatencyScore(candidate.outputLatencyMs, 10000);
+    const cache = boundedPercent(candidate.cacheHitRate, 50);
+    return recent * 0.35 + aggregate * 0.15 + firstToken * 0.2 + output * 0.2 + cache * 0.1;
+  }
+
+  function candidatePriceScore(candidate, candidates) {
+    const ratios = candidates
+      .map((item) => Number(item.ratio))
+      .filter((ratio) => Number.isFinite(ratio) && ratio > 0);
+    const minimum = ratios.length ? Math.min(...ratios) : NaN;
+    const ratio = Number(candidate && candidate.ratio);
+    if (!Number.isFinite(minimum) || !Number.isFinite(ratio) || ratio <= 0) return 0;
+    return Math.min(100, minimum / ratio * 100);
+  }
+
+  function candidateStrategyScore(candidate, candidates, mode) {
+    const selectionMode = normalizeSelectionMode(mode);
+    const health = candidateHealthScore(candidate);
+    const price = candidatePriceScore(candidate, candidates);
+    if (selectionMode === "stable") return health;
+    if (selectionMode === "balanced") return health * 0.7 + price * 0.3;
+    return price;
+  }
+
+  function sortCandidatesForMode(candidates, mode) {
+    const selectionMode = normalizeSelectionMode(mode);
+    const population = candidates.slice();
+    return population.sort((left, right) => {
+      if (selectionMode === "saving") {
         if (left.ratio !== right.ratio) return left.ratio - right.ratio;
-        if (left.aggregateSuccess !== right.aggregateSuccess) {
-          return right.aggregateSuccess - left.aggregateSuccess;
-        }
-        const leftFirstTokenLatency = Number.isFinite(left.firstTokenLatencyMs)
-          ? left.firstTokenLatencyMs
-          : Infinity;
-        const rightFirstTokenLatency = Number.isFinite(right.firstTokenLatencyMs)
-          ? right.firstTokenLatencyMs
-          : Infinity;
-        if (leftFirstTokenLatency !== rightFirstTokenLatency) {
-          return leftFirstTokenLatency - rightFirstTokenLatency;
-        }
-        const leftOutputLatency = Number.isFinite(left.outputLatencyMs) ? left.outputLatencyMs : Infinity;
-        const rightOutputLatency = Number.isFinite(right.outputLatencyMs) ? right.outputLatencyMs : Infinity;
-        return leftOutputLatency - rightOutputLatency;
-      });
+      } else {
+        const scoreDifference = candidateStrategyScore(right, population, selectionMode)
+          - candidateStrategyScore(left, population, selectionMode);
+        if (Math.abs(scoreDifference) > 0.0001) return scoreDifference;
+      }
+      const healthDifference = candidateHealthScore(right) - candidateHealthScore(left);
+      if (Math.abs(healthDifference) > 0.0001) return healthDifference;
+      return left.ratio - right.ratio;
+    });
+  }
+
+  function selectBestCandidate(candidates, currentGroup, mode) {
+    const available = sortCandidatesForMode(
+      candidates.filter((candidate) => candidate.available),
+      mode,
+    );
 
     if (!available.length) return null;
     const current = available.find((candidate) => candidate.group === currentGroup);
-    if (current && current.ratio === available[0].ratio) return current;
+    if (normalizeSelectionMode(mode) === "saving" && current && current.ratio === available[0].ratio) {
+      return current;
+    }
     return available[0];
   }
 
-  function selectSwitchCandidate(candidates, currentGroup, targetGroup) {
+  function selectSwitchCandidate(candidates, currentGroup, targetGroup, options) {
     const target = String(targetGroup || "").trim();
-    if (!target) return selectBestCandidate(candidates, currentGroup);
+    const request = options && typeof options === "object" ? options : {};
+    if (!target) return selectBestCandidate(candidates, currentGroup, request.mode);
 
     const candidate = candidates.find((item) => item.group === target);
     if (!candidate) {
       throw new Error(`目标分组 ${target} 不在当前模型的可选范围内`);
     }
-    if (!candidate.available) {
+    if (!candidate.available && !request.allowUnavailable) {
       const reasons = candidate.reasons.map(reasonLabel).join("，") || "未知原因";
       throw new Error(`目标分组 ${target} 当前不可用：${reasons}`);
     }
@@ -902,6 +1033,7 @@
 
   const TEST_API = Object.freeze({
     DEFAULT_CONFIG,
+    activeGroupFilter,
     aihubMonitorRange,
     buildTokenUpdatePayload,
     clampPosition,
@@ -914,22 +1046,31 @@
     compareVersions,
     applyTemporaryBlacklist,
     candidateHasHealthFailure,
+    candidateHealthScore,
+    candidateStrategyScore,
+    evaluateSpendProtection,
+    localDateKey,
     normalizeLogs,
     normalizeAihubTodayUsage,
     normalizeAihubToken,
     normalizeKfcodingTodayUsage,
     normalizeSwitchHistory,
     normalizeSwitchGuardState,
+    normalizeSpendGuard,
+    normalizeSelectionMode,
+    normalizeThemeMode,
     normalizeUiPositions,
     parseAllowedGroups,
     parseTokenIds,
     pruneSwitchGuardState,
     requestJsonWithRetry,
     requiresTokenSelection,
+    resolveThemeMode,
     sanitizeConfig,
     selectBestCandidate,
     selectRollbackCandidate,
     selectSwitchCandidate,
+    selectionModeLabel,
     shouldSwitchCandidate,
     summarizeTokenGroups,
     tokenSupportsModel,
@@ -943,6 +1084,7 @@
 
   let config = sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}));
   if (IS_AIHUB) config = { ...config, model: AIHUB_MONITOR_MODEL };
+  const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let scheduler = null;
   let root = null;
   let refs = {};
@@ -972,6 +1114,15 @@
       loading: true,
       error: "",
     },
+    spendProtection: {
+      active: false,
+      tone: "none",
+      actualSpend: 0,
+      trackedSpend: 0,
+      limit: 0,
+      ratio: 0,
+      remaining: 0,
+    },
     logs: normalizeLogs(GM_getValue(STORAGE_LOGS, [])),
     positions: normalizeUiPositions(GM_getValue(STORAGE_POSITIONS, {})),
     collapsed: false,
@@ -990,6 +1141,65 @@
     });
     state.logs = state.logs.slice(0, MAX_LOG_ENTRIES);
     GM_setValue(STORAGE_LOGS, state.logs);
+  }
+
+  function saveSpendGuardState(value) {
+    GM_setValue(STORAGE_SPEND_GUARD, normalizeSpendGuard(value, localDateKey()));
+  }
+
+  function syncSpendProtection(options) {
+    const request = options && typeof options === "object" ? options : {};
+    const dateKey = localDateKey();
+    const storedGuard = GM_getValue(STORAGE_SPEND_GUARD, {});
+    const result = evaluateSpendProtection(state.todayUsage, config, storedGuard, dateKey);
+    const guard = { ...result.guard };
+    state.spendProtection = {
+      active: result.active,
+      tone: result.tone,
+      actualSpend: result.actualSpend,
+      trackedSpend: result.trackedSpend,
+      limit: result.limit,
+      ratio: result.ratio,
+      remaining: result.remaining,
+    };
+
+    let notification = null;
+    if (request.notify && result.tone === "reached" && !guard.warnedReached) {
+      guard.warnedApproaching = true;
+      guard.warnedReached = true;
+      notification = {
+        title: `${SITE_LABEL} 每日消费已达上限`,
+        text: `保护计数 ${formatSpendValue(result.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(result.limit, state.todayUsage.symbol)}，仅提醒，不影响任务`,
+        log: `消费保护：已达到每日上限 ${formatSpendValue(result.limit, state.todayUsage.symbol)}`,
+      };
+    } else if (request.notify && result.tone === "approaching" && !guard.warnedApproaching) {
+      guard.warnedApproaching = true;
+      notification = {
+        title: `${SITE_LABEL} 每日消费接近上限`,
+        text: `保护计数已使用 ${Math.round(result.ratio * 100)}%，剩余 ${formatSpendValue(result.remaining, state.todayUsage.symbol)}`,
+        log: `消费保护：已使用每日上限的 ${Math.round(result.ratio * 100)}%`,
+      };
+    }
+    saveSpendGuardState(guard);
+    if (notification) {
+      addLog(notification.log, "warning");
+      GM_notification({ title: notification.title, text: notification.text, timeout: 10000 });
+    }
+  }
+
+  function resetSpendProtection() {
+    const actualSpend = state.todayUsage.available
+      ? Math.max(0, Number(state.todayUsage.spend) || 0)
+      : 0;
+    saveSpendGuardState({
+      dateKey: localDateKey(),
+      baselineSpend: actualSpend,
+      warnedApproaching: false,
+      warnedReached: false,
+    });
+    syncSpendProtection({ notify: false });
+    addLog(`消费保护计数已重置，当前基线 ${formatSpendValue(actualSpend, state.todayUsage.symbol)}`, "success");
+    setStatus("消费保护计数已从当前消费重新开始", "success");
   }
 
   function setStatus(message, tone) {
@@ -1234,6 +1444,7 @@
         usage = normalizeKfcodingTodayUsage(payload, status, account);
       }
       state.todayUsage = { ...usage, available: true, loading: false, error: "" };
+      syncSpendProtection({ notify: true });
       render();
       return true;
     } catch (error) {
@@ -1476,7 +1687,7 @@
     saveSwitchGuardState(guardState);
 
     const eligible = applyTemporaryBlacklist(candidates, guardState, config.model, now);
-    const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup);
+    const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup, config.selectionMode);
     const fallback = rollbackTarget.candidate;
     if (!fallback) return null;
 
@@ -1503,7 +1714,10 @@
       const rollback = await handleRollbackGuard(token, candidates);
       if (rollback) return rollback;
     }
-    const selected = selectSwitchCandidate(candidates, token.group, targetGroup);
+    const selected = selectSwitchCandidate(candidates, token.group, targetGroup, {
+      mode: config.selectionMode,
+      allowUnavailable: Boolean(targetGroup),
+    });
     const current = candidates.find((candidate) => candidate.group === token.group);
 
     if (!selected) {
@@ -1516,7 +1730,7 @@
         outcome: "current",
         group: token.group || "未设置",
         tone: "success",
-        message: targetGroup ? "已是手动目标分组" : "已是最低可用倍率",
+        message: targetGroup ? "已是手动目标分组" : "已是策略推荐分组",
       };
     }
     if (forceSwitch) {
@@ -1658,14 +1872,16 @@
         candidateTimestamp,
       );
       if (manual) renderOptions(true);
-      const lowestAvailable = selectBestCandidate(candidates, "");
+      const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
       state.candidates = candidates;
-      state.bestGroup = lowestAvailable
-        ? `${lowestAvailable.group} ${formatRatio(lowestAvailable.ratio)}`
+      state.bestGroup = recommendedCandidate
+        ? `${recommendedCandidate.group} ${formatRatio(recommendedCandidate.ratio)}`
         : "无可用分组";
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-      if (targetGroup) selectSwitchCandidate(candidates, "", targetGroup);
-      if (!targetGroup && !lowestAvailable && !selectedTokenIds.length) {
+      if (targetGroup) {
+        selectSwitchCandidate(candidates, "", targetGroup, { allowUnavailable: true });
+      }
+      if (!targetGroup && !recommendedCandidate && !selectedTokenIds.length) {
         const reasonSummary = summarizeFailures(candidates);
         throw new Error(`没有满足条件的分组${reasonSummary ? `：${reasonSummary}` : ""}`);
       }
@@ -1795,9 +2011,13 @@
 
   function formatSpend(usage) {
     if (!usage || !usage.available) return "-";
-    const value = Number(usage.spend) || 0;
-    const digits = value > 0 && value < 0.0001 ? 6 : 4;
-    return `${usage.symbol || ""}${value.toFixed(digits)}`;
+    return formatSpendValue(usage.spend, usage.symbol);
+  }
+
+  function formatSpendValue(value, symbol) {
+    const amount = Math.max(0, Number(value) || 0);
+    const digits = amount > 0 && amount < 0.0001 ? 6 : 4;
+    return `${symbol || ""}${amount.toFixed(digits)}`;
   }
 
   function formatBalance(usage) {
@@ -1856,6 +2076,7 @@
       : [];
     models.forEach((model) => refs.model.appendChild(createOption(model, model)));
     refs.model.value = selectedModel;
+    renderGroupFilterOptions();
   }
 
   function renderTokenSelectionCount() {
@@ -1875,6 +2096,72 @@
         refs.tokenSelectLabel.textContent = `已选择 ${selected} 个密钥`;
       }
     }
+  }
+
+  function groupFilterConfigKey(mode) {
+    return mode === "blacklist" ? "groupBlacklist" : "groupWhitelist";
+  }
+
+  function availableGroupNames() {
+    const names = new Set([
+      ...config.groupWhitelist,
+      ...config.groupBlacklist,
+      ...state.candidates.map((candidate) => candidate.group),
+    ]);
+    if (IS_AIHUB) {
+      aihubGroupsCache.forEach((group) => {
+        if (group && group.name) names.add(String(group.name));
+      });
+    } else {
+      Object.keys(userGroupsCache).forEach((group) => names.add(group));
+      const selectedModel = pricingCache && Array.isArray(pricingCache.data)
+        ? pricingCache.data.find((item) => item && item.model_name === config.model)
+        : null;
+      (selectedModel && Array.isArray(selectedModel.enable_groups) ? selectedModel.enable_groups : [])
+        .forEach((group) => names.add(String(group)));
+    }
+    return [...names].filter(Boolean).sort((left, right) => left.localeCompare(right, "zh-CN"));
+  }
+
+  function updateGroupFilterSummary() {
+    if (!refs.groupFilterSelectLabel || !refs.groupFilterCount || !refs.groupFilterMode) return;
+    const mode = refs.groupFilterMode.value === "blacklist" ? "blacklist" : "whitelist";
+    const selected = refs.groupFilterList
+      ? refs.groupFilterList.querySelectorAll('input[data-group-name]:checked').length
+      : 0;
+    refs.groupFilterSelectLabel.textContent = selected
+      ? `${mode === "blacklist" ? "已排除" : "仅允许"} ${selected} 个分组`
+      : "不限分组";
+    refs.groupFilterCount.textContent = `${selected}/${availableGroupNames().length}`;
+    if (refs.groupFilterLabel) refs.groupFilterLabel.textContent = mode === "blacklist" ? "黑名单分组" : "白名单分组";
+  }
+
+  function renderGroupFilterOptions() {
+    if (!refs.groupFilterList || !refs.groupFilterMode) return;
+    const mode = config.groupFilterMode === "blacklist" ? "blacklist" : "whitelist";
+    const selected = new Set(config[groupFilterConfigKey(mode)]);
+    refs.groupFilterMode.value = mode;
+    refs.groupFilterList.replaceChildren();
+    const groups = availableGroupNames();
+    if (!groups.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty token-empty";
+      empty.textContent = "检查后显示可选分组";
+      refs.groupFilterList.appendChild(empty);
+    }
+    groups.forEach((group) => {
+      const option = document.createElement("label");
+      option.className = "token-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.groupName = group;
+      checkbox.checked = selected.has(group);
+      const name = document.createElement("span");
+      name.textContent = group;
+      option.append(checkbox, name);
+      refs.groupFilterList.appendChild(option);
+    });
+    updateGroupFilterSummary();
   }
 
   function renderCandidates() {
@@ -1958,25 +2245,24 @@
       .forEach((candidate) => {
         const status = candidate.available
           ? "可用"
-          : reasonLabel(candidate.reasons[0] || "不可用");
+          : candidate.reasons.map(reasonLabel).join("、") || "不可用";
         const currentCount = state.tokenResults.filter((result) => result.group === candidate.group).length;
         const current = currentCount ? ` · 当前 ${currentCount}` : "";
         const option = createOption(
           candidate.group,
-          `${candidate.group} · ${formatRatio(candidate.ratio)} · ${status}${current}`,
+          `${candidate.group} · ${formatRatio(candidate.ratio)} · 状态：${status}${current}`,
         );
-        option.disabled = !candidate.available;
         refs.manualGroup.appendChild(option);
       });
 
     const preserved = [...refs.manualGroup.options].some(
-      (option) => option.value === selectedGroup && !option.disabled,
+      (option) => option.value === selectedGroup,
     );
     refs.manualGroup.value = preserved ? selectedGroup : "";
     if (refs.manualHint) {
       const availableCount = state.candidates.filter((candidate) => candidate.available).length;
       refs.manualHint.textContent = state.candidates.length
-        ? `最近检查有 ${availableCount} 个可用分组，确认时会再次校验`
+        ? `${state.candidates.length} 个分组均可人工选择，其中 ${availableCount} 个符合自动策略；账号权限仍由站点接口校验`
         : "请先执行一次立即检查";
     }
     if (refs.manualConfirm) refs.manualConfirm.disabled = running || !refs.manualGroup.value;
@@ -2076,7 +2362,29 @@
     if (refs.todayTokens && state.todayUsage.available && !state.todayUsage.loading && !state.todayUsage.error) {
       refs.todayTokens.title = `${formatUsageCount(state.todayUsage.tokens, true)} Token`;
     }
+    if (refs.todaySpendItem) {
+      refs.todaySpendItem.dataset.spendTone = state.spendProtection.tone;
+      refs.todaySpendItem.style.setProperty(
+        "--spend-progress",
+        `${Math.min(100, Math.max(0, state.spendProtection.ratio * 100))}%`,
+      );
+    }
+    if (refs.todaySpend && state.spendProtection.active) {
+      refs.todaySpend.title = `消费保护计数 ${formatSpendValue(state.spendProtection.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(state.spendProtection.limit, state.todayUsage.symbol)}`;
+    }
+    if (refs.spendProtectionStatus) {
+      refs.spendProtectionStatus.dataset.tone = state.spendProtection.tone;
+      refs.spendProtectionStatus.textContent = !config.spendProtectionEnabled
+        ? "未启用"
+        : config.dailySpendLimit <= 0
+          ? "请设置每日上限"
+          : !state.todayUsage.available
+            ? "等待消费数据"
+            : `${formatSpendValue(state.spendProtection.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(state.spendProtection.limit, state.todayUsage.symbol)} · ${Math.round(state.spendProtection.ratio * 100)}%`;
+    }
     if (refs.enabled) refs.enabled.checked = config.enabled;
+    if (refs.spendProtectionEnabled) refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
+    if (refs.resetSpendProtection) refs.resetSpendProtection.disabled = running || !state.todayUsage.available;
     if (refs.check) refs.check.disabled = running;
     if (refs.switchNow) refs.switchNow.disabled = running;
     if (refs.checkUpdate) {
@@ -2105,14 +2413,31 @@
     renderLogs();
   }
 
+  function applyTheme() {
+    if (!root) return;
+    const resolvedTheme = resolveThemeMode(config.theme, systemThemeQuery.matches);
+    root.host.dataset.theme = config.theme;
+    root.host.dataset.resolvedTheme = resolvedTheme;
+    if (refs.theme) {
+      refs.theme.value = config.theme;
+      const labels = { system: "跟随系统", light: "浅色", dark: "深色" };
+      refs.theme.title = `皮肤：${labels[config.theme]}`;
+    }
+  }
+
   function readFormConfig() {
     return sanitizeConfig({
+      theme: refs.theme.value,
       enabled: refs.enabled.checked,
       tokenIds: [...refs.tokenList.querySelectorAll('input[data-token-id]:checked')]
         .map((checkbox) => checkbox.value),
       model: refs.model.value,
-      groupFilterMode: refs.groupFilterBlacklist.checked ? "blacklist" : "whitelist",
-      groupFilterGroups: refs.groupFilterGroups.value,
+      selectionMode: refs.selectionMode.value,
+      groupFilterMode: config.groupFilterMode,
+      groupWhitelist: config.groupWhitelist,
+      groupBlacklist: config.groupBlacklist,
+      spendProtectionEnabled: refs.spendProtectionEnabled.checked,
+      dailySpendLimit: refs.dailySpendLimit.value,
       pollSeconds: refs.pollSeconds.value,
       metricHours: refs.metricHours.value,
       minSuccessRate: refs.minSuccessRate.value,
@@ -2129,11 +2454,12 @@
   }
 
   function syncForm() {
+    if (refs.theme) refs.theme.value = config.theme;
     refs.enabled.checked = config.enabled;
-    refs.groupFilterWhitelist.checked = config.groupFilterMode === "whitelist";
-    refs.groupFilterBlacklist.checked = config.groupFilterMode === "blacklist";
-    refs.groupFilterGroups.value = config.groupFilterGroups.join(", ");
-    syncGroupFilterUi();
+    refs.selectionMode.value = config.selectionMode;
+    refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
+    refs.dailySpendLimit.value = String(config.dailySpendLimit);
+    renderGroupFilterOptions();
     refs.pollSeconds.value = String(config.pollSeconds);
     refs.metricHours.value = String(config.metricHours);
     refs.minSuccessRate.value = String(config.minSuccessRate);
@@ -2152,8 +2478,8 @@
     const previousIdentity = `${config.tokenIds.join(",")}:${config.model}`;
     const wasEnabled = config.enabled;
     config = readFormConfig();
-    syncGroupFilterUi();
     GM_setValue(STORAGE_CONFIG, config);
+    if (state.todayUsage.available) syncSpendProtection({ notify: true });
     if (`${config.tokenIds.join(",")}:${config.model}` !== previousIdentity) {
       pendingCandidates.clear();
       state.candidates = [];
@@ -2170,17 +2496,16 @@
     render();
   }
 
-  function syncGroupFilterUi() {
-    if (!refs.groupFilterLabel || !refs.groupFilterGroups) return;
-    const blacklisting = refs.groupFilterBlacklist.checked;
-    refs.groupFilterLabel.textContent = blacklisting ? "排除分组（空 = 不限制）" : "仅允许分组（空 = 不限制）";
-    refs.groupFilterGroups.placeholder = blacklisting ? "例如：高价, 测试" : "例如：低价, 均衡";
-  }
-
   function setTokenMenuOpen(open) {
     if (!refs.tokenMenu || !refs.tokenSelectToggle) return;
     refs.tokenMenu.hidden = !open;
     refs.tokenSelectToggle.setAttribute("aria-expanded", String(open));
+  }
+
+  function setGroupFilterMenuOpen(open) {
+    if (!refs.groupFilterMenu || !refs.groupFilterSelectToggle) return;
+    refs.groupFilterMenu.hidden = !open;
+    refs.groupFilterSelectToggle.setAttribute("aria-expanded", String(open));
   }
 
   function bindUi() {
@@ -2201,14 +2526,22 @@
     refs.check.addEventListener("click", () => runCheck({ manual: true }));
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
+    refs.resetSpendProtection.addEventListener("click", resetSpendProtection);
     refs.tokenSelectToggle.addEventListener("click", () => {
       setTokenMenuOpen(refs.tokenMenu.hidden);
     });
+    refs.groupFilterSelectToggle.addEventListener("click", () => {
+      setGroupFilterMenuOpen(refs.groupFilterMenu.hidden);
+    });
     root.addEventListener("click", (event) => {
       if (!refs.tokenSelect.contains(event.target)) setTokenMenuOpen(false);
+      if (!refs.groupFilterSelect.contains(event.target)) setGroupFilterMenuOpen(false);
     });
     document.addEventListener("pointerdown", (event) => {
-      if (!event.composedPath().includes(root.host)) setTokenMenuOpen(false);
+      if (!event.composedPath().includes(root.host)) {
+        setTokenMenuOpen(false);
+        setGroupFilterMenuOpen(false);
+      }
     });
     refs.manualSwitch.addEventListener("click", () => {
       renderManualGroups();
@@ -2247,10 +2580,52 @@
       renderTokenSelectionCount();
       persistFormConfig();
     });
+    refs.groupFilterMode.addEventListener("change", () => {
+      config = {
+        ...config,
+        groupFilterMode: refs.groupFilterMode.value === "blacklist" ? "blacklist" : "whitelist",
+      };
+      pendingCandidates.clear();
+      GM_setValue(STORAGE_CONFIG, config);
+      renderGroupFilterOptions();
+      scheduleNext(config.enabled ? 250 : undefined);
+      setStatus("分组名单模式已切换", "success");
+    });
+    refs.groupFilterList.addEventListener("change", () => {
+      const key = groupFilterConfigKey(config.groupFilterMode);
+      const groups = [...refs.groupFilterList.querySelectorAll('input[data-group-name]:checked')]
+        .map((checkbox) => checkbox.dataset.groupName);
+      config = { ...config, [key]: parseAllowedGroups(groups) };
+      pendingCandidates.clear();
+      GM_setValue(STORAGE_CONFIG, config);
+      updateGroupFilterSummary();
+      scheduleNext(config.enabled ? 250 : undefined);
+      setStatus(`${config.groupFilterMode === "blacklist" ? "黑名单" : "白名单"}已自动保存`, "success");
+    });
+    refs.clearGroupFilter.addEventListener("click", () => {
+      refs.groupFilterList.querySelectorAll('input[data-group-name]').forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+      refs.groupFilterList.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     refs.settingsSection.addEventListener("change", (event) => {
       if (event.target.closest(".token-list")) return;
+      if (event.target === refs.groupFilterMode || event.target.closest(".group-filter-select")) return;
       persistFormConfig();
     });
+    refs.theme.addEventListener("change", () => {
+      config = { ...config, theme: normalizeThemeMode(refs.theme.value) };
+      GM_setValue(STORAGE_CONFIG, config);
+      applyTheme();
+    });
+    const handleSystemThemeChange = () => {
+      if (config.theme === "system") applyTheme();
+    };
+    if (typeof systemThemeQuery.addEventListener === "function") {
+      systemThemeQuery.addEventListener("change", handleSystemThemeChange);
+    } else if (typeof systemThemeQuery.addListener === "function") {
+      systemThemeQuery.addListener(handleSystemThemeChange);
+    }
   }
 
   function mountUi() {
@@ -2531,6 +2906,7 @@
 
         /* Monitoring console redesign */
         :host {
+          color-scheme: dark;
           --surface-0: #0b0d0e;
           --surface-1: #111516;
           --surface-2: #181d1e;
@@ -2545,6 +2921,87 @@
           --amber: #f0bf62;
           --amber-deep: #5b4217;
           --red: #ff8278;
+          --shadow-launcher: 0 16px 34px rgb(0 0 0 / 42%);
+          --shadow-panel: 0 26px 72px rgb(0 0 0 / 56%);
+          --shadow-menu: 0 18px 36px rgb(0 0 0 / 52%);
+          --shadow-dialog: 0 26px 72px rgb(0 0 0 / 62%);
+          --shadow-segment: 0 1px 3px rgb(0 0 0 / 30%);
+          --ring-neutral: rgb(165 175 170 / 14%);
+          --ring-green: rgb(139 214 151 / 14%);
+          --ring-amber: rgb(240 191 98 / 14%);
+          --ring-red: rgb(255 130 120 / 14%);
+          --focus-ring: rgb(139 214 151 / 18%);
+          --control-border-strong: #52605b;
+          --control-hover-border: #53615c;
+          --control-track: #303836;
+          --control-thumb: #d9dfdc;
+          --text-button-hover: #b6edbe;
+          --button-check-border: #dce4df;
+          --button-check-bg: #eef3f0;
+          --button-check-text: #111614;
+          --button-check-hover: #ffffff;
+          --button-route-text: #c7f3ce;
+          --button-route-hover-border: #a4e9ad;
+          --button-route-hover-bg: #285d35;
+          --button-manual-border: #74531f;
+          --button-manual-text: #ffe1a7;
+          --button-manual-hover-bg: #6b4c1b;
+          --button-primary-text: #102014;
+          --candidate-ok-bg: rgb(139 214 151 / 5%);
+          --candidate-ok-text: #c2f0c9;
+          --candidate-off-text: #ffd88f;
+          --dialog-backdrop: rgb(0 0 0 / 68%);
+          --spend-warning-bg: rgb(240 191 98 / 10%);
+          --spend-danger-bg: rgb(255 130 120 / 12%);
+        }
+        :host([data-resolved-theme="light"]) {
+          color-scheme: light;
+          --surface-0: #f5f7f6;
+          --surface-1: #ffffff;
+          --surface-2: #edf1ef;
+          --surface-3: #dfe7e2;
+          --line: #bdc9c2;
+          --line-soft: #d7dfda;
+          --text: #17231d;
+          --muted: #5b6b62;
+          --muted-strong: #35463d;
+          --green: #23783a;
+          --green-deep: #d9eddd;
+          --amber: #986000;
+          --amber-deep: #f5e6c5;
+          --red: #b43b34;
+          --shadow-launcher: 0 12px 28px rgb(25 45 35 / 18%);
+          --shadow-panel: 0 24px 64px rgb(25 45 35 / 22%);
+          --shadow-menu: 0 16px 34px rgb(25 45 35 / 20%);
+          --shadow-dialog: 0 24px 64px rgb(25 45 35 / 24%);
+          --shadow-segment: 0 1px 3px rgb(25 45 35 / 18%);
+          --ring-neutral: rgb(91 107 98 / 16%);
+          --ring-green: rgb(35 120 58 / 16%);
+          --ring-amber: rgb(152 96 0 / 16%);
+          --ring-red: rgb(180 59 52 / 16%);
+          --focus-ring: rgb(35 120 58 / 20%);
+          --control-border-strong: #87988e;
+          --control-hover-border: #74877c;
+          --control-track: #cbd5cf;
+          --control-thumb: #ffffff;
+          --text-button-hover: #155c2a;
+          --button-check-border: #1f2c25;
+          --button-check-bg: #1f2c25;
+          --button-check-text: #ffffff;
+          --button-check-hover: #111914;
+          --button-route-text: #195a2b;
+          --button-route-hover-border: #23783a;
+          --button-route-hover-bg: #c8e5ce;
+          --button-manual-border: #c38a29;
+          --button-manual-text: #714500;
+          --button-manual-hover-bg: #ecd6a8;
+          --button-primary-text: #ffffff;
+          --candidate-ok-bg: rgb(35 120 58 / 7%);
+          --candidate-ok-text: #1e6b34;
+          --candidate-off-text: #865400;
+          --dialog-backdrop: rgb(25 36 30 / 42%);
+          --spend-warning-bg: rgb(152 96 0 / 10%);
+          --spend-danger-bg: rgb(180 59 52 / 10%);
         }
         .launcher, .panel {
           font-family: Inter, "Avenir Next", "Helvetica Neue", Arial, sans-serif;
@@ -2557,7 +3014,7 @@
           border-radius: 8px;
           background: var(--surface-2);
           color: var(--green);
-          box-shadow: 0 16px 34px rgb(0 0 0 / 42%);
+          box-shadow: var(--shadow-launcher);
           font-size: 12px;
           letter-spacing: 0;
         }
@@ -2567,7 +3024,7 @@
           border: 1px solid var(--line);
           border-radius: 8px;
           background: var(--surface-0);
-          box-shadow: 0 26px 72px rgb(0 0 0 / 56%);
+          box-shadow: var(--shadow-panel);
         }
         .header {
           min-height: 58px;
@@ -2577,17 +3034,34 @@
           background: var(--surface-1);
         }
         .header-copy { gap: 1px; }
+        .header-title-row { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
         .eyebrow {
           color: var(--muted);
           font-size: 9px;
           letter-spacing: 0;
         }
-        .title { font-size: 14px; font-weight: 750; }
-        .dot { width: 8px; height: 8px; background: var(--muted); box-shadow: 0 0 0 3px rgb(165 175 170 / 14%); }
-        .dot[data-tone="running"] { background: var(--amber); box-shadow: 0 0 0 3px rgb(240 191 98 / 14%); }
-        .dot[data-tone="success"] { background: var(--green); box-shadow: 0 0 0 3px rgb(139 214 151 / 14%); }
-        .dot[data-tone="warning"] { background: var(--amber); box-shadow: 0 0 0 3px rgb(240 191 98 / 14%); }
-        .dot[data-tone="error"] { background: var(--red); box-shadow: 0 0 0 3px rgb(255 130 120 / 14%); }
+        .title { overflow: hidden; font-size: 14px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+        .version { flex: 0 0 auto; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; font-weight: 650; }
+        .theme-select {
+          width: 68px;
+          height: 30px;
+          flex: 0 0 auto;
+          border: 1px solid transparent;
+          border-radius: 6px;
+          background: transparent;
+          color: var(--muted);
+          padding: 0 6px;
+          font-size: 10px;
+          font-weight: 650;
+          cursor: pointer;
+        }
+        .theme-select:hover { border-color: var(--line); background: var(--surface-2); color: var(--text); }
+        .theme-select:focus { border-color: var(--green); box-shadow: 0 0 0 2px var(--focus-ring); outline: none; }
+        .dot { width: 8px; height: 8px; background: var(--muted); box-shadow: 0 0 0 3px var(--ring-neutral); }
+        .dot[data-tone="running"] { background: var(--amber); box-shadow: 0 0 0 3px var(--ring-amber); }
+        .dot[data-tone="success"] { background: var(--green); box-shadow: 0 0 0 3px var(--ring-green); }
+        .dot[data-tone="warning"] { background: var(--amber); box-shadow: 0 0 0 3px var(--ring-amber); }
+        .dot[data-tone="error"] { background: var(--red); box-shadow: 0 0 0 3px var(--ring-red); }
         .icon-button {
           width: 30px;
           height: 30px;
@@ -2643,10 +3117,27 @@
           background: var(--surface-0);
         }
         .usage-item { min-width: 0; padding: 10px 11px 11px; }
+        .usage-item { position: relative; }
         .usage-item + .usage-item { border-left: 1px solid var(--line-soft); }
         .usage-item small { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 0; }
         .usage-item strong { display: block; overflow: hidden; color: var(--text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
         .usage-item:first-child strong { color: var(--amber); }
+        .usage-item[data-spend-tone="approaching"] { background: var(--spend-warning-bg); }
+        .usage-item[data-spend-tone="approaching"] strong { color: var(--amber); }
+        .usage-item[data-spend-tone="reached"] { background: var(--spend-danger-bg); }
+        .usage-item[data-spend-tone="reached"] strong { color: var(--red); }
+        .usage-item[data-spend-tone="approaching"]::after,
+        .usage-item[data-spend-tone="reached"]::after {
+          position: absolute;
+          right: 0;
+          bottom: 0;
+          left: 0;
+          width: var(--spend-progress);
+          height: 2px;
+          background: var(--amber);
+          content: "";
+        }
+        .usage-item[data-spend-tone="reached"]::after { background: var(--red); }
         .section { padding: 14px; border-bottom-color: var(--line-soft); }
         .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
         .section-title { margin: 0; color: var(--text); font-size: 12px; font-weight: 750; letter-spacing: 0; }
@@ -2662,13 +3153,31 @@
           background: var(--surface-2);
         }
         .automation-name { margin-right: auto; color: var(--text); font-size: 12px; font-weight: 720; }
+        .strategy-select { width: 104px; height: 30px; flex: 0 0 auto; padding-inline: 7px; font-size: 10px; }
         .toggle { display: inline-flex; align-items: center; cursor: pointer; }
         .toggle input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; }
-        .toggle-track { display: grid; align-items: center; width: 34px; height: 20px; padding: 2px; border: 1px solid #52605b; border-radius: 999px; background: #303836; transition: background .16s ease, border-color .16s ease; }
-        .toggle-thumb { width: 14px; height: 14px; border-radius: 50%; background: #d9dfdc; transition: transform .16s ease; }
+        .toggle-track { display: grid; align-items: center; width: 34px; height: 20px; padding: 2px; border: 1px solid var(--control-border-strong); border-radius: 999px; background: var(--control-track); transition: background .16s ease, border-color .16s ease; }
+        .toggle-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--control-thumb); transition: transform .16s ease; }
         .toggle input:checked + .toggle-track { border-color: var(--green); background: var(--green-deep); }
         .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(14px); background: var(--green); }
         .toggle input:focus-visible + .toggle-track { outline: 2px solid var(--green); outline-offset: 2px; }
+        .protection-bar {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          min-height: 44px;
+          margin-bottom: 12px;
+          padding: 7px 8px 7px 11px;
+          border-bottom: 1px solid var(--line-soft);
+        }
+        .protection-copy { display: grid; gap: 2px; min-width: 92px; margin-right: auto; }
+        .protection-copy strong { color: var(--text); font-size: 11px; }
+        .protection-copy small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+        .protection-copy small[data-tone="approaching"] { color: var(--amber); }
+        .protection-copy small[data-tone="reached"] { color: var(--red); }
+        .spend-limit-field { display: flex; align-items: center; gap: 5px; margin: 0; white-space: nowrap; }
+        .spend-limit-field span { color: var(--muted); font-size: 9px; }
+        .spend-limit-field input { width: 84px; height: 30px; padding-inline: 7px; }
         .control-grid {
           display: grid;
           grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
@@ -2678,6 +3187,8 @@
         label { margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 650; }
         .group-filter-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; }
         .group-filter-heading > label { margin: 0; }
+        .filter-mode-select { width: 88px; height: 29px; padding-inline: 7px; font-size: 10px; }
+        .group-filter-select .token-menu { z-index: 5; }
         .segment-control {
           display: inline-grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2698,7 +3209,7 @@
           font-size: 10px;
           font-weight: 700;
         }
-        .segment-option input:checked + span { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 3px rgb(0 0 0 / 30%); }
+        .segment-option input:checked + span { background: var(--surface-3); color: var(--text); box-shadow: var(--shadow-segment); }
         .segment-option input:focus-visible + span { outline: 2px solid var(--green); outline-offset: 1px; }
         input[type="number"], input[type="text"], select {
           height: 35px;
@@ -2708,7 +3219,7 @@
           color: var(--text);
           font-size: 12px;
         }
-        input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgb(139 214 151 / 18%); }
+        input:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 2px var(--focus-ring); }
         .token-select-trigger {
           height: 35px;
           border-color: var(--line);
@@ -2717,15 +3228,15 @@
           color: var(--text);
           font-size: 12px;
         }
-        .token-select-trigger:hover { border-color: #53615c; background: var(--surface-3); }
-        .token-select-trigger:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgb(139 214 151 / 18%); }
+        .token-select-trigger:hover { border-color: var(--control-hover-border); background: var(--surface-3); }
+        .token-select-trigger:focus { border-color: var(--green); box-shadow: 0 0 0 2px var(--focus-ring); }
         .token-count { color: var(--muted); font-size: 9px; }
-        .token-menu { border-color: var(--line); border-radius: 7px; background: var(--surface-1); box-shadow: 0 18px 36px rgb(0 0 0 / 52%); }
+        .token-menu { border-color: var(--line); border-radius: 7px; background: var(--surface-1); box-shadow: var(--shadow-menu); }
         .token-list { border-color: var(--line-soft); border-radius: 5px; background: var(--surface-0); }
         .token-option { min-height: 35px; border-bottom-color: var(--line-soft); color: var(--muted-strong); }
         .token-option:hover { background: var(--surface-2); }
         .text-button { color: var(--green); font-size: 10px; }
-        .text-button:hover { color: #b6edbe; }
+        .text-button:hover { color: var(--text-button-hover); }
         details { margin-top: 12px; border-color: var(--line); border-radius: 7px; background: var(--surface-1); }
         summary { padding: 10px 11px; color: var(--muted-strong); font-size: 11px; letter-spacing: 0; }
         summary:hover { color: var(--text); background: var(--surface-2); }
@@ -2746,16 +3257,16 @@
           font-size: 12px;
           font-weight: 720;
         }
-        .button:hover { border-color: #52605a; background: var(--surface-3); }
+        .button:hover { border-color: var(--control-hover-border); background: var(--surface-3); }
         .button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-        .button-check { border-color: #dce4df; background: #eef3f0; color: #111614; }
-        .button-check:hover { border-color: #ffffff; background: #ffffff; }
-        .button-route { border-color: var(--green); background: var(--green-deep); color: #c7f3ce; }
-        .button-route:hover { border-color: #a4e9ad; background: #285d35; }
-        .button-manual { min-height: 30px; padding: 5px 8px; border-color: #74531f; background: var(--amber-deep); color: #ffe1a7; font-size: 11px; }
-        .button-manual:hover { border-color: var(--amber); background: #6b4c1b; }
-        .button-primary { border-color: var(--green); background: var(--green); color: #102014; }
-        .button-primary:hover { border-color: #b6edbe; background: #b6edbe; }
+        .button-check { border-color: var(--button-check-border); background: var(--button-check-bg); color: var(--button-check-text); }
+        .button-check:hover { border-color: var(--button-check-hover); background: var(--button-check-hover); }
+        .button-route { border-color: var(--green); background: var(--green-deep); color: var(--button-route-text); }
+        .button-route:hover { border-color: var(--button-route-hover-border); background: var(--button-route-hover-bg); }
+        .button-manual { min-height: 30px; padding: 5px 8px; border-color: var(--button-manual-border); background: var(--amber-deep); color: var(--button-manual-text); font-size: 11px; }
+        .button-manual:hover { border-color: var(--amber); background: var(--button-manual-hover-bg); }
+        .button-primary { border-color: var(--green); background: var(--green); color: var(--button-primary-text); }
+        .button-primary:hover { border-color: var(--text-button-hover); background: var(--text-button-hover); }
         .candidate-section { padding-bottom: 10px; }
         .candidate-head, .candidate {
           grid-template-columns: minmax(70px, 1fr) 40px 40px 40px 43px 43px 43px 76px;
@@ -2764,10 +3275,10 @@
         }
         .candidate-head { min-height: 27px; color: var(--muted); border-bottom-color: var(--line); }
         .candidate { min-height: 35px; padding-left: 7px; border-bottom-color: var(--line-soft); border-left: 2px solid transparent; }
-        .candidate-ok { border-left-color: var(--green); background: rgb(139 214 151 / 5%); }
-        .candidate-ok .verdict { color: #c2f0c9; }
+        .candidate-ok { border-left-color: var(--green); background: var(--candidate-ok-bg); }
+        .candidate-ok .verdict { color: var(--candidate-ok-text); }
         .candidate-off { color: var(--muted); }
-        .candidate-off .verdict { color: #ffd88f; }
+        .candidate-off .verdict { color: var(--candidate-off-text); }
         .verdict { overflow: hidden; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
         .secondary-details { margin: 0; border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: var(--surface-0); }
         .secondary-details > summary { padding: 12px 14px; }
@@ -2781,8 +3292,8 @@
         .log-success { color: var(--green); }
         .log-error { color: var(--red); }
         .empty { color: var(--muted); }
-        .manual-dialog { border-color: var(--line); border-radius: 8px; background: var(--surface-1); color: var(--text); box-shadow: 0 26px 72px rgb(0 0 0 / 62%); }
-        .manual-dialog::backdrop { background: rgb(0 0 0 / 68%); }
+        .manual-dialog { border-color: var(--line); border-radius: 8px; background: var(--surface-1); color: var(--text); box-shadow: var(--shadow-dialog); }
+        .manual-dialog::backdrop { background: var(--dialog-backdrop); }
         .dialog-form { padding: 15px; }
         .dialog-header { margin-bottom: 14px; }
         .dialog-title { font-size: 14px; }
@@ -2796,6 +3307,11 @@
           .candidate-head span:nth-child(7), .candidate span:nth-child(7) { display: none; }
         }
         @media (max-width: 390px) {
+          .header { gap: 7px; padding-inline: 11px; }
+          .eyebrow { display: none; }
+          .theme-select { width: 60px; padding-inline: 4px; }
+          .protection-bar { flex-wrap: wrap; }
+          .protection-copy { flex: 1 1 150px; }
           .overview { grid-template-columns: 1fr; gap: 10px; }
           .route-primary { padding-right: 0; padding-bottom: 10px; border-right: 0; border-bottom: 1px solid var(--line); }
           .control-grid { grid-template-columns: 1fr; }
@@ -2811,8 +3327,16 @@
           <span class="dot" data-ref="statusDot"></span>
           <span class="header-copy">
             <span class="eyebrow">GROUP CONTROL</span>
-            <span class="title">${SITE_LABEL} 分组监控</span>
+            <span class="header-title-row">
+              <span class="title">${SITE_LABEL} 分组监控</span>
+              <span class="version" data-ref="version" title="当前插件版本">v${SCRIPT_VERSION}</span>
+            </span>
           </span>
+          <select class="theme-select" data-ref="theme" aria-label="插件皮肤">
+            <option value="system">系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
           <button class="icon-button" data-ref="checkUpdate" data-state="idle" data-update="none" type="button" title="检查更新" aria-label="检查更新">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.2 6.2L3 15"></path><path d="M3 21v-6h6"></path><path d="M3 12a9 9 0 0 1 15.2-6.2L21 9"></path><path d="M21 3v6h-6"></path></svg>
           </button>
@@ -2825,14 +3349,14 @@
             <strong class="route-value" data-ref="currentGroup">-</strong>
           </div>
           <div class="route-best">
-            <span class="metric-label">最低可用</span>
+            <span class="metric-label">策略推荐</span>
             <strong class="route-best-value" data-ref="bestGroup">-</strong>
             <span class="route-meta">检查于 <strong data-ref="lastCheck">-</strong></span>
           </div>
         </section>
         <section class="usage-strip" aria-label="账户与今日用量">
           <div class="usage-item"><small>余额</small><strong class="mono" data-ref="balance">-</strong></div>
-          <div class="usage-item"><small>今日消费</small><strong class="mono" data-ref="todaySpend">-</strong></div>
+          <div class="usage-item" data-ref="todaySpendItem" data-spend-tone="none"><small>今日消费</small><strong class="mono" data-ref="todaySpend">-</strong></div>
           <div class="usage-item"><small>今日请求</small><strong class="mono" data-ref="todayRequests">-</strong></div>
           <div class="usage-item"><small>今日 Token</small><strong class="mono" data-ref="todayTokens">-</strong></div>
         </section>
@@ -2844,9 +3368,31 @@
               <input id="kf-enabled" data-ref="enabled" type="checkbox" aria-label="自动切换">
               <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
             </label>
+            <select class="strategy-select" data-ref="selectionMode" aria-label="分组选择策略" title="分组选择策略">
+              <option value="saving">省钱优先</option>
+              <option value="stable">稳定优先</option>
+              <option value="balanced">均衡推荐</option>
+            </select>
             <button class="button button-manual" data-ref="manualSwitch" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 3-4 4 4 4"></path><path d="M4 7h16"></path><path d="m16 21 4-4-4-4"></path><path d="M20 17H4"></path></svg>
               手动切换
+            </button>
+          </div>
+          <div class="protection-bar">
+            <span class="protection-copy">
+              <strong>消费保护</strong>
+              <small data-ref="spendProtectionStatus" data-tone="none">未启用</small>
+            </span>
+            <label class="toggle" for="kf-spend-protection" title="消费保护仅提醒，不影响任务">
+              <input id="kf-spend-protection" data-ref="spendProtectionEnabled" type="checkbox" aria-label="启用消费保护">
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </label>
+            <label class="spend-limit-field">
+              <span>每日上限</span>
+              <input data-ref="dailySpendLimit" type="number" min="0" step="0.01" aria-label="每日消费上限">
+            </label>
+            <button class="icon-button" data-ref="resetSpendProtection" type="button" title="从当前消费重新计数" aria-label="重置消费保护计数">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 3v6h6"></path></svg>
             </button>
           </div>
           <div class="control-grid">
@@ -2873,19 +3419,25 @@
             </div>
             <div class="field field-wide group-filter-field">
               <div class="group-filter-heading">
-                <label for="kf-groups" data-ref="groupFilterLabel">仅允许分组（空 = 不限制）</label>
-                <div class="segment-control" role="radiogroup" aria-label="分组过滤方式">
-                  <label class="segment-option">
-                    <input data-ref="groupFilterWhitelist" type="radio" name="kf-group-filter-mode" value="whitelist">
-                    <span>白名单</span>
-                  </label>
-                  <label class="segment-option">
-                    <input data-ref="groupFilterBlacklist" type="radio" name="kf-group-filter-mode" value="blacklist">
-                    <span>黑名单</span>
-                  </label>
+                <label id="kf-group-filter-label" data-ref="groupFilterLabel">白名单分组</label>
+                <select class="filter-mode-select" data-ref="groupFilterMode" aria-label="分组名单模式">
+                  <option value="whitelist">白名单</option>
+                  <option value="blacklist">黑名单</option>
+                </select>
+              </div>
+              <div class="token-select group-filter-select" data-ref="groupFilterSelect">
+                <button class="token-select-trigger" data-ref="groupFilterSelectToggle" type="button" aria-labelledby="kf-group-filter-label" aria-expanded="false">
+                  <span class="token-select-label" data-ref="groupFilterSelectLabel">不限分组</span>
+                  <span class="token-count" data-ref="groupFilterCount">0/0</span>
+                  <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                </button>
+                <div class="token-menu" data-ref="groupFilterMenu" hidden>
+                  <div class="token-toolbar">
+                    <button class="text-button" data-ref="clearGroupFilter" type="button">清空当前名单</button>
+                  </div>
+                  <div class="token-list" data-ref="groupFilterList"></div>
                 </div>
               </div>
-              <input id="kf-groups" data-ref="groupFilterGroups" type="text" placeholder="例如：低价, 均衡">
             </div>
           </div>
           <details>
@@ -2912,7 +3464,7 @@
             </button>
             <button class="button button-route" data-ref="switchNow" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v13"></path><path d="m7 11 5 5 5-5"></path><path d="M5 21h14"></path></svg>
-              切到最低可用
+              切到策略推荐
             </button>
           </div>
         </section>
@@ -2954,9 +3506,9 @@
     `;
 
     const refNames = [
-      "launcher", "panel", "header", "statusDot", "collapse", "status", "currentGroup", "bestGroup",
-      "lastCheck", "balance", "todaySpend", "todayRequests", "todayTokens", "settingsSection", "enabled",
-      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "groupFilterLabel", "groupFilterWhitelist", "groupFilterBlacklist", "groupFilterGroups", "pollSeconds", "metricHours",
+      "launcher", "panel", "header", "statusDot", "version", "theme", "collapse", "status", "currentGroup", "bestGroup",
+      "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "settingsSection", "enabled", "selectionMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
+      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
       "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
@@ -2966,6 +3518,7 @@
     refs = Object.fromEntries(
       refNames.map((name) => [name, root.querySelector(`[data-ref="${name}"]`) || root.querySelector(`.${name}`)]),
     );
+    applyTheme();
     syncForm();
     renderOptions();
     bindUi();

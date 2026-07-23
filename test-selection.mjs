@@ -20,10 +20,33 @@ assert.equal(source.includes('<dialog class="manual-dialog"'), true, "manual gro
 assert.equal(source.includes('<section class="overview"'), true, "the primary route state should lead the redesigned hierarchy");
 assert.equal(source.includes('<section class="usage-strip"'), true, "today usage should use a compact monitoring strip");
 assert.equal(source.includes('data-ref="balance"'), true, "the account balance should be visible in the monitoring strip");
+assert.equal(source.includes('data-ref="version"'), true, "the current version should be visible in the panel header");
+assert.equal(source.includes('data-ref="theme"'), true, "the panel header should expose a compact theme selector");
+assert.equal(
+  source.includes('theme: refs.theme.value,'),
+  true,
+  "saving switching settings must preserve the selected theme",
+);
+assert.equal(
+  source.includes('root.host.dataset.resolvedTheme = resolvedTheme;'),
+  true,
+  "the selected or system theme should be applied to the shadow host",
+);
+assert.equal(
+  source.includes('systemThemeQuery.addEventListener("change", handleSystemThemeChange)'),
+  true,
+  "system theme changes should update the panel without a reload",
+);
+assert.equal(source.includes(':host([data-resolved-theme="light"])'), true, "the panel should define a light palette");
 assert.equal(source.includes('data-ref="maxFirstTokenLatencySeconds"'), true, "first-token latency should have its own threshold");
 assert.equal(source.includes('data-ref="maxOutputDurationSeconds"'), true, "output duration should have its own threshold");
-assert.equal(source.includes('data-ref="groupFilterWhitelist"'), true, "group filtering should expose a whitelist mode");
-assert.equal(source.includes('data-ref="groupFilterBlacklist"'), true, "group filtering should expose a blacklist mode");
+assert.equal(source.includes('data-ref="groupFilterMode"'), true, "group filtering should use a mutually exclusive mode selector");
+assert.equal(source.includes('data-ref="groupFilterSelectToggle"'), true, "group membership should use a compact dropdown");
+assert.equal(source.includes('data-ref="groupFilterGroups"'), false, "whitelist and blacklist must not share a text input");
+assert.equal(source.includes('data-ref="selectionMode"'), true, "users should be able to choose a routing strategy");
+assert.equal(source.includes('data-ref="spendProtectionEnabled"'), true, "daily spend protection should be configurable");
+assert.equal(source.includes('data-ref="resetSpendProtection"'), true, "spend protection should support resetting its baseline");
+assert.equal(source.includes("option.disabled = !candidate.available"), false, "manual routing should expose every checked group");
 assert.equal(
   source.includes("minmax(54px, auto)"),
   false,
@@ -76,12 +99,26 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.5.1");
+assert.equal(api.extractUserscriptVersion(source), "0.7.0");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
 assert.equal(api.compareVersions("0.4.4", "0.4.5"), -1);
 assert.equal(api.compareVersions("0.10.0", "0.9.9"), 1);
+assert.equal(api.DEFAULT_CONFIG.theme, "system");
+assert.equal(api.sanitizeConfig({ theme: "light" }).theme, "light");
+assert.equal(api.sanitizeConfig({ theme: "dark" }).theme, "dark");
+assert.equal(api.sanitizeConfig({ theme: "unknown" }).theme, "system");
+assert.equal(api.resolveThemeMode("system", true), "dark");
+assert.equal(api.resolveThemeMode("system", false), "light");
+assert.equal(api.resolveThemeMode("light", true), "light");
+assert.equal(api.DEFAULT_CONFIG.selectionMode, "saving");
+assert.equal(api.sanitizeConfig({ selectionMode: "stable" }).selectionMode, "stable");
+assert.equal(api.sanitizeConfig({ selectionMode: "balanced" }).selectionMode, "balanced");
+assert.equal(api.sanitizeConfig({ selectionMode: "unknown" }).selectionMode, "saving");
+assert.equal(api.sanitizeConfig({ spendProtectionEnabled: true }).spendProtectionEnabled, true);
+assert.equal(api.sanitizeConfig({ dailySpendLimit: 12.5 }).dailySpendLimit, 12.5);
+assert.equal(api.sanitizeConfig({ dailySpendLimit: -1 }).dailySpendLimit, 0);
 
 const persistedLogs = Array.from({ length: 12 }, (_, index) => ({
   at: `10:00:${String(index).padStart(2, "0")}`,
@@ -129,15 +166,66 @@ assert.equal(api.sanitizeConfig({ maxOutputDurationSeconds: 12.5 }).maxOutputDur
 const migratedGroupFilter = api.sanitizeConfig({ allowedGroups: ["cheap", "balanced"] });
 assert.equal(migratedGroupFilter.groupFilterMode, "whitelist");
 assert.deepEqual(
-  JSON.parse(JSON.stringify(migratedGroupFilter.groupFilterGroups)),
+  JSON.parse(JSON.stringify(migratedGroupFilter.groupWhitelist)),
   ["cheap", "balanced"],
   "legacy allowedGroups should migrate to the whitelist",
+);
+assert.deepEqual(JSON.parse(JSON.stringify(migratedGroupFilter.groupBlacklist)), []);
+const migratedBlacklist = api.sanitizeConfig({
+  groupFilterMode: "blacklist",
+  groupFilterGroups: ["unstable"],
+});
+assert.deepEqual(JSON.parse(JSON.stringify(migratedBlacklist.groupWhitelist)), []);
+assert.deepEqual(JSON.parse(JSON.stringify(migratedBlacklist.groupBlacklist)), ["unstable"]);
+const separateGroupFilters = api.sanitizeConfig({
+  groupFilterMode: "blacklist",
+  groupWhitelist: ["cheap"],
+  groupBlacklist: ["unstable"],
+});
+assert.deepEqual(JSON.parse(JSON.stringify(api.activeGroupFilter(separateGroupFilters))), ["unstable"]);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.activeGroupFilter({ ...separateGroupFilters, groupFilterMode: "whitelist" }))),
+  ["cheap"],
 );
 assert.equal(api.sanitizeConfig({ groupFilterMode: "blacklist" }).groupFilterMode, "blacklist");
 assert.equal(api.sanitizeConfig({ groupFilterMode: "unknown" }).groupFilterMode, "whitelist");
 assert.equal(api.parsePercentValue("89.25%"), 89.25);
 assert.equal(api.parsePercentValue(0.8925), 89.25);
 assert.equal(api.parsePercentValue(null), Number.NaN);
+
+const spendGuard = { dateKey: "2026-07-23", baselineSpend: 0, warnedApproaching: false, warnedReached: false };
+const approachingSpend = api.evaluateSpendProtection(
+  { available: true, spend: 8 },
+  { spendProtectionEnabled: true, dailySpendLimit: 10 },
+  spendGuard,
+  "2026-07-23",
+);
+assert.equal(approachingSpend.tone, "approaching");
+assert.equal(approachingSpend.ratio, 0.8);
+assert.equal(
+  api.evaluateSpendProtection(
+    { available: true, spend: 10 },
+    { spendProtectionEnabled: true, dailySpendLimit: 10 },
+    spendGuard,
+    "2026-07-23",
+  ).tone,
+  "reached",
+);
+assert.equal(
+  api.evaluateSpendProtection(
+    { available: true, spend: 8 },
+    { spendProtectionEnabled: true, dailySpendLimit: 10 },
+    { ...spendGuard, baselineSpend: 6 },
+    "2026-07-23",
+  ).tone,
+  "normal",
+  "resetting should count only spend after the new baseline",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.normalizeSpendGuard(spendGuard, "2026-07-24"))),
+  { dateKey: "2026-07-24", baselineSpend: 0, warnedApproaching: false, warnedReached: false },
+  "a new local day should reset the spend baseline and alert flags",
+);
 
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.normalizeAihubTodayUsage({
@@ -479,7 +567,7 @@ const blockedAihubCandidates = api.evaluateAihubCandidates(
   api.sanitizeConfig({
     ...config,
     groupFilterMode: "blacklist",
-    groupFilterGroups: ["recent-bad"],
+    groupBlacklist: ["recent-bad"],
   }),
   aihubNow,
 );
@@ -579,6 +667,45 @@ assert.ok(
 
 assert.equal(api.selectBestCandidate(candidates, "balanced").group, "recent-bad");
 assert.equal(api.selectBestCandidate(candidates, "cheap").group, "recent-bad");
+const strategyCandidates = [
+  {
+    group: "cheapest",
+    available: true,
+    ratio: 0.05,
+    aggregateSuccess: 96,
+    recentMinSuccess: 96,
+    firstTokenLatencyMs: 12000,
+    outputLatencyMs: 50000,
+    cacheHitRate: 10,
+  },
+  {
+    group: "balanced-choice",
+    available: true,
+    ratio: 0.1,
+    aggregateSuccess: 99.5,
+    recentMinSuccess: 100,
+    firstTokenLatencyMs: 1200,
+    outputLatencyMs: 7000,
+    cacheHitRate: 80,
+  },
+  {
+    group: "most-stable",
+    available: true,
+    ratio: 0.2,
+    aggregateSuccess: 100,
+    recentMinSuccess: 100,
+    firstTokenLatencyMs: 500,
+    outputLatencyMs: 2500,
+    cacheHitRate: 99,
+  },
+];
+assert.equal(api.selectBestCandidate(strategyCandidates, "", "saving").group, "cheapest");
+assert.equal(api.selectBestCandidate(strategyCandidates, "", "stable").group, "most-stable");
+assert.equal(api.selectBestCandidate(strategyCandidates, "", "balanced").group, "balanced-choice");
+assert.ok(
+  api.candidateHealthScore(strategyCandidates[2]) > api.candidateHealthScore(strategyCandidates[1]),
+  "stable scoring should reward recent success, latency, output time, and cache hit rate",
+);
 assert.equal(
   api.selectSwitchCandidate(candidates, "cheap", "balanced").group,
   "balanced",
@@ -587,6 +714,11 @@ assert.equal(
 assert.throws(
   () => api.selectSwitchCandidate(candidates, "cheap", "unstable"),
   /目标分组 unstable 当前不可用：.*最新成功率不足/,
+);
+assert.equal(
+  api.selectSwitchCandidate(candidates, "cheap", "unstable", { allowUnavailable: true }).group,
+  "unstable",
+  "manual selection should allow a user to override automated health policy",
 );
 assert.throws(
   () => api.selectSwitchCandidate(candidates, "cheap", "missing"),
@@ -598,7 +730,7 @@ assert.equal(api.shouldSwitchCandidate(candidates.find((item) => item.group === 
 const allowListConfig = api.sanitizeConfig({
   ...config,
   groupFilterMode: "whitelist",
-  groupFilterGroups: ["balanced"],
+  groupWhitelist: ["balanced"],
 });
 const allowListCandidates = api.evaluateCandidates(pricing, metrics, userGroups, allowListConfig, now);
 assert.equal(api.selectBestCandidate(allowListCandidates, "cheap").group, "balanced");
@@ -607,7 +739,7 @@ assert.ok(allowListCandidates.find((item) => item.group === "cheap").reasons.inc
 const blockListConfig = api.sanitizeConfig({
   ...config,
   groupFilterMode: "blacklist",
-  groupFilterGroups: ["recent-bad", "cheap"],
+  groupBlacklist: ["recent-bad", "cheap"],
 });
 const blockListCandidates = api.evaluateCandidates(pricing, metrics, userGroups, blockListConfig, now);
 assert.equal(api.selectBestCandidate(blockListCandidates, "cheap").group, "balanced");
@@ -618,7 +750,7 @@ const emptyBlockListCandidates = api.evaluateCandidates(
   pricing,
   metrics,
   userGroups,
-  api.sanitizeConfig({ ...config, groupFilterMode: "blacklist", groupFilterGroups: [] }),
+  api.sanitizeConfig({ ...config, groupFilterMode: "blacklist", groupBlacklist: [] }),
   now,
 );
 assert.equal(api.selectBestCandidate(emptyBlockListCandidates, "cheap").group, "recent-bad");
