@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.11.1
+// @version      0.11.3
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.11.1";
+  const SCRIPT_VERSION = "0.11.3";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -86,7 +86,7 @@
   }
 
   function normalizeActiveView(value) {
-    return ["monitor", "diagnostics"].includes(value) ? value : "monitor";
+    return ["monitor", "diagnostics", "settings"].includes(value) ? value : "monitor";
   }
 
   function normalizeSelectionMode(value) {
@@ -565,6 +565,22 @@
     return "30d";
   }
 
+  async function loadAihubMonitorData(fetcher, range) {
+    const seriesRequest = Promise.resolve()
+      .then(() => fetcher(`/api/v1/public/monitor/series/${range}`))
+      .then(
+        (series) => ({ series, seriesError: null }),
+        (seriesError) => ({ series: {}, seriesError }),
+      );
+    const [summary, seriesResult, groups, rates] = await Promise.all([
+      fetcher("/api/v1/public/monitor/summary"),
+      seriesRequest,
+      fetcher("/api/v1/groups/available"),
+      fetcher("/api/v1/groups/rates"),
+    ]);
+    return { summary, groups, rates, ...seriesResult };
+  }
+
   function evaluateAihubCandidates(summaryPayload, seriesPayload, groupsPayload, ratesPayload, config, nowMs) {
     const summary = summaryPayload && typeof summaryPayload === "object" ? summaryPayload : {};
     const seriesByApiId = seriesPayload && seriesPayload.seriesByApiId && typeof seriesPayload.seriesByApiId === "object"
@@ -609,7 +625,13 @@
           monitor.successRates && (monitor.successRates[successKey] ?? monitor.successRates["24h"]),
         );
         const aggregateSuccess = Number.isFinite(summarySuccess) ? summarySuccess * 100 : NaN;
-        const latestSuccess = latestPoint ? (latestPoint.available ? 100 : 0) : NaN;
+        const latestSuccess = latestPoint
+          ? (latestPoint.available ? 100 : 0)
+          : monitor.available === true
+            ? 100
+            : monitor.available === false
+              ? 0
+              : NaN;
         const checkedAtMs = Date.parse(monitor.checkedAt || summary.generatedAt || "");
         const ageMinutes = Number.isFinite(checkedAtMs)
           ? Math.max(0, now - checkedAtMs) / 60000
@@ -1056,7 +1078,9 @@
     candidateStrategyScore,
     evaluateSpendProtection,
     localDateKey,
+    loadAihubMonitorData,
     normalizeLogs,
+    normalizeActiveView,
     normalizeAihubTodayUsage,
     normalizeAihubToken,
     normalizeKfcodingTodayUsage,
@@ -1140,6 +1164,7 @@
       availableVersion: "",
       lastCheckedAt: 0,
     },
+    aihubSeriesDegraded: false,
   };
 
   function addLog(message, tone) {
@@ -1860,16 +1885,20 @@
           : "正在检查分组状态...",
       "running",
     );
+    let monitorFallback = false;
     try {
       let candidates;
       if (IS_AIHUB) {
         const range = aihubMonitorRange(config.metricHours);
-        const [summary, series, groups, rates] = await Promise.all([
-          fetchJson("/api/v1/public/monitor/summary"),
-          fetchJson(`/api/v1/public/monitor/series/${range}`),
-          fetchJson("/api/v1/groups/available"),
-          fetchJson("/api/v1/groups/rates"),
-        ]);
+        const { summary, series, seriesError, groups, rates } = await loadAihubMonitorData(fetchJson, range);
+        monitorFallback = Boolean(seriesError);
+        if (seriesError && !state.aihubSeriesDegraded) {
+          const message = seriesError instanceof Error ? seriesError.message : String(seriesError);
+          addLog(`AIHub 近期柱状图暂不可用，已使用最新汇总状态：${message}`, "warning");
+        } else if (!seriesError && state.aihubSeriesDegraded) {
+          addLog("AIHub 近期柱状图接口已恢复", "success");
+        }
+        state.aihubSeriesDegraded = monitorFallback;
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
         pricingCache = { data: [{ model_name: AIHUB_MONITOR_MODEL }] };
@@ -1918,7 +1947,11 @@
         state.tokenResults = [];
         state.currentGroup = "-";
         addLog(`分组状态已更新：${candidates.length} 个分组，${availableCount} 个可用`, "success");
-        setStatus(`已检查 ${candidates.length} 个分组，${availableCount} 个可用`, "success");
+        const fallbackSuffix = monitorFallback ? "，近期图表已降级" : "";
+        setStatus(
+          `已检查 ${candidates.length} 个分组，${availableCount} 个可用${fallbackSuffix}`,
+          monitorFallback ? "warning" : "success",
+        );
         return;
       }
 
@@ -1982,8 +2015,9 @@
         setStatus(`${failedCount} 个 API 密钥处理失败`, "error");
       } else if (failedCount > 0) {
         setStatus(`处理完成：${actionSummary}，失败 ${failedCount} 个`, "warning");
-      } else if (warningCount > 0) {
-        setStatus(`已检查 ${state.tokenResults.length} 个 API 密钥，${actionSummary}`, "warning");
+      } else if (warningCount > 0 || monitorFallback) {
+        const fallbackSuffix = monitorFallback ? "，近期图表已降级" : "";
+        setStatus(`已检查 ${state.tokenResults.length} 个 API 密钥，${actionSummary}${fallbackSuffix}`, "warning");
       } else {
         setStatus(`已检查 ${state.tokenResults.length} 个 API 密钥，${actionSummary}`, "success");
       }
@@ -2385,6 +2419,11 @@
       refs.updateBadge.title = updateBadgeLabel;
       refs.updateBadge.setAttribute("aria-label", updateBadgeLabel);
     }
+    if (refs.settings) {
+      const settingsActive = state.activeView === "settings";
+      refs.settings.dataset.active = String(settingsActive);
+      refs.settings.setAttribute("aria-pressed", String(settingsActive));
+    }
     if (root) {
       root.querySelectorAll("[data-view-target]").forEach((button) => {
         const active = button.dataset.viewTarget === state.activeView;
@@ -2642,12 +2681,7 @@
     });
     refs.check.addEventListener("click", () => runCheck({ manual: true }));
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
-    refs.settings.addEventListener("click", () => refs.settingsDialog.showModal());
-    refs.settingsClose.addEventListener("click", () => refs.settingsDialog.close());
-    refs.settingsDialog.addEventListener("close", () => {
-      setTokenMenuOpen(false);
-      setGroupFilterMenuOpen(false);
-    });
+    refs.settings.addEventListener("click", () => setActiveView("settings"));
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
     refs.resetSpendProtection.addEventListener("click", resetSpendProtection);
     refs.tokenSelectToggle.addEventListener("click", () => {
@@ -2827,7 +2861,7 @@
           font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
           font-variant-numeric: tabular-nums slashed-zero;
         }
-        .launcher, .panel, .manual-dialog, .settings-dialog {
+        .launcher, .panel, .manual-dialog {
           font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei UI", sans-serif;
           font-optical-sizing: auto;
           color: var(--text);
@@ -2859,7 +2893,7 @@
         .launcher:hover { border-color: var(--accent); background: var(--surface-raised); }
         .launcher:active { cursor: grabbing; transform: scale(.96); }
         .panel {
-          width: min(560px, calc(100vw - 24px));
+          width: min(480px, calc(100vw - 24px));
           max-height: min(848px, calc(100vh - 24px));
           overflow: auto;
           border: 1px solid var(--line-strong);
@@ -2984,6 +3018,7 @@
           line-height: 1;
         }
         .icon-button:hover { border-color: var(--line); background: var(--surface-raised); color: var(--text); }
+        .icon-button[data-ref="settings"][data-active="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
         .icon-button:active { transform: scale(.92); transition-duration: 80ms; }
         button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .icon-button svg, .button svg {
@@ -3307,7 +3342,7 @@
         .log-success { color: var(--accent); }
         .log-error { color: var(--danger); }
         .empty { padding: 8px 0; color: var(--muted); font-size: 10px; }
-        .manual-dialog, .settings-dialog {
+        .manual-dialog {
           width: min(380px, calc(100vw - 28px));
           border: 1px solid var(--line-strong);
           border-radius: 6px;
@@ -3319,15 +3354,7 @@
           backdrop-filter: blur(24px) saturate(150%);
         }
         .manual-dialog::backdrop { background: var(--dialog-backdrop); }
-        .settings-dialog {
-          width: min(560px, calc(100vw - 28px));
-          max-height: min(760px, calc(100vh - 28px));
-          overflow: hidden;
-        }
-        .settings-dialog::backdrop { background: var(--dialog-backdrop); }
-        .settings-form { display: flex; max-height: min(760px, calc(100vh - 28px)); flex-direction: column; }
-        .settings-dialog-header { flex: 0 0 auto; margin: 0; padding: 13px 14px; border-bottom: 1px solid var(--line); }
-        .settings-dialog .control-section { min-height: 0; overflow: auto; padding: 14px 16px; }
+        .settings-view .control-section { padding: 14px 16px; border-bottom: 0; }
         .settings-appearance {
           display: flex;
           align-items: center;
@@ -3358,7 +3385,7 @@
         .dialog-hint { min-height: 18px; margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
         .dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
         .panel {
-          width: min(560px, calc(100vw - 24px));
+          width: min(480px, calc(100vw - 24px));
           height: min(760px, calc(100vh - 24px));
           max-height: none;
           display: flex;
@@ -3367,7 +3394,7 @@
         }
         .work-nav {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           min-height: 38px;
           gap: 0;
           padding: 0;
@@ -3468,14 +3495,14 @@
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
         }
         @media (prefers-reduced-transparency: reduce) {
-          .header, .work-nav, .token-menu, .manual-dialog, .settings-dialog {
+          .header, .work-nav, .token-menu, .manual-dialog {
             -webkit-backdrop-filter: none;
             backdrop-filter: none;
             background: var(--surface);
           }
         }
         @media (prefers-contrast: more) {
-          .panel, .manual-dialog, .settings-dialog { border-color: var(--text-soft); }
+          .panel, .manual-dialog { border-color: var(--text-soft); }
           .work-nav button[data-active="true"], input, select, .token-select-trigger { border-color: var(--line-strong); }
           .header, .work-nav { background: var(--surface); }
         }
@@ -3493,7 +3520,7 @@
             </span>
           </span>
           <span class="header-health" title="监控状态"><span class="dot" data-ref="statusDot"></span></span>
-          <button class="icon-button" data-ref="settings" type="button" title="设置" aria-label="打开设置">
+          <button class="icon-button" data-ref="settings" data-active="false" type="button" title="设置" aria-label="打开设置工作区" aria-pressed="false">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"></path></svg>
           </button>
           <button class="icon-button" data-ref="collapse" type="button" title="收起" aria-label="收起">−</button>
@@ -3501,6 +3528,7 @@
         <nav class="work-nav" aria-label="插件工作区" role="tablist">
           <button id="kf-tab-monitor" data-view-target="monitor" data-active="true" role="tab" aria-controls="kf-view-monitor" aria-selected="true" type="button">监控 <span class="nav-count" data-ref="candidateCount">0</span></button>
           <button id="kf-tab-diagnostics" data-view-target="diagnostics" data-active="false" role="tab" aria-controls="kf-view-diagnostics" aria-selected="false" type="button">诊断 <span class="nav-count" data-ref="logCount">0</span></button>
+          <button id="kf-tab-settings" data-view-target="settings" data-active="false" role="tab" aria-controls="kf-view-settings" aria-selected="false" type="button">设置</button>
         </nav>
         <div class="status" data-ref="status" role="status" aria-live="polite"></div>
         <main class="workspace" data-ref="workspace">
@@ -3546,13 +3574,12 @@
           <div data-ref="candidateRows"></div>
         </section>
         </section>
-        <dialog class="settings-dialog" data-ref="settingsDialog" aria-labelledby="kf-settings-title">
-          <form class="settings-form" method="dialog">
-          <div class="dialog-header settings-dialog-header">
-            <h2 class="dialog-title" id="kf-settings-title">设置</h2>
-            <button class="icon-button" data-ref="settingsClose" type="button" title="关闭" aria-label="关闭设置">×</button>
+        <section class="work-view settings-view" id="kf-view-settings" data-view="settings" role="tabpanel" aria-labelledby="kf-tab-settings" tabindex="0" hidden>
+          <div class="view-intro">
+            <h2>设置</h2>
+            <p>所有更改自动保存</p>
           </div>
-        <section class="section control-section" data-ref="settingsSection">
+        <section class="section control-section settings-section" data-ref="settingsSection">
           <div class="settings-appearance">
             <span class="settings-appearance-copy"><strong>界面主题</strong><small>可跟随系统自动切换</small></span>
             <select class="theme-select" data-ref="theme" aria-label="插件皮肤">
@@ -3661,8 +3688,7 @@
               <span data-ref="updateLabel">检查更新</span>
             </button>
           </div>
-          </form>
-        </dialog>
+        </section>
         <section class="work-view" id="kf-view-diagnostics" data-view="diagnostics" role="tabpanel" aria-labelledby="kf-tab-diagnostics" tabindex="0" hidden>
           <div class="view-intro">
             <h2>诊断历史</h2>
@@ -3703,7 +3729,7 @@
     `;
 
     const refNames = [
-      "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "settings", "settingsDialog", "settingsClose", "collapse", "status", "currentGroup", "bestGroup",
+      "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "settings", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "selectionMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
       "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",

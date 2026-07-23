@@ -25,15 +25,18 @@ assert.equal(source.includes('data-ref="updateBadge"'), true, "available updates
 assert.equal(source.includes('GM_notification({\n      title: "分组监控脚本有新版本"'), true, "new versions should trigger a userscript notification");
 assert.equal(source.includes('GM_getValue(STORAGE_UPDATE_NOTICE, "") === version'), true, "update notifications should be deduplicated across reloads");
 assert.equal(source.includes('GM_setValue(STORAGE_UPDATE_NOTICE, version)'), true, "the last notified version should be persisted");
-assert.equal(source.includes('class="settings-appearance"'), true, "theme selection should live in the settings dialog");
+assert.equal(source.includes('class="settings-appearance"'), true, "theme selection should live in the settings workspace");
 assert.equal(source.includes('data-ref="settings"'), true, "the panel header should expose a settings button");
-assert.equal(source.includes('<dialog class="settings-dialog"'), true, "routing configuration should live in a dedicated settings dialog");
+assert.equal(source.includes('<dialog class="settings-dialog"'), false, "settings should not open in a modal dialog");
+assert.equal(source.includes('data-view="settings" role="tabpanel"'), true, "routing configuration should live in an internal workspace");
+assert.equal(source.includes('refs.settings.addEventListener("click", () => setActiveView("settings"))'), true, "the header settings button should switch workspaces");
+assert.equal(source.includes('settingsDialog.showModal()'), false, "the settings shortcut must not open a modal");
 assert.equal(source.includes('data-ref="layoutMode"'), false, "the panel should use one stable narrow layout");
 assert.equal(source.includes('data-layout-mode'), false, "legacy wide layout selectors must not override responsive rules");
 assert.equal(source.includes('class="monitor-command-row"'), false, "wide monitoring wrappers should be removed");
 assert.equal(source.includes('class="route-settings-layout"'), false, "wide settings wrappers should be removed");
-assert.equal(source.includes('width: min(560px, calc(100vw - 24px));'), true, "the panel should use the narrow desktop width");
-assert.equal(source.includes('width: min(560px, calc(100vw - 28px));'), true, "the settings dialog should share the narrow width");
+assert.equal(source.includes('width: min(480px, calc(100vw - 24px));'), true, "the panel should use the compact desktop width");
+assert.equal(source.includes('grid-template-columns: repeat(3, minmax(0, 1fr));'), true, "monitoring, diagnostics, and settings should share one navigation bar");
 assert.equal(source.includes('.diagnostics-grid { display: grid; grid-template-columns: 1fr; }'), true, "diagnostics should stay in one column");
 assert.equal(
   source.includes('theme: refs.theme.value,'),
@@ -126,12 +129,13 @@ assert.equal(source.includes('class="button button-check"'), true, "immediate ch
 assert.equal(source.includes('class="button button-route"'), true, "lowest-route switching should remain directly accessible");
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
-  (source.match(/<section class="work-view"/g) || []).length,
-  2,
-  "the primary navigation should contain only monitoring and diagnostics workspaces",
+  (source.match(/<section class="work-view/g) || []).length,
+  3,
+  "the primary navigation should contain monitoring, diagnostics, and settings workspaces",
 );
 assert.equal(source.includes('role="tabpanel" aria-labelledby="kf-tab-monitor"'), true, "tabs should identify their monitor panel");
 assert.equal(source.includes('aria-controls="kf-view-diagnostics"'), true, "workspace tabs should expose their controlled panels");
+assert.equal(source.includes('aria-controls="kf-view-settings"'), true, "the settings tab should expose its controlled panel");
 assert.equal(source.includes('function setActiveView(view, options)'), true, "all workspace navigation should share one state transition");
 assert.equal(source.includes('["ArrowLeft", "ArrowRight", "Home", "End"]'), true, "workspace tabs should support keyboard navigation");
 assert.equal(source.includes('font-family: -apple-system, BlinkMacSystemFont'), true, "the Apple pass should use platform typography");
@@ -142,7 +146,7 @@ assert.equal(source.includes('refs.status.dataset.tone = state.tone'), true, "st
 assert.equal(
   source.indexOf('data-ref="checkUpdate"') > source.indexOf('data-ref="settingsSection"'),
   true,
-  "update controls should live inside the settings dialog",
+  "update controls should live inside the settings workspace",
 );
 const sandbox = {
   __KFCODING_GROUP_SWITCHER_TEST__: true,
@@ -156,7 +160,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.11.1");
+assert.equal(api.extractUserscriptVersion(source), "0.11.3");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
@@ -169,6 +173,7 @@ assert.equal(api.sanitizeConfig({ theme: "unknown" }).theme, "system");
 assert.equal(api.resolveThemeMode("system", true), "dark");
 assert.equal(api.resolveThemeMode("system", false), "light");
 assert.equal(api.resolveThemeMode("light", true), "light");
+assert.equal(api.normalizeActiveView("settings"), "settings");
 assert.equal(api.DEFAULT_CONFIG.selectionMode, "saving");
 assert.equal(api.sanitizeConfig({ selectionMode: "stable" }).selectionMode, "stable");
 assert.equal(api.sanitizeConfig({ selectionMode: "balanced" }).selectionMode, "balanced");
@@ -593,6 +598,44 @@ assert.equal(
 );
 assert.ok(aihubCandidates.find((item) => item.group === "private").reasons.includes("not-user-selectable"));
 assert.equal(api.selectBestCandidate(aihubCandidates, "balanced").group, "recent-bad");
+
+const degradedAihubCandidates = api.evaluateAihubCandidates(
+  aihubSummary,
+  {},
+  aihubGroups,
+  { 1: 0.04 },
+  config,
+  aihubNow,
+);
+assert.equal(
+  degradedAihubCandidates.find((item) => item.group === "cheap").latestSuccess,
+  100,
+  "AIHub should fall back to the latest summary availability when the series endpoint fails",
+);
+assert.equal(degradedAihubCandidates.find((item) => item.group === "cheap").available, true);
+assert.equal(degradedAihubCandidates.find((item) => item.group === "balanced").latestSuccess, 0);
+
+const requestedAihubMonitorPaths = [];
+const degradedAihubMonitorData = await api.loadAihubMonitorData(async (path) => {
+  requestedAihubMonitorPaths.push(path);
+  if (path === "/api/v1/public/monitor/series/24h") throw new Error("non-json response");
+  if (path === "/api/v1/public/monitor/summary") return aihubSummary;
+  if (path === "/api/v1/groups/available") return aihubGroups;
+  if (path === "/api/v1/groups/rates") return { 1: 0.04 };
+  throw new Error(`unexpected path ${path}`);
+}, "24h");
+assert.equal(degradedAihubMonitorData.summary, aihubSummary);
+assert.deepEqual(JSON.parse(JSON.stringify(degradedAihubMonitorData.series)), {});
+assert.match(degradedAihubMonitorData.seriesError.message, /non-json response/);
+assert.deepEqual(
+  requestedAihubMonitorPaths.slice().sort(),
+  [
+    "/api/v1/groups/available",
+    "/api/v1/groups/rates",
+    "/api/v1/public/monitor/series/24h",
+    "/api/v1/public/monitor/summary",
+  ],
+);
 
 const cappedAihubCandidates = api.evaluateAihubCandidates(
   aihubSummary,
