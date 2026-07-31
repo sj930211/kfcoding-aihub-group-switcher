@@ -5,23 +5,46 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KFCoding switcher UI preview</title>
   <style>
-    body { margin: 0; min-height: 100vh; background: #e8ece9; color: #26312b; font: 14px/1.5 sans-serif; }
-    main { width: min(980px, calc(100% - 40px)); margin: 48px auto; }
-    .line { height: 12px; margin: 14px 0; background: #d5ddd8; }
-    .line:nth-child(2n) { width: 72%; }
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; overflow: hidden; background: #18232d; color: #9ba7b1; font: 14px/1.5 sans-serif; }
+    .provider-shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+    .provider-sidebar { padding: 28px 20px; border-right: 1px solid rgba(255,255,255,.08); background: #0f171e; }
+    .provider-brand { margin-bottom: 38px; color: #d8dfe5; font-size: 18px; font-weight: 650; }
+    .provider-nav { display: grid; gap: 8px; }
+    .provider-nav span { padding: 9px 12px; border-radius: 7px; }
+    .provider-nav .active { color: #dceaff; background: rgba(91,169,255,.13); }
+    .provider-page { min-width: 0; padding: 30px 34px; }
+    .provider-page h1 { margin: 0 0 24px; color: #cfd6dc; font-size: 24px; }
+    .provider-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .provider-metric, .provider-chart, .provider-table { border: 1px solid rgba(255,255,255,.09); border-radius: 8px; background: rgba(91,169,255,.045); }
+    .provider-metric { height: 82px; padding: 16px; }
+    .provider-metric::before, .provider-metric::after, .provider-row span { display: block; border-radius: 3px; background: rgba(255,255,255,.15); content: ""; }
+    .provider-metric::before { width: 44%; height: 7px; margin-bottom: 16px; }
+    .provider-metric::after { width: 68%; height: 14px; }
+    .provider-chart { position: relative; height: 220px; margin-top: 18px; overflow: hidden; background: rgba(7,13,18,.2); }
+    .provider-chart div { height: 44px; border-bottom: 1px solid rgba(255,255,255,.07); }
+    .provider-chart::after { position: absolute; top: 104px; right: 6%; left: 6%; height: 3px; background: #58d69a; box-shadow: 130px 22px 0 #5ba9ff, 310px -12px 0 #58d69a, 490px 18px 0 #f2b94b; transform: skewY(-4deg); content: ""; }
+    .provider-table { margin-top: 18px; overflow: hidden; background: rgba(7,13,18,.16); }
+    .provider-row { display: grid; grid-template-columns: 1.4fr repeat(5,1fr); align-items: center; height: 46px; padding: 0 18px; border-bottom: 1px solid rgba(255,255,255,.07); }
+    .provider-row span { width: 62%; height: 7px; }
+    @media (max-width: 600px) { .provider-shell { grid-template-columns: 1fr; } .provider-sidebar { display: none; } .provider-page { padding: 20px; } .provider-metrics { grid-template-columns: repeat(2, 1fr); } }
   </style>
 </head>
 <body>
-  <main aria-hidden="true">
-    <h1>Provider usage</h1>
-    <div class="line"></div><div class="line"></div><div class="line"></div><div class="line"></div>
+  <main class="provider-shell" aria-hidden="true">
+    <aside class="provider-sidebar"><div class="provider-brand">AIHub</div><div class="provider-nav"><span>仪表盘</span><span class="active">供应商大厅</span><span>API 密钥</span><span>使用记录</span><span>我的订阅</span><span>个人资料</span></div></aside>
+    <section class="provider-page"><h1>供应商大厅</h1><div class="provider-metrics"><div class="provider-metric"></div><div class="provider-metric"></div><div class="provider-metric"></div><div class="provider-metric"></div></div><div class="provider-chart"><div></div><div></div><div></div><div></div></div><div class="provider-table"><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div></div></section>
   </main>
   <script>
     const updateNoticeKey = "kfcoding-aihub-group-switcher:update-notice:v1";
     const previewParams = new URLSearchParams(location.search);
     if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
-    values.set("kfcoding-group-switcher:config:v1", { theme: "dark" });
+    values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 60, enabled: false, model: "gpt-4.1", selectionMode: "balanced" });
+    values.set("kfcoding-group-switcher:switch-guard:v1", {
+      blacklist: [{ model: "gpt-4.1", group: "promo-night", until: Date.now() + 42 * 60 * 1000 }],
+    });
     if (sessionStorage.getItem(updateNoticeKey)) {
       values.set(updateNoticeKey, sessionStorage.getItem(updateNoticeKey));
     }
@@ -38,7 +61,7 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.12.0" : "0.11.3";
+    const previewVersion = previewParams.has("update") ? "0.12.1" : "0.12.0";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     window.fetch = async () => ({
       ok: true,

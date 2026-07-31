@@ -26,10 +26,12 @@ assert.equal(source.includes('GM_notification({\n      title: "分组监控脚�
 assert.equal(source.includes('GM_getValue(STORAGE_UPDATE_NOTICE, "") === version'), true, "update notifications should be deduplicated across reloads");
 assert.equal(source.includes('GM_setValue(STORAGE_UPDATE_NOTICE, version)'), true, "the last notified version should be persisted");
 assert.equal(source.includes('class="settings-appearance"'), true, "theme selection should live in the settings workspace");
-assert.equal(source.includes('data-ref="settings"'), true, "the panel header should expose a settings button");
+assert.equal(source.includes('data-ref="glassTransparency"'), true, "glass transparency should be adjustable in settings");
+assert.equal(source.includes('data-ref="glassTransparencyValue"'), true, "glass transparency should display its current value");
+assert.equal(source.includes('data-ref="settings"'), false, "the settings tab should be the only settings entry point");
 assert.equal(source.includes('<dialog class="settings-dialog"'), false, "settings should not open in a modal dialog");
 assert.equal(source.includes('data-view="settings" role="tabpanel"'), true, "routing configuration should live in an internal workspace");
-assert.equal(source.includes('refs.settings.addEventListener("click", () => setActiveView("settings"))'), true, "the header settings button should switch workspaces");
+assert.equal(source.includes('refs.settings.addEventListener'), false, "the removed header settings shortcut should not retain event bindings");
 assert.equal(source.includes('settingsDialog.showModal()'), false, "the settings shortcut must not open a modal");
 assert.equal(source.includes('data-ref="layoutMode"'), false, "the panel should use one stable narrow layout");
 assert.equal(source.includes('data-layout-mode'), false, "legacy wide layout selectors must not override responsive rules");
@@ -42,6 +44,11 @@ assert.equal(
   source.includes('theme: refs.theme.value,'),
   true,
   "saving switching settings must preserve the selected theme",
+);
+assert.equal(
+  source.includes('glassTransparency: refs.glassTransparency.value,'),
+  true,
+  "saving switching settings must preserve glass transparency",
 );
 assert.equal(
   source.includes('root.host.dataset.resolvedTheme = resolvedTheme;'),
@@ -76,13 +83,15 @@ assert.equal(
 assert.equal(source.includes("border-left: 2px"), false, "candidate rows should not use decorative status rails");
 assert.equal(source.includes("font-family: Inter"), false, "the console should not use the default AI dashboard typeface");
 assert.equal(source.includes("GROUP CONTROL"), false, "the header should not use a decorative English eyebrow");
+assert.equal(source.includes("border-radius: 20px;"), true, "the panel should use the approved continuous glass radius");
+assert.equal(source.includes("background: var(--panel-glass);"), true, "the panel should use a translucent material surface");
 assert.equal(
-  source.includes("border-radius: 6px;\n          background: var(--canvas);"),
+  source.includes("backdrop-filter: blur(22px) saturate(175%) contrast(108%);"),
   true,
-  "the console should use a precise technical shell radius",
+  "the panel should visibly refract the provider page behind it",
 );
 assert.equal(source.includes('class="brand-mark"'), true, "the console should expose a compact provider identity");
-assert.equal(source.includes('class="route-connector"'), true, "current and recommended groups should form a visible route");
+assert.equal(source.includes('class="route-connector"'), false, "the approved compact route summary should not use a decorative connector");
 assert.equal(source.includes('signal.className = "candidate-signal"'), true, "candidate health should use a dedicated status signal");
 assert.equal(source.includes('recentSuccess.className = "mono health-value"'), true, "recent health should expose a compact trajectory");
 assert.equal(
@@ -126,7 +135,7 @@ assert.equal(
 assert.equal(source.includes('<div class="automation-bar">'), true, "automatic routing should remain a dedicated settings row");
 assert.equal(source.includes('<div class="control-grid">'), true, "key and model selectors should use a compact responsive grid");
 assert.equal(source.includes('class="button button-check"'), true, "immediate checks should be the primary command");
-assert.equal(source.includes('class="button button-route"'), true, "lowest-route switching should remain directly accessible");
+assert.equal(source.includes('class="icon-button route-apply"'), true, "recommended-route switching should remain directly accessible");
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
   (source.match(/<section class="work-view/g) || []).length,
@@ -140,6 +149,9 @@ assert.equal(source.includes('function setActiveView(view, options)'), true, "al
 assert.equal(source.includes('["ArrowLeft", "ArrowRight", "Home", "End"]'), true, "workspace tabs should support keyboard navigation");
 assert.equal(source.includes('font-family: -apple-system, BlinkMacSystemFont'), true, "the Apple pass should use platform typography");
 assert.equal(source.includes('@media (prefers-reduced-transparency: reduce)'), true, "translucent chrome should have a solid accessibility fallback");
+assert.equal(source.includes('data-ref="isolationRows"'), true, "settings should expose active fault isolations");
+assert.equal(source.includes('data-ref="clearAllIsolations"'), true, "fault isolations should support clearing all entries");
+assert.equal(source.includes('data-ref="isolationToastUndo"'), true, "fault-isolation removal should offer undo");
 assert.equal(source.includes('.work-nav button[data-active="true"]::after'), false, "selected tabs should use a familiar segmented state instead of a web underline");
 assert.equal(source.includes('Math.hypot(deltaX, deltaY) < 10'), true, "panel dragging should use touch-friendly hysteresis");
 assert.equal(source.includes('refs.status.dataset.tone = state.tone'), true, "status feedback should communicate its semantic state");
@@ -160,16 +172,37 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.11.3");
+assert.equal(api.extractUserscriptVersion(source), "0.12.0");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
 assert.equal(api.compareVersions("0.4.4", "0.4.5"), -1);
 assert.equal(api.compareVersions("0.11.0", "0.9.9"), 1);
 assert.equal(api.DEFAULT_CONFIG.theme, "system");
+assert.equal(api.DEFAULT_CONFIG.glassTransparency, 60);
 assert.equal(api.sanitizeConfig({ theme: "light" }).theme, "light");
 assert.equal(api.sanitizeConfig({ theme: "dark" }).theme, "dark");
 assert.equal(api.sanitizeConfig({ theme: "unknown" }).theme, "system");
+assert.equal(api.sanitizeConfig({ glassTransparency: 35 }).glassTransparency, 35);
+assert.equal(api.sanitizeConfig({ glassTransparency: -1 }).glassTransparency, 0);
+assert.equal(api.sanitizeConfig({ glassTransparency: 101 }).glassTransparency, 100);
+assert.equal(api.sanitizeConfig({ glassTransparency: "invalid" }).glassTransparency, 60);
+assert.equal(
+  api.resolveGlassMaterial("dark", 60),
+  "linear-gradient(135deg, rgb(31 37 45 / 49%), rgb(13 17 22 / 38%))",
+);
+assert.equal(
+  api.resolveGlassMaterial("light", 60),
+  "linear-gradient(135deg, rgb(255 255 255 / 62%), rgb(235 240 244 / 48%))",
+);
+assert.equal(
+  api.resolveGlassMaterial("dark", 0),
+  "linear-gradient(135deg, rgb(31 37 45 / 100%), rgb(13 17 22 / 100%))",
+);
+assert.equal(
+  api.resolveGlassMaterial("dark", 100),
+  "linear-gradient(135deg, rgb(31 37 45 / 20%), rgb(13 17 22 / 12%))",
+);
 assert.equal(api.resolveThemeMode("system", true), "dark");
 assert.equal(api.resolveThemeMode("system", false), "light");
 assert.equal(api.resolveThemeMode("light", true), "light");
@@ -391,6 +424,24 @@ const blacklistedCandidates = api.applyTemporaryBlacklist([
 assert.equal(blacklistedCandidates[0].available, false);
 assert.equal(blacklistedCandidates[0].reasons[0], "temporarily-blacklisted");
 assert.equal(blacklistedCandidates[1].available, true);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.listActiveIsolations(guardState, 2000))),
+  [{ model: "gpt-test", group: "cheap", until: 5000 }],
+);
+const removedIsolation = api.removeIsolation(guardState, "gpt-test", "cheap", 2000);
+assert.equal(removedIsolation.state.blacklist.length, 0);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(removedIsolation.removed)),
+  [{ model: "gpt-test", group: "cheap", until: 5000 }],
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.restoreIsolations(removedIsolation.state, removedIsolation.removed, 2000).blacklist)),
+  [{ model: "gpt-test", group: "cheap", until: 5000 }],
+);
+assert.equal(api.restoreIsolations(removedIsolation.state, removedIsolation.removed, 6000).blacklist.length, 0);
+const clearedIsolations = api.removeAllIsolations(guardState, 2000);
+assert.equal(clearedIsolations.state.blacklist.length, 0);
+assert.equal(clearedIsolations.removed.length, 1);
 assert.equal(
   api.applyTemporaryBlacklist([
     { group: "cheap", available: true, reasons: [], ratio: 0.05 },
@@ -506,6 +557,7 @@ const aihubSummary = {
       checkedAt: new Date(aihubNow - 30_000).toISOString(),
       priceMultiplier: 0.05,
       firstTokenLatencyMs: 12_000,
+      probe_e2e_ttft_ms: 13_000,
       outputTokens: 18,
       outputTokensPerSecond: 42,
       cacheHitRate: "89.25%",
@@ -584,7 +636,7 @@ const aihubCandidates = api.evaluateAihubCandidates(
 );
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").available, true);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").ratio, 0.04);
-assert.equal(aihubCandidates.find((item) => item.group === "cheap").firstTokenLatencyMs, 12000);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").firstTokenLatencyMs, 13000);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").outputTokensPerSecond, 42);
 assert.ok(Math.abs(aihubCandidates.find((item) => item.group === "cheap").outputLatencyMs - (18 / 42 * 1000)) < 1e-9);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").cacheHitRate, 89.25);
@@ -623,7 +675,7 @@ const degradedAihubMonitorData = await api.loadAihubMonitorData(async (path) => 
   if (path === "/api/v1/groups/available") return aihubGroups;
   if (path === "/api/v1/groups/rates") return { 1: 0.04 };
   throw new Error(`unexpected path ${path}`);
-}, "24h");
+}, "24h", "Asia/Shanghai");
 assert.equal(degradedAihubMonitorData.summary, aihubSummary);
 assert.deepEqual(JSON.parse(JSON.stringify(degradedAihubMonitorData.series)), {});
 assert.match(degradedAihubMonitorData.seriesError.message, /non-json response/);
@@ -634,8 +686,47 @@ assert.deepEqual(
     "/api/v1/groups/rates",
     "/api/v1/public/monitor/series/24h",
     "/api/v1/public/monitor/summary",
+    "/api/v1/public/providers?timezone=Asia%2FShanghai",
   ],
 );
+
+const providerSummary = {
+  generated_at: new Date(aihubNow).toISOString(),
+  items: [{
+    code: "cheap",
+    group_id: 1,
+    rate_multiplier: 0.05,
+    available: true,
+    visible_in_hall: true,
+    last_probed_at: new Date(aihubNow - 10_000).toISOString(),
+    probe_ttft_ms: 1900,
+    probe_e2e_ttft_ms: 2300,
+    output_tps: 40,
+    output_tokens: 20,
+    success_rates: { "24h": 0.99 },
+    cache_hit_rate: "88%",
+  }],
+};
+const providerSeries = {
+  generated_at: new Date(aihubNow).toISOString(),
+  items: [{ group_id: 1, probe: monitorSeries([false, true]) }],
+};
+const normalizedProviderData = api.normalizeAihubProviderData(providerSummary, providerSeries);
+assert.equal(normalizedProviderData.summary.apis[0].firstTokenLatencyMs, 2300);
+assert.equal(normalizedProviderData.series.seriesByApiId["1"].length, 2);
+const providerPaths = [];
+const loadedProviderData = await api.loadAihubMonitorData(async (path) => {
+  providerPaths.push(path);
+  if (path === "/api/v1/public/providers?timezone=Asia%2FShanghai") return providerSummary;
+  if (path === "/api/v1/public/providers/series?range=24h&timezone=Asia%2FShanghai") return providerSeries;
+  if (path === "/api/v1/groups/available") return aihubGroups;
+  if (path === "/api/v1/groups/rates") return { 1: 0.04 };
+  throw new Error(`unexpected path ${path}`);
+}, "24h", "Asia/Shanghai");
+assert.equal(loadedProviderData.source, "providers");
+assert.equal(loadedProviderData.seriesError, null);
+assert.equal(loadedProviderData.summary.apis[0].firstTokenLatencyMs, 2300);
+assert.equal(providerPaths.some((path) => path.includes("/public/monitor/")), false);
 
 const cappedAihubCandidates = api.evaluateAihubCandidates(
   aihubSummary,
