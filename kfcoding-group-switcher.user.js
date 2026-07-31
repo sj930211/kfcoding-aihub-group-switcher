@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.12.0
+// @version      0.12.1
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,12 +29,12 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.12.0";
+  const SCRIPT_VERSION = "0.12.1";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
     theme: "system",
-    glassTransparency: 60,
+    glassTransparency: 0,
     enabled: false,
     tokenIds: [],
     model: "",
@@ -3114,7 +3114,7 @@
           --toolbar: rgb(28 31 36 / 20%);
           --control: rgb(255 255 255 / 7%);
           --menu: rgb(22 26 31 / 82%);
-          --glass-transparency: 60%;
+          --glass-transparency: 0%;
           --panel-glass: linear-gradient(135deg, rgb(31 37 45 / 49%), rgb(13 17 22 / 38%));
           --shadow-panel: 0 34px 90px rgb(0 0 0 / 46%), inset 1px 1px 0 rgb(255 255 255 / 24%), inset -1px -1px 0 rgb(255 255 255 / 4.5%);
           --shadow-menu: 0 16px 38px rgb(0 0 0 / 38%), inset 0 1px 0 rgb(255 255 255 / 8%);
@@ -3147,7 +3147,7 @@
           --toolbar: rgb(255 255 255 / 20%);
           --control: rgb(255 255 255 / 48%);
           --menu: rgb(244 247 249 / 88%);
-          --glass-transparency: 60%;
+          --glass-transparency: 0%;
           --panel-glass: linear-gradient(135deg, rgb(255 255 255 / 62%), rgb(235 240 244 / 48%));
           --shadow-panel: 0 28px 72px rgb(31 44 54 / 22%), inset 1px 1px 0 rgb(255 255 255 / 72%), inset -1px -1px 0 rgb(255 255 255 / 18%);
           --shadow-menu: 0 14px 34px rgb(31 44 54 / 20%), inset 0 1px 0 rgb(255 255 255 / 72%);
@@ -3665,7 +3665,7 @@
           align-items: center;
           gap: 12px;
           margin: 14px 0 0;
-          padding: 12px 0 0;
+          padding: 12px 0;
           border-top: 1px solid var(--line-soft);
         }
         .settings-appearance-copy { display: grid; gap: 2px; min-width: 0; margin-right: auto; }
@@ -4117,7 +4117,7 @@
             <span class="settings-appearance-copy"><strong id="kf-glass-transparency-label">毛玻璃透明度</strong></span>
             <span class="glass-transparency-control">
               <input id="kf-glass-transparency" class="glass-transparency-range" data-ref="glassTransparency" type="range" min="0" max="100" step="1" aria-labelledby="kf-glass-transparency-label">
-              <output class="glass-transparency-value mono" data-ref="glassTransparencyValue" for="kf-glass-transparency">60%</output>
+              <output class="glass-transparency-value mono" data-ref="glassTransparencyValue" for="kf-glass-transparency">0%</output>
             </span>
           </div>
         </section>

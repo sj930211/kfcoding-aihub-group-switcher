@@ -41,7 +41,7 @@
     const previewParams = new URLSearchParams(location.search);
     if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
-    values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 60, enabled: false, model: "gpt-4.1", selectionMode: "balanced" });
+    values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, model: "gpt-4.1", selectionMode: "balanced" });
     values.set("kfcoding-group-switcher:switch-guard:v1", {
       blacklist: [{ model: "gpt-4.1", group: "promo-night", until: Date.now() + 42 * 60 * 1000 }],
     });
@@ -61,7 +61,7 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.12.1" : "0.12.0";
+    const previewVersion = previewParams.has("update") ? "0.12.2" : "0.12.1";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     window.fetch = async () => ({
       ok: true,

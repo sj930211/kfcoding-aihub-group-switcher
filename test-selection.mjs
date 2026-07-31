@@ -172,21 +172,21 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.12.0");
+assert.equal(api.extractUserscriptVersion(source), "0.12.1");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
 assert.equal(api.compareVersions("0.4.4", "0.4.5"), -1);
 assert.equal(api.compareVersions("0.11.0", "0.9.9"), 1);
 assert.equal(api.DEFAULT_CONFIG.theme, "system");
-assert.equal(api.DEFAULT_CONFIG.glassTransparency, 60);
+assert.equal(api.DEFAULT_CONFIG.glassTransparency, 0);
 assert.equal(api.sanitizeConfig({ theme: "light" }).theme, "light");
 assert.equal(api.sanitizeConfig({ theme: "dark" }).theme, "dark");
 assert.equal(api.sanitizeConfig({ theme: "unknown" }).theme, "system");
 assert.equal(api.sanitizeConfig({ glassTransparency: 35 }).glassTransparency, 35);
 assert.equal(api.sanitizeConfig({ glassTransparency: -1 }).glassTransparency, 0);
 assert.equal(api.sanitizeConfig({ glassTransparency: 101 }).glassTransparency, 100);
-assert.equal(api.sanitizeConfig({ glassTransparency: "invalid" }).glassTransparency, 60);
+assert.equal(api.sanitizeConfig({ glassTransparency: "invalid" }).glassTransparency, 0);
 assert.equal(
   api.resolveGlassMaterial("dark", 60),
   "linear-gradient(135deg, rgb(31 37 45 / 49%), rgb(13 17 22 / 38%))",
