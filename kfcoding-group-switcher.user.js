@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.12.1
+// @version      0.12.2
 // @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -29,7 +29,7 @@
   const IS_AIHUB = SITE_ID === "aihub";
   const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.12.1";
+  const SCRIPT_VERSION = "0.12.2";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -75,6 +75,12 @@
   const GET_MAX_ATTEMPTS = 3;
   const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
   const SPEND_WARNING_RATIO = 0.8;
+  const KFCODING_PUBLIC_API_PATHS = new Set([
+    "/api/pricing",
+    "/api/perf-metrics",
+    "/api/status",
+  ]);
+  const KFCODING_AUTH_REFRESH_DELAYS_MS = [0, 80, 200, 500];
 
   function clampNumber(value, fallback, min, max) {
     const parsed = Number(value);
@@ -1047,6 +1053,115 @@
     throw lastError;
   }
 
+  function requiresKfcodingAccessToken(path) {
+    const apiPath = String(path || "").split("?", 1)[0];
+    return apiPath.startsWith("/api/") && !KFCODING_PUBLIC_API_PATHS.has(apiPath);
+  }
+
+  function normalizeKfcodingAuthBundle(payload) {
+    const source = payload && payload.data && typeof payload.data === "object"
+      ? payload.data
+      : null;
+    const accessToken = source && typeof source.access_token === "string"
+      ? source.access_token.trim()
+      : "";
+    const accessExpiresAt = Number(source && source.access_expires_at);
+    const tokenType = String((source && source.token_type) || "");
+    const sessionId = String((source && source.session && source.session.sid) || "");
+    if (
+      !accessToken
+      || tokenType !== "Bearer"
+      || !Number.isFinite(accessExpiresAt)
+      || accessExpiresAt <= 0
+      || !sessionId
+    ) {
+      throw requestError("KFCoding 鉴权刷新响应无效，请刷新页面或重新登录", false, 0);
+    }
+    return { accessToken, accessExpiresAt, sessionId };
+  }
+
+  function createKfcodingAuthManager(options) {
+    const runtime = options || {};
+    const requestRefresh = runtime.requestRefresh;
+    const nowSeconds = runtime.nowSeconds || (() => Math.floor(Date.now() / 1000));
+    const sleep = runtime.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+    const runExclusive = runtime.runExclusive || ((task) => {
+      const locks = globalThis.navigator && globalThis.navigator.locks;
+      return locks
+        ? locks.request("new-api:auth-refresh", { mode: "exclusive" }, task)
+        : task();
+    });
+    let accessToken = "";
+    let accessExpiresAt = 0;
+    let sessionId = "";
+    let refreshPromise = null;
+
+    const invalidateAccessToken = () => {
+      accessToken = "";
+      accessExpiresAt = 0;
+    };
+
+    const getAccessToken = async (forceRefresh) => {
+      if (!forceRefresh && accessToken && accessExpiresAt > nowSeconds() + 60) {
+        return accessToken;
+      }
+      if (refreshPromise) return refreshPromise;
+
+      refreshPromise = runExclusive(async () => {
+        let lastError = null;
+        for (let attempt = 0; attempt < KFCODING_AUTH_REFRESH_DELAYS_MS.length; attempt += 1) {
+          const delay = KFCODING_AUTH_REFRESH_DELAYS_MS[attempt];
+          if (delay > 0) await sleep(delay);
+          try {
+            const headers = {
+              Accept: "application/json",
+              "Cache-Control": "no-store",
+            };
+            if (sessionId) headers["X-Auth-Session"] = sessionId;
+            const payload = await requestRefresh(headers);
+            const bundle = normalizeKfcodingAuthBundle(payload);
+            accessToken = bundle.accessToken;
+            accessExpiresAt = bundle.accessExpiresAt;
+            sessionId = bundle.sessionId;
+            return accessToken;
+          } catch (error) {
+            lastError = error;
+            if (Number(error && error.status) === 401) {
+              invalidateAccessToken();
+              sessionId = "";
+              throw requestError("KFCoding 登录已失效，请重新登录后再试", false, 401);
+            }
+            if (Number(error && error.status) !== 409) throw error;
+            sessionId = "";
+          }
+        }
+        throw requestError(
+          "KFCoding 登录状态正在同步，请稍后重试",
+          false,
+          Number(lastError && lastError.status) || 409,
+        );
+      }).finally(() => {
+        refreshPromise = null;
+      });
+      return refreshPromise;
+    };
+
+    return Object.freeze({ getAccessToken, invalidateAccessToken });
+  }
+
+  async function requestWithKfcodingAuth(path, authManager, execute) {
+    if (!requiresKfcodingAccessToken(path)) return execute("");
+    let accessToken = await authManager.getAccessToken(false);
+    try {
+      return await execute(accessToken);
+    } catch (error) {
+      if (Number(error && error.status) !== 401) throw error;
+      authManager.invalidateAccessToken();
+      accessToken = await authManager.getAccessToken(true);
+      return execute(accessToken);
+    }
+  }
+
   function normalizeAihubTodayUsage(payload, accountPayload) {
     const source = payload && payload.data && typeof payload.data === "object"
       ? payload.data
@@ -1227,11 +1342,15 @@
     parseAllowedGroups,
     parseTokenIds,
     pruneSwitchGuardState,
+    createKfcodingAuthManager,
     listActiveIsolations,
     removeIsolation,
     removeAllIsolations,
     restoreIsolations,
     requestJsonWithRetry,
+    requestWithKfcodingAuth,
+    requiresKfcodingAccessToken,
+    normalizeKfcodingAuthBundle,
     requiresTokenSelection,
     resolveGlassMaterial,
     resolveThemeMode,
@@ -1266,6 +1385,13 @@
   let aihubGroupsCache = [];
   let aihubRatesCache = {};
   const inflightGetRequests = new Map();
+  const kfcodingAuthManager = IS_AIHUB ? null : createKfcodingAuthManager({
+    requestRefresh: (headers) => requestJsonWithRetry("/api/user/auth/refresh", {
+      method: "POST",
+      headers,
+      maxAttempts: 1,
+    }),
+  });
   const pendingCandidates = new Map();
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
   const state = {
@@ -1547,13 +1673,14 @@
     handle.addEventListener("pointercancel", finish);
   }
 
-  function requestHeaders(hasBody) {
+  function requestHeaders(hasBody, kfcodingAccessToken) {
     const headers = { Accept: "application/json" };
     if (IS_AIHUB) {
       const authToken = window.localStorage.getItem("auth_token");
       if (authToken) headers.Authorization = `Bearer ${authToken}`;
       headers["Accept-Language"] = "zh";
     } else {
+      if (kfcodingAccessToken) headers.Authorization = `Bearer ${kfcodingAccessToken}`;
       const uid = window.localStorage.getItem("uid");
       if (uid) headers["New-Api-User"] = uid;
     }
@@ -1574,11 +1701,14 @@
   async function fetchJson(path, options) {
     const request = options || {};
     const method = String(request.method || "GET").toUpperCase();
-    const execute = async () => unwrapSiteResponse(await requestJsonWithRetry(path, {
+    const executeRequest = async (kfcodingAccessToken) => unwrapSiteResponse(await requestJsonWithRetry(path, {
       ...request,
       method,
-      headers: requestHeaders(request.body !== undefined),
+      headers: requestHeaders(request.body !== undefined, kfcodingAccessToken),
     }));
+    const execute = async () => IS_AIHUB
+      ? executeRequest("")
+      : requestWithKfcodingAuth(path, kfcodingAuthManager, executeRequest);
 
     if (method !== "GET") return execute();
     if (inflightGetRequests.has(path)) return inflightGetRequests.get(path);

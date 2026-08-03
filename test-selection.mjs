@@ -172,7 +172,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.12.1");
+assert.equal(api.extractUserscriptVersion(source), "0.12.2");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
@@ -1118,5 +1118,118 @@ await assert.rejects(
   /unauthorized/,
 );
 assert.equal(authAttempts, 1, "authentication errors must not retry");
+
+assert.equal(api.requiresKfcodingAccessToken("/api/pricing"), false);
+assert.equal(api.requiresKfcodingAccessToken("/api/perf-metrics?model=gpt-test&hours=24"), false);
+assert.equal(api.requiresKfcodingAccessToken("/api/status"), false);
+assert.equal(api.requiresKfcodingAccessToken("/api/token/?p=1&size=100"), true);
+assert.equal(api.requiresKfcodingAccessToken("/api/user/self/groups"), true);
+
+const authBundle = api.normalizeKfcodingAuthBundle({
+  success: true,
+  data: {
+    access_token: "test-access-token",
+    token_type: "Bearer",
+    access_expires_at: 2_000_000_000,
+    session: { sid: "test-session", current: true },
+  },
+});
+assert.deepEqual(
+  JSON.parse(JSON.stringify(authBundle)),
+  { accessToken: "test-access-token", accessExpiresAt: 2_000_000_000, sessionId: "test-session" },
+);
+await assert.rejects(
+  Promise.resolve().then(() => api.normalizeKfcodingAuthBundle({ success: true, data: {} })),
+  /鉴权刷新响应无效/,
+);
+
+let refreshAttempts = 0;
+let authLockRuns = 0;
+const authManager = api.createKfcodingAuthManager({
+  nowSeconds: () => 1_900_000_000,
+  sleep: async () => {},
+  runExclusive: async (task) => {
+    authLockRuns += 1;
+    return task();
+  },
+  requestRefresh: async () => {
+    refreshAttempts += 1;
+    return {
+      success: true,
+      data: {
+        access_token: `test-access-token-${refreshAttempts}`,
+        token_type: "Bearer",
+        access_expires_at: 2_000_000_000,
+        session: { sid: "test-session", current: true },
+      },
+    };
+  },
+});
+const concurrentTokens = await Promise.all([
+  authManager.getAccessToken(false),
+  authManager.getAccessToken(false),
+]);
+assert.deepEqual(concurrentTokens, ["test-access-token-1", "test-access-token-1"]);
+assert.equal(refreshAttempts, 1, "concurrent account requests should share one access-token refresh");
+assert.equal(authLockRuns, 1, "concurrent refreshes should share one cross-tab auth lock");
+assert.equal(await authManager.getAccessToken(false), "test-access-token-1");
+assert.equal(refreshAttempts, 1, "a non-expiring in-memory access token should be reused");
+
+let authenticatedRequests = 0;
+const authenticatedResult = await api.requestWithKfcodingAuth(
+  "/api/token/?p=1&size=100",
+  authManager,
+  async (accessToken) => {
+    authenticatedRequests += 1;
+    if (authenticatedRequests === 1) {
+      const error = new Error("expired");
+      error.status = 401;
+      throw error;
+    }
+    return accessToken;
+  },
+);
+assert.equal(authenticatedResult, "test-access-token-2");
+assert.equal(authenticatedRequests, 2, "an authenticated API request should retry exactly once after 401");
+assert.equal(refreshAttempts, 2, "a 401 should force one access-token refresh");
+
+let refreshRaceAttempts = 0;
+const refreshRaceSleeps = [];
+const refreshRaceManager = api.createKfcodingAuthManager({
+  nowSeconds: () => 1_900_000_000,
+  sleep: async (delay) => refreshRaceSleeps.push(delay),
+  requestRefresh: async () => {
+    refreshRaceAttempts += 1;
+    if (refreshRaceAttempts === 1) {
+      const error = new Error("refresh race");
+      error.status = 409;
+      throw error;
+    }
+    return {
+      success: true,
+      data: {
+        access_token: "race-recovered-token",
+        token_type: "Bearer",
+        access_expires_at: 2_000_000_000,
+        session: { sid: "race-session", current: true },
+      },
+    };
+  },
+});
+assert.equal(await refreshRaceManager.getAccessToken(false), "race-recovered-token");
+assert.equal(refreshRaceAttempts, 2);
+assert.deepEqual(refreshRaceSleeps, [80]);
+
+const expiredLoginManager = api.createKfcodingAuthManager({
+  requestRefresh: async () => {
+    const error = new Error("Unauthorized");
+    error.status = 401;
+    throw error;
+  },
+});
+await assert.rejects(
+  expiredLoginManager.getAccessToken(false),
+  /KFCoding 登录已失效，请重新登录后再试/,
+);
 
 console.log("selection tests passed");
