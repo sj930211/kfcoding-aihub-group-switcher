@@ -3,6 +3,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
+assert.equal(source.includes("// @match        https://ooioo.work/*"), true, "ooioo pages should load the userscript");
 assert.equal(source.includes('data-ref="refresh"'), false, "manual refresh should be folded into immediate check");
 assert.equal(
   source.indexOf("const manualUsageRefresh = manual ? refreshTodayUsage() : null;") < source.indexOf("if (!config.model)"),
@@ -172,7 +173,18 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.12.2");
+assert.equal(api.extractUserscriptVersion(source), "0.13.0");
+assert.equal(api.detectSiteId("kfcoding.codes"), "kfcoding");
+assert.equal(api.detectSiteId("AIHUB.TOP"), "aihub");
+assert.equal(api.detectSiteId("ooioo.work"), "ooioo");
+assert.equal(api.SITE_METADATA.ooioo.apiFamily, "new-api");
+assert.equal(api.SITE_METADATA.ooioo.shortLabel, "OO");
+assert.equal(
+  new Set(["kfcoding", "aihub", "ooioo"].map(api.storagePrefixForSite)).size,
+  3,
+  "each provider must keep configuration, logs, UI state, and switch guards isolated",
+);
+assert.equal(api.storagePrefixForSite("ooioo"), "ooioo-group-switcher");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
@@ -343,7 +355,7 @@ assert.deepEqual(
   "AIHub usage should tolerate field aliases used by different API versions",
 );
 assert.deepEqual(
-  JSON.parse(JSON.stringify(api.normalizeKfcodingTodayUsage({
+  JSON.parse(JSON.stringify(api.normalizeNewApiTodayUsage({
     success: true,
     data: [
       { quota: 250000, count: 2, token_used: 1200 },
@@ -355,6 +367,45 @@ assert.deepEqual(
     data: { quota: 48287708 },
   }))),
   { balance: 96.575416, spend: 1.5, requests: 5, tokens: 4600, symbol: "$" },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.normalizeNewApiTodayUsage({
+    data: [
+      { quota: 40000, count: 4, token_used: 2_400_000 },
+      { quota: 10000, count: 1, token_used: 600_000 },
+    ],
+  }, {
+    data: { display_in_currency: true, quota_per_unit: 500000, quota_display_type: "CNY" },
+  }, {
+    data: { quota: 2_500_000 },
+  }))),
+  { balance: 5, spend: 0.1, requests: 5, tokens: 3_000_000, symbol: "¥" },
+  "ooioo should reuse the verified New API usage shape and currency conversion",
+);
+const ooiooTokenItems = [
+  { id: 17, name: "primary", status: 1, group: "codex-plus", model_limits: "gpt-5.6-terra" },
+];
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.normalizeNewApiTokenList({
+    success: true,
+    data: { page: 1, page_size: 100, total: 1, items: ooiooTokenItems },
+  }))),
+  ooiooTokenItems,
+  "ooioo token catalogs should parse the paginated New API response without reading key values",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.unwrapUserGroups({
+    success: true,
+    data: {
+      "codex-plus": { desc: "Plus pool", ratio: 0.08 },
+      "codex-pro": { desc: "Pro pool", ratio: 0.2 },
+    },
+  }))),
+  {
+    "codex-plus": { desc: "Plus pool", ratio: 0.08 },
+    "codex-pro": { desc: "Pro pool", ratio: 0.2 },
+  },
+  "ooioo group catalogs should preserve account-selectable group ratios",
 );
 assert.equal(api.formatBalance({ balance: 26.34020161, symbol: "$", available: true }), "$26.34");
 assert.equal(api.formatBalance({ balance: 1250000, symbol: "", available: true }), "1,250,000");
@@ -382,6 +433,11 @@ assert.equal(
   api.requiresTokenSelection("kfcoding", { manual: true }),
   true,
   "KFCoding selection behavior must remain unchanged",
+);
+assert.equal(
+  api.requiresTokenSelection("ooioo", { manual: true }),
+  true,
+  "ooioo checks should keep the model and API-key requirements used by New API sites",
 );
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.normalizeSwitchHistory({
@@ -520,6 +576,61 @@ const config = api.sanitizeConfig({
   maxFirstTokenLatencySeconds: 60,
   maxOutputDurationSeconds: 0,
 });
+
+const ooiooNow = 2_000_000_000;
+const ooiooCandidates = api.evaluateCandidates({
+  success: true,
+  data: [{
+    model_name: "gpt-5.6-terra",
+    enable_groups: ["codex-plus", "codex-pro"],
+  }],
+  group_ratio: { "codex-plus": 0.08, "codex-pro": 0.2 },
+}, {
+  success: true,
+  data: {
+    model_name: "gpt-5.6-terra",
+    series_schema: "v1",
+    groups: [
+      {
+        group: "codex-plus",
+        avg_ttft_ms: 3_619,
+        avg_latency_ms: 14_614,
+        success_rate: 97.83,
+        avg_tps: 47.45,
+        series: [{ ts: ooiooNow - 60, success_rate: 100, avg_ttft_ms: 3_619 }],
+      },
+      {
+        group: "codex-pro",
+        avg_ttft_ms: 2_000,
+        avg_latency_ms: 12_000,
+        success_rate: 99,
+        avg_tps: 55,
+        series: [{ ts: ooiooNow - 30, success_rate: 80, avg_ttft_ms: 2_000 }],
+      },
+    ],
+  },
+}, {
+  success: true,
+  data: {
+    "codex-plus": { desc: "Plus pool", ratio: 0.08 },
+    "codex-pro": { desc: "Pro pool", ratio: 0.2 },
+  },
+}, api.sanitizeConfig({
+  ...api.DEFAULT_CONFIG,
+  model: "gpt-5.6-terra",
+  minSuccessRate: 95,
+  minLatestSuccessRate: 95,
+  maxMetricAgeMinutes: 180,
+  maxFirstTokenLatencySeconds: 120,
+}), ooiooNow);
+assert.equal(ooiooCandidates.length, 2);
+assert.equal(ooiooCandidates[0].group, "codex-plus");
+assert.equal(ooiooCandidates[0].available, true);
+assert.equal(ooiooCandidates[0].latestSuccess, 100);
+assert.equal(ooiooCandidates[0].outputLatencyMs, 14_614);
+assert.equal(ooiooCandidates[1].available, false);
+assert.deepEqual(Array.from(ooiooCandidates[1].reasons), ["latest-success-low"]);
+assert.equal(api.selectBestCandidate(ooiooCandidates, "", "saving").group, "codex-plus");
 
 assert.equal(api.aihubMonitorRange(6), "6h");
 assert.equal(api.aihubMonitorRange(24), "24h");
@@ -1119,13 +1230,13 @@ await assert.rejects(
 );
 assert.equal(authAttempts, 1, "authentication errors must not retry");
 
-assert.equal(api.requiresKfcodingAccessToken("/api/pricing"), false);
-assert.equal(api.requiresKfcodingAccessToken("/api/perf-metrics?model=gpt-test&hours=24"), false);
-assert.equal(api.requiresKfcodingAccessToken("/api/status"), false);
-assert.equal(api.requiresKfcodingAccessToken("/api/token/?p=1&size=100"), true);
-assert.equal(api.requiresKfcodingAccessToken("/api/user/self/groups"), true);
+assert.equal(api.requiresNewApiAccessToken("/api/pricing"), false);
+assert.equal(api.requiresNewApiAccessToken("/api/perf-metrics?model=gpt-test&hours=24"), false);
+assert.equal(api.requiresNewApiAccessToken("/api/status"), false);
+assert.equal(api.requiresNewApiAccessToken("/api/token/?p=1&size=100"), true);
+assert.equal(api.requiresNewApiAccessToken("/api/user/self/groups"), true);
 
-const authBundle = api.normalizeKfcodingAuthBundle({
+const authBundle = api.normalizeNewApiAuthBundle({
   success: true,
   data: {
     access_token: "test-access-token",
@@ -1139,13 +1250,17 @@ assert.deepEqual(
   { accessToken: "test-access-token", accessExpiresAt: 2_000_000_000, sessionId: "test-session" },
 );
 await assert.rejects(
-  Promise.resolve().then(() => api.normalizeKfcodingAuthBundle({ success: true, data: {} })),
+  Promise.resolve().then(() => api.normalizeNewApiAuthBundle({ success: true, data: {} }, "ooioo")),
+  /ooioo 鉴权刷新响应无效/,
+);
+await assert.rejects(
+  Promise.resolve().then(() => api.normalizeNewApiAuthBundle({ success: true, data: {} })),
   /鉴权刷新响应无效/,
 );
 
 let refreshAttempts = 0;
 let authLockRuns = 0;
-const authManager = api.createKfcodingAuthManager({
+const authManager = api.createNewApiAuthManager({
   nowSeconds: () => 1_900_000_000,
   sleep: async () => {},
   runExclusive: async (task) => {
@@ -1176,7 +1291,7 @@ assert.equal(await authManager.getAccessToken(false), "test-access-token-1");
 assert.equal(refreshAttempts, 1, "a non-expiring in-memory access token should be reused");
 
 let authenticatedRequests = 0;
-const authenticatedResult = await api.requestWithKfcodingAuth(
+const authenticatedResult = await api.requestWithNewApiAuth(
   "/api/token/?p=1&size=100",
   authManager,
   async (accessToken) => {
@@ -1195,7 +1310,7 @@ assert.equal(refreshAttempts, 2, "a 401 should force one access-token refresh");
 
 let refreshRaceAttempts = 0;
 const refreshRaceSleeps = [];
-const refreshRaceManager = api.createKfcodingAuthManager({
+const refreshRaceManager = api.createNewApiAuthManager({
   nowSeconds: () => 1_900_000_000,
   sleep: async (delay) => refreshRaceSleeps.push(delay),
   requestRefresh: async () => {
@@ -1220,7 +1335,7 @@ assert.equal(await refreshRaceManager.getAccessToken(false), "race-recovered-tok
 assert.equal(refreshRaceAttempts, 2);
 assert.deepEqual(refreshRaceSleeps, [80]);
 
-const expiredLoginManager = api.createKfcodingAuthManager({
+const expiredLoginManager = api.createNewApiAuthManager({
   requestRefresh: async () => {
     const error = new Error("Unauthorized");
     error.status = 401;
@@ -1230,6 +1345,19 @@ const expiredLoginManager = api.createKfcodingAuthManager({
 await assert.rejects(
   expiredLoginManager.getAccessToken(false),
   /KFCoding 登录已失效，请重新登录后再试/,
+);
+
+const expiredOoiooLoginManager = api.createNewApiAuthManager({
+  providerLabel: "ooioo",
+  requestRefresh: async () => {
+    const error = new Error("Unauthorized");
+    error.status = 401;
+    throw error;
+  },
+});
+await assert.rejects(
+  expiredOoiooLoginManager.getAccessToken(false),
+  /ooioo 登录已失效，请重新登录后再试/,
 );
 
 console.log("selection tests passed");

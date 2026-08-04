@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.12.2
-// @description  在 KFCoding 和 AIHub 监控分组倍率与可用性，并切换一个或多个 API 密钥。
+// @version      0.13.0
+// @description  在 KFCoding、AIHub 和 ooioo 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
 // @homepageURL  https://github.com/sj930211/kfcoding-aihub-group-switcher
@@ -11,6 +11,7 @@
 // @updateURL    https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js
 // @match        https://kfcoding.codes/*
 // @match        https://aihub.top/*
+// @match        https://ooioo.work/*
 // @run-at       document-idle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -24,12 +25,52 @@
 (function () {
   "use strict";
 
+  const SITE_METADATA = Object.freeze({
+    kfcoding: Object.freeze({
+      id: "kfcoding",
+      hostname: "kfcoding.codes",
+      label: "KFCoding",
+      shortLabel: "KF",
+      storagePrefix: "kfcoding-group-switcher",
+      apiFamily: "new-api",
+    }),
+    aihub: Object.freeze({
+      id: "aihub",
+      hostname: "aihub.top",
+      label: "AIHub",
+      shortLabel: "AH",
+      storagePrefix: "aihub-group-switcher",
+      apiFamily: "aihub",
+    }),
+    ooioo: Object.freeze({
+      id: "ooioo",
+      hostname: "ooioo.work",
+      label: "ooioo",
+      shortLabel: "OO",
+      storagePrefix: "ooioo-group-switcher",
+      apiFamily: "new-api",
+    }),
+  });
+
+  function detectSiteId(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    const matched = Object.values(SITE_METADATA).find((site) => site.hostname === normalized);
+    return matched ? matched.id : "kfcoding";
+  }
+
+  function storagePrefixForSite(siteId) {
+    return (SITE_METADATA[siteId] || SITE_METADATA.kfcoding).storagePrefix;
+  }
+
   const hostname = String((globalThis.location && globalThis.location.hostname) || "").toLowerCase();
-  const SITE_ID = hostname === "aihub.top" ? "aihub" : "kfcoding";
+  const SITE_ID = detectSiteId(hostname);
+  const SITE = SITE_METADATA[SITE_ID];
   const IS_AIHUB = SITE_ID === "aihub";
-  const SITE_LABEL = IS_AIHUB ? "AIHub" : "KFCoding";
+  const IS_NEW_API_SITE = SITE.apiFamily === "new-api";
+  const SITE_LABEL = SITE.label;
+  const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.12.2";
+  const SCRIPT_VERSION = "0.13.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -58,7 +99,7 @@
     blacklistMinutes: 60,
   });
 
-  const STORAGE_PREFIX = IS_AIHUB ? "aihub-group-switcher" : "kfcoding-group-switcher";
+  const STORAGE_PREFIX = storagePrefixForSite(SITE_ID);
   const STORAGE_CONFIG = `${STORAGE_PREFIX}:config:v1`;
   const STORAGE_LAST_SWITCH = `${STORAGE_PREFIX}:last-switch:v1`;
   const STORAGE_LOGS = `${STORAGE_PREFIX}:logs:v1`;
@@ -75,12 +116,12 @@
   const GET_MAX_ATTEMPTS = 3;
   const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
   const SPEND_WARNING_RATIO = 0.8;
-  const KFCODING_PUBLIC_API_PATHS = new Set([
+  const NEW_API_PUBLIC_API_PATHS = new Set([
     "/api/pricing",
     "/api/perf-metrics",
     "/api/status",
   ]);
-  const KFCODING_AUTH_REFRESH_DELAYS_MS = [0, 80, 200, 500];
+  const NEW_API_AUTH_REFRESH_DELAYS_MS = [0, 80, 200, 500];
 
   function clampNumber(value, fallback, min, max) {
     const parsed = Number(value);
@@ -1053,12 +1094,13 @@
     throw lastError;
   }
 
-  function requiresKfcodingAccessToken(path) {
+  function requiresNewApiAccessToken(path) {
     const apiPath = String(path || "").split("?", 1)[0];
-    return apiPath.startsWith("/api/") && !KFCODING_PUBLIC_API_PATHS.has(apiPath);
+    return apiPath.startsWith("/api/") && !NEW_API_PUBLIC_API_PATHS.has(apiPath);
   }
 
-  function normalizeKfcodingAuthBundle(payload) {
+  function normalizeNewApiAuthBundle(payload, providerLabel) {
+    const label = String(providerLabel || "KFCoding");
     const source = payload && payload.data && typeof payload.data === "object"
       ? payload.data
       : null;
@@ -1075,13 +1117,14 @@
       || accessExpiresAt <= 0
       || !sessionId
     ) {
-      throw requestError("KFCoding 鉴权刷新响应无效，请刷新页面或重新登录", false, 0);
+      throw requestError(`${label} 鉴权刷新响应无效，请刷新页面或重新登录`, false, 0);
     }
     return { accessToken, accessExpiresAt, sessionId };
   }
 
-  function createKfcodingAuthManager(options) {
+  function createNewApiAuthManager(options) {
     const runtime = options || {};
+    const providerLabel = String(runtime.providerLabel || "KFCoding");
     const requestRefresh = runtime.requestRefresh;
     const nowSeconds = runtime.nowSeconds || (() => Math.floor(Date.now() / 1000));
     const sleep = runtime.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
@@ -1109,8 +1152,8 @@
 
       refreshPromise = runExclusive(async () => {
         let lastError = null;
-        for (let attempt = 0; attempt < KFCODING_AUTH_REFRESH_DELAYS_MS.length; attempt += 1) {
-          const delay = KFCODING_AUTH_REFRESH_DELAYS_MS[attempt];
+        for (let attempt = 0; attempt < NEW_API_AUTH_REFRESH_DELAYS_MS.length; attempt += 1) {
+          const delay = NEW_API_AUTH_REFRESH_DELAYS_MS[attempt];
           if (delay > 0) await sleep(delay);
           try {
             const headers = {
@@ -1119,7 +1162,7 @@
             };
             if (sessionId) headers["X-Auth-Session"] = sessionId;
             const payload = await requestRefresh(headers);
-            const bundle = normalizeKfcodingAuthBundle(payload);
+            const bundle = normalizeNewApiAuthBundle(payload, providerLabel);
             accessToken = bundle.accessToken;
             accessExpiresAt = bundle.accessExpiresAt;
             sessionId = bundle.sessionId;
@@ -1129,14 +1172,14 @@
             if (Number(error && error.status) === 401) {
               invalidateAccessToken();
               sessionId = "";
-              throw requestError("KFCoding 登录已失效，请重新登录后再试", false, 401);
+              throw requestError(`${providerLabel} 登录已失效，请重新登录后再试`, false, 401);
             }
             if (Number(error && error.status) !== 409) throw error;
             sessionId = "";
           }
         }
         throw requestError(
-          "KFCoding 登录状态正在同步，请稍后重试",
+          `${providerLabel} 登录状态正在同步，请稍后重试`,
           false,
           Number(lastError && lastError.status) || 409,
         );
@@ -1149,8 +1192,8 @@
     return Object.freeze({ getAccessToken, invalidateAccessToken });
   }
 
-  async function requestWithKfcodingAuth(path, authManager, execute) {
-    if (!requiresKfcodingAccessToken(path)) return execute("");
+  async function requestWithNewApiAuth(path, authManager, execute) {
+    if (!requiresNewApiAccessToken(path)) return execute("");
     let accessToken = await authManager.getAccessToken(false);
     try {
       return await execute(accessToken);
@@ -1209,7 +1252,7 @@
     };
   }
 
-  function normalizeKfcodingTodayUsage(payload, statusPayload, accountPayload) {
+  function normalizeNewApiTodayUsage(payload, statusPayload, accountPayload) {
     const rows = payload && Array.isArray(payload.data)
       ? payload.data
       : payload && payload.data && Array.isArray(payload.data.items)
@@ -1269,7 +1312,7 @@
     start.setHours(0, 0, 0, 0);
     return {
       start: Math.floor(start.getTime() / 1000),
-      // KFCoding's own dashboard extends the end boundary by one hour so the
+      // New API dashboards extend the end boundary by one hour so the
       // still-open current aggregation bucket is included.
       end: Math.floor((end.getTime() + 60 * 60 * 1000) / 1000),
     };
@@ -1308,6 +1351,7 @@
 
   const TEST_API = Object.freeze({
     DEFAULT_CONFIG,
+    SITE_METADATA,
     activeGroupFilter,
     aihubMonitorRange,
     buildTokenUpdatePayload,
@@ -1331,7 +1375,8 @@
     normalizeAihubTodayUsage,
     normalizeAihubProviderData,
     normalizeAihubToken,
-    normalizeKfcodingTodayUsage,
+    normalizeNewApiTodayUsage,
+    normalizeNewApiTokenList,
     normalizeSwitchHistory,
     normalizeSwitchGuardState,
     normalizeSpendGuard,
@@ -1342,15 +1387,16 @@
     parseAllowedGroups,
     parseTokenIds,
     pruneSwitchGuardState,
-    createKfcodingAuthManager,
+    createNewApiAuthManager,
+    detectSiteId,
     listActiveIsolations,
     removeIsolation,
     removeAllIsolations,
     restoreIsolations,
     requestJsonWithRetry,
-    requestWithKfcodingAuth,
-    requiresKfcodingAccessToken,
-    normalizeKfcodingAuthBundle,
+    requestWithNewApiAuth,
+    requiresNewApiAccessToken,
+    normalizeNewApiAuthBundle,
     requiresTokenSelection,
     resolveGlassMaterial,
     resolveThemeMode,
@@ -1360,9 +1406,11 @@
     selectSwitchCandidate,
     selectionModeLabel,
     shouldSwitchCandidate,
+    storagePrefixForSite,
     summarizeTokenGroups,
     tokenSupportsModel,
     todayTimestampRange,
+    unwrapUserGroups,
   });
 
   if (globalThis.__KFCODING_GROUP_SWITCHER_TEST__) {
@@ -1385,13 +1433,14 @@
   let aihubGroupsCache = [];
   let aihubRatesCache = {};
   const inflightGetRequests = new Map();
-  const kfcodingAuthManager = IS_AIHUB ? null : createKfcodingAuthManager({
+  const newApiAuthManager = IS_NEW_API_SITE ? createNewApiAuthManager({
+    providerLabel: SITE_LABEL,
     requestRefresh: (headers) => requestJsonWithRetry("/api/user/auth/refresh", {
       method: "POST",
       headers,
       maxAttempts: 1,
     }),
-  });
+  }) : null;
   const pendingCandidates = new Map();
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
   const state = {
@@ -1673,14 +1722,14 @@
     handle.addEventListener("pointercancel", finish);
   }
 
-  function requestHeaders(hasBody, kfcodingAccessToken) {
+  function requestHeaders(hasBody, newApiAccessToken) {
     const headers = { Accept: "application/json" };
     if (IS_AIHUB) {
       const authToken = window.localStorage.getItem("auth_token");
       if (authToken) headers.Authorization = `Bearer ${authToken}`;
       headers["Accept-Language"] = "zh";
     } else {
-      if (kfcodingAccessToken) headers.Authorization = `Bearer ${kfcodingAccessToken}`;
+      if (newApiAccessToken) headers.Authorization = `Bearer ${newApiAccessToken}`;
       const uid = window.localStorage.getItem("uid");
       if (uid) headers["New-Api-User"] = uid;
     }
@@ -1701,14 +1750,14 @@
   async function fetchJson(path, options) {
     const request = options || {};
     const method = String(request.method || "GET").toUpperCase();
-    const executeRequest = async (kfcodingAccessToken) => unwrapSiteResponse(await requestJsonWithRetry(path, {
+    const executeRequest = async (newApiAccessToken) => unwrapSiteResponse(await requestJsonWithRetry(path, {
       ...request,
       method,
-      headers: requestHeaders(request.body !== undefined, kfcodingAccessToken),
+      headers: requestHeaders(request.body !== undefined, newApiAccessToken),
     }));
     const execute = async () => IS_AIHUB
       ? executeRequest("")
-      : requestWithKfcodingAuth(path, kfcodingAuthManager, executeRequest);
+      : requestWithNewApiAuth(path, newApiAuthManager, executeRequest);
 
     if (method !== "GET") return execute();
     if (inflightGetRequests.has(path)) return inflightGetRequests.get(path);
@@ -1723,6 +1772,10 @@
       const items = payload && Array.isArray(payload.items) ? payload.items : [];
       return items.map(normalizeAihubToken);
     }
+    return normalizeNewApiTokenList(payload);
+  }
+
+  function normalizeNewApiTokenList(payload) {
     const data = payload && payload.data;
     if (Array.isArray(data)) return data;
     if (data && Array.isArray(data.items)) return data.items;
@@ -1767,7 +1820,7 @@
           fetchJson("/api/status"),
           fetchJson("/api/user/self"),
         ]);
-        usage = normalizeKfcodingTodayUsage(payload, status, account);
+        usage = normalizeNewApiTodayUsage(payload, status, account);
       }
       state.todayUsage = { ...usage, available: true, loading: false, error: "" };
       syncSpendProtection({ notify: true });
@@ -4058,10 +4111,10 @@
         }
       </style>
 
-      <button class="launcher" type="button" title="打开 ${SITE_LABEL} 分组监控" hidden>${IS_AIHUB ? "AH" : "KF"}</button>
+      <button class="launcher" type="button" title="打开 ${SITE_LABEL} 分组监控" hidden>${SITE_SHORT_LABEL}</button>
       <section class="panel" aria-label="${SITE_LABEL} 分组监控">
         <header class="header" data-ref="header">
-          <span class="brand-mark" aria-hidden="true">${IS_AIHUB ? "AH" : "KF"}</span>
+          <span class="brand-mark" aria-hidden="true">${SITE_SHORT_LABEL}</span>
           <span class="header-copy">
             <span class="header-title-row">
               <span class="title">${SITE_LABEL} 分组监控</span>

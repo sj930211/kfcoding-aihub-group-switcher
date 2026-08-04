@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>KFCoding switcher UI preview</title>
+  <title>Group switcher UI preview</title>
   <style>
     :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
     * { box-sizing: border-box; }
@@ -33,7 +33,7 @@
 </head>
 <body>
   <main class="provider-shell" aria-hidden="true">
-    <aside class="provider-sidebar"><div class="provider-brand">AIHub</div><div class="provider-nav"><span>仪表盘</span><span class="active">供应商大厅</span><span>API 密钥</span><span>使用记录</span><span>我的订阅</span><span>个人资料</span></div></aside>
+    <aside class="provider-sidebar"><div class="provider-brand">KFCoding</div><div class="provider-nav"><span>仪表盘</span><span class="active">供应商大厅</span><span>API 密钥</span><span>使用记录</span><span>我的订阅</span><span>个人资料</span></div></aside>
     <section class="provider-page"><h1>供应商大厅</h1><div class="provider-metrics"><div class="provider-metric"></div><div class="provider-metric"></div><div class="provider-metric"></div><div class="provider-metric"></div></div><div class="provider-chart"><div></div><div></div><div></div><div></div></div><div class="provider-table"><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="provider-row"><span></span><span></span><span></span><span></span><span></span><span></span></div></div></section>
   </main>
   <script>
@@ -61,7 +61,7 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.12.3" : "0.12.2";
+    const previewVersion = previewParams.has("update") ? "0.13.1" : "0.13.0";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     window.fetch = async () => ({
       ok: true,
