@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.13.0
-// @description  在 KFCoding、AIHub 和 ooioo 监控分组倍率与可用性，并切换一个或多个 API 密钥。
+// @version      0.14.0
+// @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
 // @homepageURL  https://github.com/sj930211/kfcoding-aihub-group-switcher
@@ -12,6 +12,7 @@
 // @match        https://kfcoding.codes/*
 // @match        https://aihub.top/*
 // @match        https://ooioo.work/*
+// @match        https://fluxionai.space/*
 // @run-at       document-idle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -50,6 +51,14 @@
       storagePrefix: "ooioo-group-switcher",
       apiFamily: "new-api",
     }),
+    fluxionai: Object.freeze({
+      id: "fluxionai",
+      hostname: "fluxionai.space",
+      label: "FluxionAI",
+      shortLabel: "FX",
+      storagePrefix: "fluxionai-group-switcher",
+      apiFamily: "aihub",
+    }),
   });
 
   function detectSiteId(value) {
@@ -66,11 +75,13 @@
   const SITE_ID = detectSiteId(hostname);
   const SITE = SITE_METADATA[SITE_ID];
   const IS_AIHUB = SITE_ID === "aihub";
+  const IS_FLUXION = SITE_ID === "fluxionai";
+  const IS_AIHUB_API = SITE.apiFamily === "aihub";
   const IS_NEW_API_SITE = SITE.apiFamily === "new-api";
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.13.0";
+  const SCRIPT_VERSION = "0.14.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -234,11 +245,11 @@
 
   function requiresTokenSelection(siteId, options) {
     const request = options && typeof options === "object" ? options : {};
-    const isAihubMonitorOnly = siteId === "aihub"
+    const isMonitorOnlyCheck = ["aihub", "fluxionai"].includes(siteId)
       && Boolean(request.manual)
       && !Boolean(request.forceSwitch)
       && !String(request.targetGroup || "").trim();
-    return !isAihubMonitorOnly;
+    return !isMonitorOnlyCheck;
   }
 
   function normalizeLogs(value) {
@@ -653,6 +664,305 @@
 
   function normalizeAihubRates(payload) {
     return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  }
+
+  function normalizeFluxionModelName(value) {
+    if (typeof value === "string") return value.trim();
+    if (!value || typeof value !== "object") return "";
+    return String(value.model || value.model_name || value.name || "").trim();
+  }
+
+  function fluxionMonitorModels(monitor) {
+    const source = monitor && typeof monitor === "object" ? monitor : {};
+    return [...new Set([
+      normalizeFluxionModelName(source.primaryModel ?? source.primary_model),
+      ...(Array.isArray(source.extra_models) ? source.extra_models : []),
+      ...(Array.isArray(source.extraModels) ? source.extraModels : []),
+    ].map(normalizeFluxionModelName).filter(Boolean))];
+  }
+
+  function normalizeFluxionMonitors(payload) {
+    const source = payload && payload.data !== undefined ? payload.data : payload;
+    const items = Array.isArray(source)
+      ? source
+      : source && Array.isArray(source.items)
+        ? source.items
+        : [];
+    return items
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        ...item,
+        id: Number(item.id),
+        name: String(item.name || "").trim(),
+        groupName: String(item.group_name || item.groupName || "").trim(),
+        provider: String(item.provider || "").trim().toLowerCase(),
+        primaryModel: normalizeFluxionModelName(item.primary_model ?? item.primaryModel),
+        primaryStatus: String(item.primary_status || item.primaryStatus || "").trim().toLowerCase(),
+        primaryLatencyMs: Number(item.primary_latency_ms ?? item.primaryLatencyMs),
+        primaryPingLatencyMs: Number(item.primary_ping_latency_ms ?? item.primaryPingLatencyMs),
+        availability7d: Number(item.availability_7d ?? item.availability7d),
+        timeline: (Array.isArray(item.timeline) ? item.timeline : [])
+          .filter((point) => point && typeof point === "object")
+          .map((point) => ({
+            checkedAt: String(point.checked_at || point.checkedAt || "").trim(),
+            status: String(point.status || "").trim().toLowerCase(),
+            latencyMs: Number(point.latency_ms ?? point.latencyMs),
+            pingLatencyMs: Number(point.ping_latency_ms ?? point.pingLatencyMs),
+          })),
+      }))
+      .filter((item) => Number.isFinite(item.id) && item.id > 0 && item.name);
+  }
+
+  function normalizeFluxionGroups(payload) {
+    const source = payload && payload.data !== undefined ? payload.data : payload;
+    return Array.isArray(source)
+      ? source.filter((group) => group && typeof group === "object")
+      : [];
+  }
+
+  function fluxionGroupModels(group) {
+    const source = group && typeof group === "object" ? group : {};
+    const config = source.models_list_config && typeof source.models_list_config === "object"
+      ? source.models_list_config
+      : source.modelsListConfig && typeof source.modelsListConfig === "object"
+        ? source.modelsListConfig
+        : {};
+    const values = Array.isArray(config.models)
+      ? config.models
+      : Array.isArray(source.models)
+        ? source.models
+        : [];
+    return [...new Set(values.map(normalizeFluxionModelName).filter(Boolean))];
+  }
+
+  function fluxionGroupSupportsModel(group, model) {
+    const target = String(model || "").trim();
+    if (!target) return false;
+    const source = group && typeof group === "object" ? group : {};
+    const config = source.models_list_config && typeof source.models_list_config === "object"
+      ? source.models_list_config
+      : source.modelsListConfig && typeof source.modelsListConfig === "object"
+        ? source.modelsListConfig
+        : null;
+    if (config && config.enabled === false) return true;
+    const models = fluxionGroupModels(source);
+    return models.length ? models.includes(target) : true;
+  }
+
+  function normalizeFluxionComparableName(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/无\s*fable/gi, "")
+      .replace(/混合号池|号池|余额|分组|逆向|逆|专用|文本|模型/g, "")
+      .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "");
+  }
+
+  const FLUXION_MONITOR_MATCH_THRESHOLD = 75;
+
+  function fluxionMonitorMatchScore(monitor, group) {
+    const monitorName = String(monitor && monitor.name || "").toLowerCase();
+    const groupName = String(group && group.name || "").toLowerCase();
+    const monitorKey = normalizeFluxionComparableName(monitorName);
+    const groupKey = normalizeFluxionComparableName(groupName);
+    if (!monitorKey || !groupKey) return -Infinity;
+    const monitorProvider = String(monitor && monitor.provider || "").toLowerCase();
+    const groupPlatform = String(group && group.platform || "").toLowerCase();
+    if (monitorProvider && groupPlatform && monitorProvider !== groupPlatform) return -Infinity;
+
+    let score = monitorProvider && groupPlatform ? 10 : 0;
+    if (monitorKey === groupKey) {
+      score += 100;
+    } else if (monitorKey.includes(groupKey) || groupKey.includes(monitorKey)) {
+      score += 70 + Math.min(monitorKey.length, groupKey.length) / Math.max(monitorKey.length, groupKey.length) * 20;
+    } else {
+      let prefixLength = 0;
+      while (
+        prefixLength < monitorKey.length
+        && prefixLength < groupKey.length
+        && monitorKey[prefixLength] === groupKey[prefixLength]
+      ) prefixLength += 1;
+      score += prefixLength >= 4 ? 30 + prefixLength : 0;
+    }
+
+    const monitorExternal = monitorName.includes("外接");
+    const groupExternal = groupName.includes("外接");
+    if (monitorExternal === groupExternal) score += 12;
+    else score -= 80;
+    const monitorFable = monitorName.includes("fable");
+    const groupFable = groupName.includes("fable") && !groupName.includes("无fable");
+    if (monitorFable !== groupFable) score -= 40;
+    return score;
+  }
+
+  function findFluxionMonitorForGroup(monitors, group, model) {
+    const targetModel = String(model || "").trim();
+    const ranked = (Array.isArray(monitors) ? monitors : [])
+      .filter((monitor) => fluxionMonitorModels(monitor).includes(targetModel))
+      .map((monitor) => ({ monitor, score: fluxionMonitorMatchScore(monitor, group) }))
+      .filter((item) => Number.isFinite(item.score) && item.score >= FLUXION_MONITOR_MATCH_THRESHOLD)
+      .sort((left, right) => right.score - left.score);
+    return ranked.length ? ranked[0].monitor : null;
+  }
+
+  function buildFluxionModelCatalog(monitorsPayload, groupsPayload) {
+    const monitors = normalizeFluxionMonitors(monitorsPayload);
+    const groups = normalizeFluxionGroups(groupsPayload);
+    const models = new Set();
+    monitors.forEach((monitor) => {
+      fluxionMonitorModels(monitor).forEach((model) => {
+        const matched = groups.some(
+          (group) => fluxionGroupSupportsModel(group, model)
+            && fluxionMonitorMatchScore(monitor, group) >= FLUXION_MONITOR_MATCH_THRESHOLD,
+        );
+        if (matched) models.add(model);
+      });
+    });
+    return {
+      data: [...models]
+        .sort((left, right) => left.localeCompare(right, "zh-CN"))
+        .map((model) => ({ model_name: model })),
+    };
+  }
+
+  function fluxionPromoActive(group, nowMs) {
+    if (!group || group.promo_active !== true || group.promo_rate_enabled === false) return false;
+    const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    const start = Date.parse(group.promo_start_at || "");
+    const end = Date.parse(group.promo_end_at || "");
+    if (Number.isFinite(start) && now < start) return false;
+    if (Number.isFinite(end) && now >= end) return false;
+    return true;
+  }
+
+  function fluxionPeakMultiplier(group, nowMs) {
+    if (!group || group.peak_rate_enabled !== true) return 1;
+    const multiplier = Number(group.peak_rate_multiplier);
+    const startMatch = String(group.peak_start || "").match(/^(\d{1,2}):(\d{2})/);
+    const endMatch = String(group.peak_end || "").match(/^(\d{1,2}):(\d{2})/);
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || !startMatch || !endMatch) return 1;
+    const startMinutes = Number(startMatch[1]) * 60 + Number(startMatch[2]);
+    const endMinutes = Number(endMatch[1]) * 60 + Number(endMatch[2]);
+    if (startMinutes === endMinutes) return 1;
+    const date = new Date(Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now());
+    const currentMinutes = date.getHours() * 60 + date.getMinutes();
+    const active = startMinutes < endMinutes
+      ? currentMinutes >= startMinutes && currentMinutes < endMinutes
+      : currentMinutes >= startMinutes || currentMinutes < endMinutes;
+    return active ? multiplier : 1;
+  }
+
+  function fluxionEffectiveGroupRatio(group, ratesPayload, nowMs) {
+    const rates = normalizeAihubRates(ratesPayload);
+    const rateValue = rates[group && group.id] ?? rates[String(group && group.id)] ?? rates[group && group.name];
+    const userRatio = Number(rateValue && typeof rateValue === "object"
+      ? rateValue.rate_multiplier ?? rateValue.ratio ?? rateValue.multiplier
+      : rateValue);
+    const baseRatio = Number(group && group.rate_multiplier);
+    const promoRatio = Number(group && group.promo_rate_multiplier);
+    const ratio = Number.isFinite(userRatio) && userRatio > 0
+      ? userRatio
+      : fluxionPromoActive(group, nowMs) && Number.isFinite(promoRatio) && promoRatio > 0
+        ? promoRatio
+        : baseRatio;
+    return Number.isFinite(ratio) && ratio > 0
+      ? ratio * fluxionPeakMultiplier(group, nowMs)
+      : NaN;
+  }
+
+  function fluxionStatusOperational(value) {
+    return ["operational", "healthy", "ok", "success"].includes(String(value || "").toLowerCase());
+  }
+
+  function evaluateFluxionCandidates(monitorsPayload, groupsPayload, ratesPayload, config, nowMs) {
+    const monitors = normalizeFluxionMonitors(monitorsPayload);
+    const groups = normalizeFluxionGroups(groupsPayload);
+    const filteredGroups = new Set(activeGroupFilter(config));
+    const enforceGroupFilter = filteredGroups.size > 0;
+    const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+
+    return groups
+      .filter((group) => fluxionGroupSupportsModel(group, config.model))
+      .map((group) => {
+        const reasons = [];
+        const groupId = Number(group.id);
+        const groupName = String(group.name || `#${groupId}`);
+        const monitor = findFluxionMonitorForGroup(monitors, group, config.model);
+        const timeline = monitor
+          ? monitor.timeline
+              .filter((point) => Number.isFinite(Date.parse(point.checkedAt)))
+              .slice()
+              .sort((left, right) => Date.parse(left.checkedAt) - Date.parse(right.checkedAt))
+          : [];
+        const latest = timeline.length ? timeline[timeline.length - 1] : null;
+        const latestStatus = latest ? latest.status : monitor && monitor.primaryStatus;
+        const latestSuccess = latestStatus ? (fluxionStatusOperational(latestStatus) ? 100 : 0) : NaN;
+        const aggregateSuccess = Number(monitor && monitor.availability7d);
+        const checkedAtMs = latest ? Date.parse(latest.checkedAt) : NaN;
+        const ageMinutes = Number.isFinite(checkedAtMs) ? Math.max(0, now - checkedAtMs) / 60000 : Infinity;
+        const outputLatencyMs = Number(
+          latest && Number.isFinite(latest.latencyMs)
+            ? latest.latencyMs
+            : monitor && monitor.primaryLatencyMs,
+        );
+        const ratio = fluxionEffectiveGroupRatio(group, ratesPayload, now);
+
+        if (!Number.isFinite(groupId) || groupId <= 0 || group.status !== "active") {
+          reasons.push("not-user-selectable");
+        }
+        if (
+          enforceGroupFilter
+          && config.groupFilterMode === "whitelist"
+          && !filteredGroups.has(groupName)
+        ) reasons.push("not-whitelisted");
+        if (
+          enforceGroupFilter
+          && config.groupFilterMode === "blacklist"
+          && filteredGroups.has(groupName)
+        ) reasons.push("blocked-group");
+        if (!Number.isFinite(ratio) || ratio <= 0) reasons.push("ratio-unknown");
+        if (config.maxGroupRatio > 0 && Number.isFinite(ratio) && ratio > config.maxGroupRatio) {
+          reasons.push("ratio-too-high");
+        }
+        if (!monitor) {
+          reasons.push("metrics-missing");
+        } else {
+          if (ageMinutes > config.maxMetricAgeMinutes) reasons.push("metrics-stale");
+          if (!Number.isFinite(aggregateSuccess) || aggregateSuccess < config.minSuccessRate) {
+            reasons.push("success-low");
+          }
+          if (!fluxionStatusOperational(latestStatus)) reasons.push("latest-unavailable");
+          if (!Number.isFinite(latestSuccess) || latestSuccess < config.minLatestSuccessRate) {
+            reasons.push("latest-success-low");
+          }
+          if (
+            config.maxOutputDurationSeconds > 0
+            && (!Number.isFinite(outputLatencyMs)
+              || outputLatencyMs <= 0
+              || outputLatencyMs > config.maxOutputDurationSeconds * 1000)
+          ) reasons.push("output-latency-high");
+        }
+
+        return {
+          group: groupName,
+          groupId,
+          ratio,
+          available: reasons.length === 0,
+          reasons,
+          aggregateSuccess,
+          latestSuccess,
+          recentSuccess: latestSuccess,
+          recentMinSuccess: latestSuccess,
+          recentSampleCount: Number.isFinite(latestSuccess) ? 1 : 0,
+          firstTokenLatencyMs: NaN,
+          outputLatencyMs,
+          outputTokensPerSecond: NaN,
+          outputTokens: NaN,
+          cacheHitRate: NaN,
+          ageMinutes,
+          monitorName: monitor ? monitor.name : "",
+        };
+      });
   }
 
   function aihubTimezone() {
@@ -1355,12 +1665,17 @@
     activeGroupFilter,
     aihubMonitorRange,
     buildTokenUpdatePayload,
+    buildFluxionModelCatalog,
     clampPosition,
     evaluateAihubCandidates,
     evaluateCandidates,
+    evaluateFluxionCandidates,
     extractUserscriptVersion,
     formatBalance,
     formatTokenCount,
+    fluxionEffectiveGroupRatio,
+    fluxionGroupSupportsModel,
+    fluxionMonitorMatchScore,
     parsePercentValue,
     compareVersions,
     applyTemporaryBlacklist,
@@ -1375,6 +1690,7 @@
     normalizeAihubTodayUsage,
     normalizeAihubProviderData,
     normalizeAihubToken,
+    normalizeFluxionMonitors,
     normalizeNewApiTodayUsage,
     normalizeNewApiTokenList,
     normalizeSwitchHistory,
@@ -1432,6 +1748,9 @@
   let userGroupsCache = {};
   let aihubGroupsCache = [];
   let aihubRatesCache = {};
+  let fluxionGroupsCache = [];
+  let fluxionRatesCache = {};
+  let fluxionMonitorsCache = [];
   const inflightGetRequests = new Map();
   const newApiAuthManager = IS_NEW_API_SITE ? createNewApiAuthManager({
     providerLabel: SITE_LABEL,
@@ -1724,10 +2043,11 @@
 
   function requestHeaders(hasBody, newApiAccessToken) {
     const headers = { Accept: "application/json" };
-    if (IS_AIHUB) {
+    if (IS_AIHUB_API) {
       const authToken = window.localStorage.getItem("auth_token");
       if (authToken) headers.Authorization = `Bearer ${authToken}`;
       headers["Accept-Language"] = "zh";
+      if (IS_FLUXION) headers["X-User-UI-Request"] = "1";
     } else {
       if (newApiAccessToken) headers.Authorization = `Bearer ${newApiAccessToken}`;
       const uid = window.localStorage.getItem("uid");
@@ -1738,37 +2058,50 @@
   }
 
   function unwrapSiteResponse(payload) {
-    if (!IS_AIHUB || !payload || typeof payload !== "object" || !("code" in payload)) {
+    if (!IS_AIHUB_API || !payload || typeof payload !== "object" || !("code" in payload)) {
       return payload;
     }
     if (Number(payload.code) !== 0) {
-      throw new Error(payload.message || `AIHub 接口返回错误码 ${payload.code}`);
+      throw new Error(payload.message || `${SITE_LABEL} 接口返回错误码 ${payload.code}`);
     }
     return payload.data;
+  }
+
+  function withFluxionTimezone(path, method) {
+    const source = String(path || "");
+    if (!IS_FLUXION || String(method || "GET").toUpperCase() !== "GET" || /[?&]timezone=/.test(source)) {
+      return source;
+    }
+    const hashIndex = source.indexOf("#");
+    const base = hashIndex >= 0 ? source.slice(0, hashIndex) : source;
+    const hash = hashIndex >= 0 ? source.slice(hashIndex) : "";
+    const separator = base.includes("?") ? "&" : "?";
+    return `${base}${separator}timezone=${encodeURIComponent(aihubTimezone())}${hash}`;
   }
 
   async function fetchJson(path, options) {
     const request = options || {};
     const method = String(request.method || "GET").toUpperCase();
-    const executeRequest = async (newApiAccessToken) => unwrapSiteResponse(await requestJsonWithRetry(path, {
+    const requestPath = withFluxionTimezone(path, method);
+    const executeRequest = async (newApiAccessToken) => unwrapSiteResponse(await requestJsonWithRetry(requestPath, {
       ...request,
       method,
       headers: requestHeaders(request.body !== undefined, newApiAccessToken),
     }));
-    const execute = async () => IS_AIHUB
+    const execute = async () => IS_AIHUB_API
       ? executeRequest("")
-      : requestWithNewApiAuth(path, newApiAuthManager, executeRequest);
+      : requestWithNewApiAuth(requestPath, newApiAuthManager, executeRequest);
 
     if (method !== "GET") return execute();
-    if (inflightGetRequests.has(path)) return inflightGetRequests.get(path);
+    if (inflightGetRequests.has(requestPath)) return inflightGetRequests.get(requestPath);
 
-    const pending = execute().finally(() => inflightGetRequests.delete(path));
-    inflightGetRequests.set(path, pending);
+    const pending = execute().finally(() => inflightGetRequests.delete(requestPath));
+    inflightGetRequests.set(requestPath, pending);
     return pending;
   }
 
   function normalizeTokenList(payload) {
-    if (IS_AIHUB) {
+    if (IS_AIHUB_API) {
       const items = payload && Array.isArray(payload.items) ? payload.items : [];
       return items.map(normalizeAihubToken);
     }
@@ -1799,7 +2132,7 @@
     render();
     try {
       let usage;
-      if (IS_AIHUB) {
+      if (IS_AIHUB_API) {
         const [usagePayload, account] = await Promise.all([
           fetchJson("/api/v1/usage/stats?period=today"),
           fetchJson("/api/v1/auth/me"),
@@ -1835,16 +2168,25 @@
   }
 
   async function refreshCatalogs() {
-    if (IS_AIHUB) {
-      const [tokenList, groups, rates] = await Promise.all([
+    if (IS_AIHUB_API) {
+      const requests = [
         fetchJson("/api/v1/keys?page=1&page_size=100"),
         fetchJson("/api/v1/groups/available"),
         fetchJson("/api/v1/groups/rates"),
-      ]);
+      ];
+      if (IS_FLUXION) requests.push(fetchJson("/api/v1/channel-monitors"));
+      const [tokenList, groups, rates, monitors] = await Promise.all(requests);
       tokensCache = normalizeTokenList(tokenList);
-      aihubGroupsCache = normalizeAihubGroups(groups);
-      aihubRatesCache = normalizeAihubRates(rates);
-      pricingCache = { data: [{ model_name: AIHUB_MONITOR_MODEL }] };
+      if (IS_FLUXION) {
+        fluxionGroupsCache = normalizeFluxionGroups(groups);
+        fluxionRatesCache = normalizeAihubRates(rates);
+        fluxionMonitorsCache = normalizeFluxionMonitors(monitors);
+        pricingCache = buildFluxionModelCatalog(monitors, groups);
+      } else {
+        aihubGroupsCache = normalizeAihubGroups(groups);
+        aihubRatesCache = normalizeAihubRates(rates);
+        pricingCache = { data: [{ model_name: AIHUB_MONITOR_MODEL }] };
+      }
       renderOptions();
       render();
       return;
@@ -1862,7 +2204,7 @@
   }
 
   async function refreshTokenCatalog() {
-    const payload = IS_AIHUB
+    const payload = IS_AIHUB_API
       ? await fetchJson("/api/v1/keys?page=1&page_size=100")
       : await fetchJson("/api/token/?p=1&size=100");
     tokensCache = normalizeTokenList(payload);
@@ -1871,7 +2213,7 @@
   }
 
   async function getTokenDetail(tokenId) {
-    if (IS_AIHUB) {
+    if (IS_AIHUB_API) {
       const payload = await fetchJson(`/api/v1/keys/${tokenId}`);
       if (!payload || typeof payload !== "object") throw new Error("API 密钥详情为空");
       return normalizeAihubToken(payload);
@@ -2020,7 +2362,7 @@
 
   async function switchTokenGroup(token, candidate, options) {
     const switchOptions = options || {};
-    if (IS_AIHUB) {
+    if (IS_AIHUB_API) {
       if (!Number.isFinite(Number(candidate.groupId)) || Number(candidate.groupId) <= 0) {
         throw new Error(`目标分组 ${candidate.group} 缺少有效 ID`);
       }
@@ -2058,7 +2400,7 @@
   }
 
   function validateToken(token) {
-    if (IS_AIHUB) {
+    if (IS_AIHUB_API) {
       if (token.status !== "active") throw new Error("选中的 API 密钥未启用");
       return;
     }
@@ -2246,7 +2588,7 @@
       return;
     }
     if (!config.tokenIds.length && requiresTokenSelection(SITE_ID, options)) {
-      setStatus(`请先选择至少一个 API 密钥${IS_AIHUB ? "" : "和目标模型"}`, "warning");
+      setStatus(`请先选择至少一个 API 密钥${IS_AIHUB || IS_FLUXION ? "" : "和目标模型"}`, "warning");
       return;
     }
     const selectedTokenIds = config.tokenIds.slice();
@@ -2292,6 +2634,23 @@
           series,
           aihubGroupsCache,
           aihubRatesCache,
+          config,
+          Date.now(),
+        );
+      } else if (IS_FLUXION) {
+        const [monitors, groups, rates] = await Promise.all([
+          fetchJson("/api/v1/channel-monitors"),
+          fetchJson("/api/v1/groups/available"),
+          fetchJson("/api/v1/groups/rates"),
+        ]);
+        fluxionMonitorsCache = normalizeFluxionMonitors(monitors);
+        fluxionGroupsCache = normalizeFluxionGroups(groups);
+        fluxionRatesCache = normalizeAihubRates(rates);
+        pricingCache = buildFluxionModelCatalog(monitors, groups);
+        candidates = evaluateFluxionCandidates(
+          monitors,
+          groups,
+          rates,
           config,
           Date.now(),
         );
@@ -2565,6 +2924,10 @@
     ]);
     if (IS_AIHUB) {
       aihubGroupsCache.forEach((group) => {
+        if (group && group.name) names.add(String(group.name));
+      });
+    } else if (IS_FLUXION) {
+      fluxionGroupsCache.forEach((group) => {
         if (group && group.name) names.add(String(group.name));
       });
     } else {

@@ -4,6 +4,7 @@ import vm from "node:vm";
 
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 assert.equal(source.includes("// @match        https://ooioo.work/*"), true, "ooioo pages should load the userscript");
+assert.equal(source.includes("// @match        https://fluxionai.space/*"), true, "FluxionAI pages should load the userscript");
 assert.equal(source.includes('data-ref="refresh"'), false, "manual refresh should be folded into immediate check");
 assert.equal(
   source.indexOf("const manualUsageRefresh = manual ? refreshTodayUsage() : null;") < source.indexOf("if (!config.model)"),
@@ -173,18 +174,22 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.13.0");
+assert.equal(api.extractUserscriptVersion(source), "0.14.0");
 assert.equal(api.detectSiteId("kfcoding.codes"), "kfcoding");
 assert.equal(api.detectSiteId("AIHUB.TOP"), "aihub");
 assert.equal(api.detectSiteId("ooioo.work"), "ooioo");
+assert.equal(api.detectSiteId("FLUXIONAI.SPACE"), "fluxionai");
 assert.equal(api.SITE_METADATA.ooioo.apiFamily, "new-api");
 assert.equal(api.SITE_METADATA.ooioo.shortLabel, "OO");
+assert.equal(api.SITE_METADATA.fluxionai.apiFamily, "aihub");
+assert.equal(api.SITE_METADATA.fluxionai.shortLabel, "FX");
 assert.equal(
-  new Set(["kfcoding", "aihub", "ooioo"].map(api.storagePrefixForSite)).size,
-  3,
+  new Set(["kfcoding", "aihub", "ooioo", "fluxionai"].map(api.storagePrefixForSite)).size,
+  4,
   "each provider must keep configuration, logs, UI state, and switch guards isolated",
 );
 assert.equal(api.storagePrefixForSite("ooioo"), "ooioo-group-switcher");
+assert.equal(api.storagePrefixForSite("fluxionai"), "fluxionai-group-switcher");
 assert.equal(api.extractUserscriptVersion("// no version"), "");
 assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
@@ -407,6 +412,204 @@ assert.deepEqual(
   },
   "ooioo group catalogs should preserve account-selectable group ratios",
 );
+
+const fluxionGroups = [
+  {
+    id: 2,
+    name: "GPT-Plus-余额",
+    status: "active",
+    platform: "openai",
+    rate_multiplier: 0.1,
+    promo_active: true,
+    promo_rate_enabled: true,
+    promo_rate_multiplier: 0.05,
+    promo_end_at: "2026-08-31T23:59:00+08:00",
+    peak_rate_enabled: false,
+    models_list_config: { enabled: true, models: ["gpt-5.6-sol"] },
+  },
+  {
+    id: 46,
+    name: "GPT-Pro-余额",
+    status: "active",
+    platform: "openai",
+    rate_multiplier: 0.2,
+    promo_active: true,
+    promo_rate_enabled: true,
+    promo_rate_multiplier: 0.15,
+    promo_end_at: "2026-08-31T23:59:00+08:00",
+    peak_rate_enabled: false,
+    models_list_config: { enabled: true, models: ["gpt-5.6-sol", "gpt-5.3-codex-spark"] },
+  },
+  {
+    id: 136,
+    name: "Claude-Max-Fable-余额",
+    status: "active",
+    platform: "anthropic",
+    rate_multiplier: 1.2,
+    promo_active: false,
+    peak_rate_enabled: false,
+    models_list_config: { enabled: true, models: ["claude-fable-5"] },
+  },
+];
+const fluxionMonitorsPayload = {
+  code: 0,
+  data: {
+    items: [
+      {
+        id: 21,
+        name: "GPT-Plus分组",
+        group_name: "GPT",
+        provider: "openai",
+        primary_model: "gpt-5.6-sol",
+        extra_models: [],
+        primary_status: "error",
+        primary_latency_ms: 30000,
+        primary_ping_latency_ms: 20,
+        availability_7d: 75.6,
+        timeline: [
+          { checked_at: "2026-08-06T03:00:00Z", status: "operational", latency_ms: 1436, ping_latency_ms: 22 },
+          { checked_at: "2026-08-06T03:11:00Z", status: "error", latency_ms: 30000, ping_latency_ms: 20 },
+          { checked_at: "2026-08-06T02:50:00Z", status: "operational", latency_ms: 1278, ping_latency_ms: 21 },
+        ],
+      },
+      {
+        id: 22,
+        name: "GPT-Pro分组",
+        group_name: "GPT",
+        provider: "openai",
+        primary_model: "gpt-5.6-sol",
+        extra_models: [],
+        primary_status: "operational",
+        primary_latency_ms: 2796,
+        primary_ping_latency_ms: 18,
+        availability_7d: 97.65,
+        timeline: [
+          { checked_at: "2026-08-06T03:10:00Z", status: "operational", latency_ms: 2796, ping_latency_ms: 18 },
+          { checked_at: "2026-08-06T02:55:00Z", status: "error", latency_ms: 30000, ping_latency_ms: 20 },
+        ],
+      },
+    ],
+  },
+};
+const normalizedFluxionMonitors = api.normalizeFluxionMonitors(fluxionMonitorsPayload);
+assert.equal(normalizedFluxionMonitors.length, 2);
+assert.equal(normalizedFluxionMonitors[0].primaryModel, "gpt-5.6-sol");
+assert.equal(normalizedFluxionMonitors[0].timeline[0].checkedAt, "2026-08-06T03:00:00Z");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.buildFluxionModelCatalog(fluxionMonitorsPayload, fluxionGroups))),
+  { data: [{ model_name: "gpt-5.6-sol" }] },
+  "FluxionAI should only list models backed by both a selectable group and a monitor",
+);
+assert.ok(
+  api.fluxionMonitorMatchScore(
+    { name: "Claude-Max外接分组", provider: "anthropic" },
+    { name: "Claude-Max-无Fable-外接-余额", platform: "anthropic" },
+  ) > api.fluxionMonitorMatchScore(
+    { name: "Claude-Max外接分组", provider: "anthropic" },
+    { name: "Claude-Max-无Fable-余额", platform: "anthropic" },
+  ),
+  "FluxionAI monitor matching should preserve the external-pool distinction",
+);
+assert.ok(
+  api.fluxionMonitorMatchScore(
+    { name: "Claude-Vertex逆向分组", provider: "anthropic" },
+    { name: "Claude-Max-无Fable-余额", platform: "anthropic" },
+  ) < 75,
+  "a shared Claude prefix must not map one FluxionAI channel monitor onto another group",
+);
+const fluxionRateNow = Date.parse("2026-08-06T03:12:00Z");
+assert.equal(api.fluxionEffectiveGroupRatio(fluxionGroups[0], {}, fluxionRateNow), 0.05);
+assert.equal(api.fluxionEffectiveGroupRatio(fluxionGroups[0], { 2: 0.08 }, fluxionRateNow), 0.08);
+assert.equal(api.fluxionEffectiveGroupRatio(fluxionGroups[0], { 2: { rate_multiplier: 0.07 } }, fluxionRateNow), 0.07);
+assert.equal(
+  api.fluxionEffectiveGroupRatio({ ...fluxionGroups[0], promo_end_at: "2026-08-01T00:00:00Z" }, {}, fluxionRateNow),
+  0.1,
+  "expired FluxionAI promotions should fall back to the base group ratio",
+);
+assert.equal(
+  api.fluxionEffectiveGroupRatio({
+    ...fluxionGroups[0],
+    peak_rate_enabled: true,
+    peak_rate_multiplier: 2,
+    peak_start: "10:00",
+    peak_end: "12:00",
+  }, {}, new Date(2026, 7, 6, 11, 12, 0).getTime()),
+  0.1,
+  "FluxionAI peak periods should multiply the currently effective promotional ratio",
+);
+const fluxionCandidates = api.evaluateFluxionCandidates(
+  fluxionMonitorsPayload,
+  fluxionGroups,
+  {},
+  {
+    ...api.DEFAULT_CONFIG,
+    model: "gpt-5.6-sol",
+    maxGroupRatio: 0.2,
+    minSuccessRate: 95,
+    minLatestSuccessRate: 95,
+    maxMetricAgeMinutes: 180,
+  },
+  fluxionRateNow,
+);
+assert.equal(fluxionCandidates.length, 2);
+assert.equal(fluxionCandidates[0].group, "GPT-Plus-余额");
+assert.equal(fluxionCandidates[0].ratio, 0.05);
+assert.equal(fluxionCandidates[0].latestSuccess, 0);
+assert.equal(fluxionCandidates[0].available, false);
+assert.ok(fluxionCandidates[0].reasons.includes("success-low"));
+assert.ok(fluxionCandidates[0].reasons.includes("latest-unavailable"));
+assert.equal(fluxionCandidates[1].group, "GPT-Pro-余额");
+assert.equal(fluxionCandidates[1].ratio, 0.15);
+assert.equal(fluxionCandidates[1].latestSuccess, 100);
+assert.equal(fluxionCandidates[1].outputLatencyMs, 2796);
+assert.equal(Number.isNaN(fluxionCandidates[1].firstTokenLatencyMs), true);
+assert.equal(Number.isNaN(fluxionCandidates[1].cacheHitRate), true);
+assert.equal(fluxionCandidates[1].available, true);
+assert.equal(
+  api.selectBestCandidate(fluxionCandidates, "", "saving").group,
+  "GPT-Pro-余额",
+  "the cheapest unhealthy FluxionAI group must not beat a healthy monitored group",
+);
+const unmonitoredFluxionCandidates = api.evaluateFluxionCandidates(
+  fluxionMonitorsPayload,
+  fluxionGroups,
+  {},
+  { ...api.DEFAULT_CONFIG, model: "claude-fable-5" },
+  fluxionRateNow,
+);
+assert.equal(unmonitoredFluxionCandidates.length, 1);
+assert.deepEqual(
+  Array.from(unmonitoredFluxionCandidates[0].reasons),
+  ["metrics-missing"],
+  "a FluxionAI group without a matching model monitor must stay unavailable without borrowing another group",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.normalizeAihubToken({
+    id: 7971,
+    name: "codex",
+    status: "active",
+    group_id: 2,
+    group: { id: 2, name: "GPT-Plus-余额", rate_multiplier: 0.1 },
+  }))),
+  {
+    id: 7971,
+    name: "codex",
+    status: "active",
+    group_id: 2,
+    group: "GPT-Plus-余额",
+    groupId: 2,
+  },
+  "FluxionAI key rows should reuse the verified AIHub-compatible key normalizer without retaining key values",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.normalizeAihubTodayUsage({
+    total_actual_cost: 0.1285852,
+    total_requests: 22,
+    total_tokens: 1_813_958,
+  }, { balance: 24.9044443 }))),
+  { balance: 24.9044443, spend: 0.1285852, requests: 22, tokens: 1_813_958, symbol: "$" },
+  "FluxionAI usage stats should reuse the compatible account usage format",
+);
 assert.equal(api.formatBalance({ balance: 26.34020161, symbol: "$", available: true }), "$26.34");
 assert.equal(api.formatBalance({ balance: 1250000, symbol: "", available: true }), "1,250,000");
 assert.equal(api.formatBalance({ balance: 10, symbol: "$", available: false }), "-");
@@ -439,6 +642,13 @@ assert.equal(
   true,
   "ooioo checks should keep the model and API-key requirements used by New API sites",
 );
+assert.equal(
+  api.requiresTokenSelection("fluxionai", { manual: true }),
+  false,
+  "FluxionAI immediate checks should refresh monitored groups without requiring a selected API key",
+);
+assert.equal(api.requiresTokenSelection("fluxionai", { manual: true, forceSwitch: true }), true);
+assert.equal(api.requiresTokenSelection("fluxionai", { manual: false }), true);
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.normalizeSwitchHistory({
     tokenId: 7,

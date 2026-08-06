@@ -61,7 +61,7 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.13.1" : "0.13.0";
+    const previewVersion = previewParams.has("update") ? "0.14.1" : "0.14.0";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     window.fetch = async () => ({
       ok: true,
