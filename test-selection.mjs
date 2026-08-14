@@ -186,7 +186,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.14.3");
+assert.equal(api.extractUserscriptVersion(source), "0.14.4");
 assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
 assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
 assert.equal(
@@ -1090,6 +1090,69 @@ assert.equal(loadedProviderData.source, "providers");
 assert.equal(loadedProviderData.seriesError, null);
 assert.equal(loadedProviderData.summary.apis[0].firstTokenLatencyMs, 2300);
 assert.equal(providerPaths.some((path) => path.includes("/public/monitor/")), false);
+
+const modelScopedAihubSummary = {
+  generatedAt: new Date(aihubNow).toISOString(),
+  monitoringActive: true,
+  apis: [{
+    id: "monitor-model-scoped",
+    group_id: 1,
+    planType: "cheap",
+    enabled: true,
+    available: false,
+    checkedAt: new Date(aihubNow - 10_000).toISOString(),
+    priceMultiplier: 0.05,
+    firstTokenLatencyMs: 2_000,
+    outputTokens: 20,
+    outputTokensPerSecond: 40,
+    cacheHitRate: "90%",
+    modelHealth: { sol: "healthy", terra: "healthy", luna: "failed" },
+    successRates: { "24h": 1 },
+  }],
+};
+const modelScopedSeries = {
+  seriesByApiId: { "monitor-model-scoped": monitorSeries([true, false]) },
+};
+const lunaProbeGroups = [{ id: 1, name: "cheap", rate_multiplier: 0.05, probe_model: "gpt-5.6-luna" }];
+const solWithFailedLuna = api.evaluateAihubCandidates(
+  modelScopedAihubSummary,
+  modelScopedSeries,
+  lunaProbeGroups,
+  { 1: 0.04 },
+  aihubConfig,
+  aihubNow,
+)[0];
+assert.equal(solWithFailedLuna.probeModelKey, "luna");
+assert.equal(solWithFailedLuna.modelHealthStatus, "healthy");
+assert.equal(solWithFailedLuna.latestSuccess, 100);
+assert.equal(solWithFailedLuna.available, true);
+assert.equal(solWithFailedLuna.reasons.includes("latest-unavailable"), false);
+
+const lunaWithFailedLuna = api.evaluateAihubCandidates(
+  modelScopedAihubSummary,
+  modelScopedSeries,
+  lunaProbeGroups,
+  { 1: 0.04 },
+  api.sanitizeConfig({ ...aihubConfig, model: "gpt-5.6-luna" }),
+  aihubNow,
+)[0];
+assert.equal(lunaWithFailedLuna.modelHealthStatus, "failed");
+assert.equal(lunaWithFailedLuna.latestSuccess, 0);
+assert.equal(lunaWithFailedLuna.available, false);
+assert.ok(lunaWithFailedLuna.reasons.includes("model-unavailable"));
+
+const solProbeGroups = [{ id: 1, name: "cheap", rate_multiplier: 0.05, probe_model: "gpt-5.6-sol" }];
+const failedLatestSolProbe = api.evaluateAihubCandidates(
+  modelScopedAihubSummary,
+  modelScopedSeries,
+  solProbeGroups,
+  { 1: 0.04 },
+  aihubConfig,
+  aihubNow,
+)[0];
+assert.equal(failedLatestSolProbe.latestSuccess, 0);
+assert.equal(failedLatestSolProbe.available, false);
+assert.ok(failedLatestSolProbe.reasons.includes("latest-unavailable"));
 
 const cappedAihubCandidates = api.evaluateAihubCandidates(
   aihubSummary,

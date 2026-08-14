@@ -83,7 +83,7 @@ AIHub 和 FluxionAI 复用页面当前的 Bearer 登录状态。脚本每次请�
 ### AIHub 说明
 
 - 倍率优先采用当前账号的分组倍率，其次使用可选分组倍率和公共监测倍率。
-- 可用性优先读取 `/api/v1/public/providers` 和 `/api/v1/public/providers/series`，并使用站点返回的供应商、分组倍率、`model_health` 与最新监测点；新接口不可用时回退到 `/api/v1/public/monitor/summary` 和 `/api/v1/public/monitor/series/{range}`。近期状态只采用时间最新的一个监测点，序列接口临时返回非 JSON 数据时会降级使用汇总接口中的最新状态，不中断本次分组检查。
+- 可用性优先读取 `/api/v1/public/providers` 和 `/api/v1/public/providers/series`，并使用站点返回的供应商、分组倍率、`model_health` 与最新监测点；新接口不可用时回退到 `/api/v1/public/monitor/summary` 和 `/api/v1/public/monitor/series/{range}`。近期状态只采用时间最新的一个监测点；仅当分组的 `probe_model` 与目标模型相同时才使用该柱状图，否则使用目标模型自己的 `model_health`，避免 Luna 等其他模型的故障误判 Sol。序列接口临时返回非 JSON 数据时会降级使用汇总接口中的最新状态，不中断本次分组检查。
 - 缓存命中率读取公共监测的 `cacheHitRate`；完整输出耗时使用 `outputTokens / outputTokensPerSecond` 计算。
 - 模型下拉从公共监测的 `model_health` 键生成，当前站点返回 Sol、Terra、Luna。只有目标模型状态明确为 `healthy` 的分组才参与自动切换；`failed` 显示“目标模型不可用”，字段缺失或出现未知值时显示“模型状态未知”并禁止自动切换。
 - 密钥分组更新沿用站点前端接口，只提交 `group_id`，成功后重新读取密钥详情确认结果。
