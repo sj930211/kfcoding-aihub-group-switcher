@@ -107,6 +107,16 @@ assert.equal(
   "candidate status should display latency and cache metrics separately",
 );
 assert.equal(
+  source.includes('>标/实</span><span>整体</span>'),
+  true,
+  "candidate status should label nominal and actual multipliers separately",
+);
+assert.equal(
+  source.includes('ratio.className = "candidate-ratio mono";'),
+  true,
+  "candidate rows should render nominal and actual multipliers together",
+);
+assert.equal(
   source.includes("const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;"),
   true,
   "automatic update checks should run every five minutes",
@@ -138,6 +148,8 @@ assert.equal(source.includes('<div class="automation-bar">'), true, "automatic r
 assert.equal(source.includes('<div class="control-grid">'), true, "key and model selectors should use a compact responsive grid");
 assert.equal(source.includes('class="button button-check"'), true, "immediate checks should be the primary command");
 assert.equal(source.includes('class="icon-button route-apply"'), true, "recommended-route switching should remain directly accessible");
+assert.equal(source.includes('目标模型（站点探测）'), true, "AIHub should expose a monitored target-model selector");
+assert.equal(source.includes('refs.model.disabled = running || IS_AIHUB'), false, "AIHub model selection must remain interactive");
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
   (source.match(/<section class="work-view/g) || []).length,
@@ -174,7 +186,13 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.14.0");
+assert.equal(api.extractUserscriptVersion(source), "0.14.3");
+assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
+assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
+assert.equal(
+  api.aihubModelHealthStatus({ model_health: { Sol: "HEALTHY" } }, "gpt-5.6-sol"),
+  "healthy",
+);
 assert.equal(api.detectSiteId("kfcoding.codes"), "kfcoding");
 assert.equal(api.detectSiteId("AIHUB.TOP"), "aihub");
 assert.equal(api.detectSiteId("ooioo.work"), "ooioo");
@@ -865,6 +883,7 @@ assert.deepEqual(
 );
 
 const aihubNow = 2_000_000_000;
+const aihubConfig = api.sanitizeConfig({ ...config, model: "gpt-5.6-sol" });
 const aihubSummary = {
   generatedAt: new Date(aihubNow).toISOString(),
   monitoringActive: true,
@@ -882,6 +901,7 @@ const aihubSummary = {
       outputTokens: 18,
       outputTokensPerSecond: 42,
       cacheHitRate: "89.25%",
+      modelHealth: { sol: "healthy", terra: "healthy", luna: "failed" },
       successRates: { "24h": 0.994 },
     },
     {
@@ -896,6 +916,7 @@ const aihubSummary = {
       outputTokens: null,
       outputTokensPerSecond: null,
       cacheHitRate: null,
+      modelHealth: { sol: "failed", terra: "healthy", luna: "failed" },
       successRates: { "24h": 0.998 },
     },
     {
@@ -910,6 +931,7 @@ const aihubSummary = {
       outputTokens: 20,
       outputTokensPerSecond: 50,
       cacheHitRate: "70%",
+      modelHealth: { sol: "healthy", terra: "healthy", luna: "failed" },
       successRates: { "24h": 0.995 },
     },
     {
@@ -952,17 +974,23 @@ const aihubCandidates = api.evaluateAihubCandidates(
   aihubSeries,
   aihubGroups,
   { 1: 0.04 },
-  config,
+  aihubConfig,
   aihubNow,
 );
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").available, true);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").modelHealthStatus, "healthy");
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").ratio, 0.04);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").firstTokenLatencyMs, 13000);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").outputTokensPerSecond, 42);
 assert.ok(Math.abs(aihubCandidates.find((item) => item.group === "cheap").outputLatencyMs - (18 / 42 * 1000)) < 1e-9);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").cacheHitRate, 89.25);
+assert.ok(
+  Math.abs(api.candidateEffectiveRatio(aihubCandidates.find((item) => item.group === "cheap")) - 0.061968503937007875) < 1e-12,
+  "AIHub actual ratio should normalize cache cost against the 97% baseline",
+);
 assert.equal(aihubCandidates.find((item) => item.group === "balanced").available, false);
 assert.ok(aihubCandidates.find((item) => item.group === "balanced").reasons.includes("latest-unavailable"));
+assert.ok(aihubCandidates.find((item) => item.group === "balanced").reasons.includes("model-unavailable"));
 assert.equal(aihubCandidates.find((item) => item.group === "recent-bad").recentMinSuccess, 100);
 assert.equal(
   aihubCandidates.find((item) => item.group === "recent-bad").available,
@@ -970,6 +998,7 @@ assert.equal(
   "AIHub should only use the most recent bar for recent availability",
 );
 assert.ok(aihubCandidates.find((item) => item.group === "private").reasons.includes("not-user-selectable"));
+assert.ok(aihubCandidates.find((item) => item.group === "private").reasons.includes("model-status-unknown"));
 assert.equal(api.selectBestCandidate(aihubCandidates, "balanced").group, "recent-bad");
 
 const degradedAihubCandidates = api.evaluateAihubCandidates(
@@ -977,7 +1006,7 @@ const degradedAihubCandidates = api.evaluateAihubCandidates(
   {},
   aihubGroups,
   { 1: 0.04 },
-  config,
+  aihubConfig,
   aihubNow,
 );
 assert.equal(
@@ -1026,6 +1055,7 @@ const providerSummary = {
     output_tokens: 20,
     success_rates: { "24h": 0.99 },
     cache_hit_rate: "88%",
+    model_health: { sol: "healthy", terra: "healthy", luna: "failed" },
   }],
 };
 const providerSeries = {
@@ -1034,6 +1064,18 @@ const providerSeries = {
 };
 const normalizedProviderData = api.normalizeAihubProviderData(providerSummary, providerSeries);
 assert.equal(normalizedProviderData.summary.apis[0].firstTokenLatencyMs, 2300);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(normalizedProviderData.summary.apis[0].modelHealth)),
+  { sol: "healthy", terra: "healthy", luna: "failed" },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.buildAihubModelCatalog(normalizedProviderData.summary))),
+  { data: [
+    { model_name: "gpt-5.6-sol" },
+    { model_name: "gpt-5.6-terra" },
+    { model_name: "gpt-5.6-luna" },
+  ] },
+);
 assert.equal(normalizedProviderData.series.seriesByApiId["1"].length, 2);
 const providerPaths = [];
 const loadedProviderData = await api.loadAihubMonitorData(async (path) => {
@@ -1054,7 +1096,7 @@ const cappedAihubCandidates = api.evaluateAihubCandidates(
   aihubSeries,
   aihubGroups,
   { 1: 0.04 },
-  api.sanitizeConfig({ ...config, maxGroupRatio: 0.03 }),
+  api.sanitizeConfig({ ...aihubConfig, maxGroupRatio: 0.03 }),
   aihubNow,
 );
 assert.ok(cappedAihubCandidates.find((item) => item.group === "cheap").reasons.includes("ratio-too-high"));
@@ -1065,7 +1107,7 @@ const delayedAihubCandidates = api.evaluateAihubCandidates(
   aihubSeries,
   aihubGroups,
   { 1: 0.04 },
-  api.sanitizeConfig({ ...config, maxFirstTokenLatencySeconds: 10, maxOutputDurationSeconds: 0.4 }),
+  api.sanitizeConfig({ ...aihubConfig, maxFirstTokenLatencySeconds: 10, maxOutputDurationSeconds: 0.4 }),
   aihubNow,
 );
 assert.ok(delayedAihubCandidates.find((item) => item.group === "cheap").reasons.includes("first-token-latency-high"));
@@ -1077,7 +1119,7 @@ const blockedAihubCandidates = api.evaluateAihubCandidates(
   aihubGroups,
   { 1: 0.04 },
   api.sanitizeConfig({
-    ...config,
+    ...aihubConfig,
     groupFilterMode: "blacklist",
     groupBlacklist: ["recent-bad"],
   }),
@@ -1179,6 +1221,10 @@ assert.ok(
 
 assert.equal(api.selectBestCandidate(candidates, "balanced").group, "recent-bad");
 assert.equal(api.selectBestCandidate(candidates, "cheap").group, "recent-bad");
+const withAihubCachePricing = (candidate) => ({
+  ...candidate,
+  cachePricingModel: api.AIHUB_CACHE_PRICING,
+});
 const strategyCandidates = [
   {
     group: "cheapest",
@@ -1210,13 +1256,85 @@ const strategyCandidates = [
     outputLatencyMs: 2500,
     cacheHitRate: 99,
   },
-];
-assert.equal(api.selectBestCandidate(strategyCandidates, "", "saving").group, "cheapest");
+].map(withAihubCachePricing);
+assert.equal(api.selectBestCandidate(strategyCandidates, "", "saving").group, "most-stable");
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "stable").group, "most-stable");
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "balanced").group, "balanced-choice");
 assert.ok(
   api.candidateHealthScore(strategyCandidates[2]) > api.candidateHealthScore(strategyCandidates[1]),
   "stable scoring should reward recent success, latency, output time, and cache hit rate",
+);
+assert.ok(
+  Math.abs(api.cacheUnitCost(97) - 0.635) < 1e-12,
+  "the 97% cache baseline should cost 0.635 per million input tokens",
+);
+[
+  { group: "A027-BugTeam", ratio: 0.04, cacheHitRate: 81.49, displayed: 0.08 },
+  { group: "A015-Plus", ratio: 0.08, cacheHitRate: 92.31, displayed: 0.11 },
+  { group: "A003-Pro", ratio: 0.22, cacheHitRate: 94.7, displayed: 0.26 },
+  { group: "A015-Pro", ratio: 0.16, cacheHitRate: 91.02, displayed: 0.23 },
+].map(withAihubCachePricing).forEach((example) => {
+  assert.equal(
+    Number(api.candidateEffectiveRatio(example).toFixed(2)),
+    example.displayed,
+    `${example.group} should match the AIHub channel-status actual ratio`,
+  );
+});
+assert.ok(
+  Math.abs(api.candidateEffectiveRatio(withAihubCachePricing({ ratio: 0.1, cacheHitRate: 60 })) - 0.36220472440944884) < 1e-12,
+  "candidate actual ratio should use current cache cost over the 97% baseline",
+);
+const cacheBalancedSavingCandidates = [
+  { group: "lower-ratio", available: true, ratio: 0.05, cacheHitRate: 10 },
+  { group: "higher-cache", available: true, ratio: 0.06, cacheHitRate: 90 },
+].map(withAihubCachePricing);
+assert.equal(
+  api.selectBestCandidate(cacheBalancedSavingCandidates, "", "saving").group,
+  "higher-cache",
+  "saving mode should allow a much higher cache hit rate to offset a small ratio increase",
+);
+assert.equal(
+  api.selectBestCandidate([
+    { group: "much-lower-ratio", available: true, ratio: 0.05, cacheHitRate: 10 },
+    { group: "much-higher-cache", available: true, ratio: 0.1, cacheHitRate: 90 },
+  ].map(withAihubCachePricing), "", "saving").group,
+  "much-higher-cache",
+  "saving mode should compare calculated effective multipliers instead of arbitrary ranking weights",
+);
+assert.equal(
+  api.selectBestCandidate([
+    { group: "lower-effective-ratio", available: true, ratio: 0.05, cacheHitRate: 10 },
+    { group: "higher-effective-ratio", available: true, ratio: 0.2, cacheHitRate: 50 },
+  ].map(withAihubCachePricing), "", "saving").group,
+  "lower-effective-ratio",
+  "a cache discount should not beat a nominal ratio when its calculated effective multiplier is higher",
+);
+assert.equal(
+  api.selectBestCandidate([
+    { group: "known-cache", available: true, ratio: 0.1, cacheHitRate: 90 },
+    { group: "unknown-cache", available: true, ratio: 0.015, cacheHitRate: null },
+  ].map(withAihubCachePricing), "", "saving").group,
+  "unknown-cache",
+  "a candidate with missing cache data should conservatively use its nominal ratio",
+);
+assert.equal(api.candidateEffectiveRatio({ ratio: 0.06, cacheHitRate: null }), 0.06);
+assert.equal(
+  api.candidateEffectiveRatio({ ratio: 0.06, cacheHitRate: 99 }),
+  0.06,
+  "cache metrics without a confirmed pricing model must fall back to the nominal ratio",
+);
+assert.equal(
+  api.hasEffectiveRatioEstimate({ ratio: 0.06, cacheHitRate: 99 }),
+  false,
+  "a cache rate alone must not be presented as an actual multiplier",
+);
+assert.equal(
+  api.selectBestCandidate([
+    { group: "current-low-cache", available: true, ratio: 0.05, cacheHitRate: 10 },
+    { group: "same-ratio-high-cache", available: true, ratio: 0.05, cacheHitRate: 90 },
+  ].map(withAihubCachePricing), "current-low-cache", "saving").group,
+  "same-ratio-high-cache",
+  "saving mode should switch away from the current group when the same ratio has a higher cache rate",
 );
 assert.equal(
   api.selectSwitchCandidate(candidates, "cheap", "balanced").group,

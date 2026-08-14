@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.14.0
+// @version      0.14.3
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -80,9 +80,14 @@
   const IS_NEW_API_SITE = SITE.apiFamily === "new-api";
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
-  const AIHUB_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.14.0";
+  const AIHUB_LEGACY_MONITOR_MODEL = "AIHub 公共渠道监测";
+  const SCRIPT_VERSION = "0.14.3";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
+  const AIHUB_CACHE_PRICING = Object.freeze({
+    baselineHitRate: 97,
+    hitUnitPrice: 0.5,
+    missUnitPrice: 5,
+  });
 
   const DEFAULT_CONFIG = Object.freeze({
     theme: "system",
@@ -536,6 +541,8 @@
       "output-latency-high": "输出延迟过高",
       "monitor-disabled": "监测已停用",
       "latest-unavailable": "最新监测不可用",
+      "model-unavailable": "目标模型不可用",
+      "model-status-unknown": "模型状态未知",
       "temporarily-blacklisted": "故障隔离",
     };
     return labels[reason] || reason;
@@ -664,6 +671,49 @@
 
   function normalizeAihubRates(payload) {
     return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  }
+
+  function normalizeAihubModelKey(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized) return "";
+    const prefixed = normalized.match(/^gpt-5\.6-(sol|terra|luna)$/);
+    return prefixed ? prefixed[1] : normalized;
+  }
+
+  function aihubModelName(value) {
+    const key = normalizeAihubModelKey(value);
+    return ["sol", "terra", "luna"].includes(key) ? `gpt-5.6-${key}` : key;
+  }
+
+  function normalizeAihubModelHealth(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return Object.fromEntries(
+      Object.entries(source)
+        .map(([model, status]) => [normalizeAihubModelKey(model), String(status || "").trim().toLowerCase()])
+        .filter(([model]) => Boolean(model)),
+    );
+  }
+
+  function buildAihubModelCatalog(summaryPayload) {
+    const summary = summaryPayload && typeof summaryPayload === "object" ? summaryPayload : {};
+    const keys = new Set();
+    (Array.isArray(summary.apis) ? summary.apis : []).forEach((monitor) => {
+      Object.keys(normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health)))
+        .forEach((model) => keys.add(model));
+    });
+    const order = new Map(["sol", "terra", "luna"].map((model, index) => [model, index]));
+    return {
+      data: [...keys]
+        .sort((left, right) => (order.get(left) ?? 99) - (order.get(right) ?? 99) || left.localeCompare(right))
+        .map((model) => ({ model_name: aihubModelName(model) })),
+    };
+  }
+
+  function aihubModelHealthStatus(monitor, model) {
+    const key = normalizeAihubModelKey(model);
+    if (!key) return "";
+    const health = normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health));
+    return health[key] || "";
   }
 
   function normalizeFluxionModelName(value) {
@@ -1002,6 +1052,7 @@
           outputTokens: item.output_tokens,
           outputTokensPerSecond: item.output_tps,
           cacheHitRate: item.cache_hit_rate,
+          modelHealth: normalizeAihubModelHealth(item.model_health ?? item.modelHealth),
           successRates: item.success_rates,
           enabled: item.enabled !== false,
         })),
@@ -1135,6 +1186,7 @@
           ? outputTokens / outputTokensPerSecond * 1000
           : NaN;
         const cacheHitRate = parsePercentValue(monitor.cacheHitRate);
+        const modelHealthStatus = aihubModelHealthStatus(monitor, config.model);
 
         if (!groupMeta) reasons.push("not-user-selectable");
         if (
@@ -1153,6 +1205,8 @@
         }
         if (summary.monitoringActive === false || monitor.enabled === false) reasons.push("monitor-disabled");
         if (monitor.available !== true) reasons.push("latest-unavailable");
+        if (modelHealthStatus === "failed") reasons.push("model-unavailable");
+        else if (modelHealthStatus !== "healthy") reasons.push("model-status-unknown");
         if (ageMinutes > config.maxMetricAgeMinutes) reasons.push("metrics-stale");
         if (!Number.isFinite(aggregateSuccess) || aggregateSuccess < config.minSuccessRate) {
           reasons.push("success-low");
@@ -1188,6 +1242,8 @@
           outputTokensPerSecond,
           outputTokens,
           cacheHitRate,
+          cachePricingModel: AIHUB_CACHE_PRICING,
+          modelHealthStatus,
           ageMinutes,
         };
       });
@@ -1222,26 +1278,76 @@
     return Math.min(100, minimum / ratio * 100);
   }
 
+  function hasValidCacheHitRate(candidate) {
+    const cacheHitRate = candidate && candidate.cacheHitRate;
+    return Number.isFinite(cacheHitRate) && cacheHitRate >= 0 && cacheHitRate <= 100;
+  }
+
+  function normalizeCachePricingModel(value) {
+    if (!value || typeof value !== "object") return null;
+    const baselineHitRate = Number(value.baselineHitRate);
+    const hitUnitPrice = Number(value.hitUnitPrice);
+    const missUnitPrice = Number(value.missUnitPrice);
+    if (
+      !Number.isFinite(baselineHitRate)
+      || baselineHitRate < 0
+      || baselineHitRate > 100
+      || !Number.isFinite(hitUnitPrice)
+      || hitUnitPrice < 0
+      || !Number.isFinite(missUnitPrice)
+      || missUnitPrice < 0
+      || hitUnitPrice >= missUnitPrice
+    ) return null;
+    return { baselineHitRate, hitUnitPrice, missUnitPrice };
+  }
+
+  function hasEffectiveRatioEstimate(candidate) {
+    return hasValidCacheHitRate(candidate)
+      && Boolean(normalizeCachePricingModel(candidate && candidate.cachePricingModel));
+  }
+
+  function cacheUnitCost(cacheHitRate, pricingModel = AIHUB_CACHE_PRICING) {
+    const model = normalizeCachePricingModel(pricingModel) || AIHUB_CACHE_PRICING;
+    const hitRatio = boundedPercent(cacheHitRate, model.baselineHitRate) / 100;
+    return hitRatio * model.hitUnitPrice + (1 - hitRatio) * model.missUnitPrice;
+  }
+
+  function candidateEffectiveRatio(candidate) {
+    const nominalRatio = Number(candidate && candidate.ratio);
+    if (!Number.isFinite(nominalRatio) || nominalRatio <= 0) return NaN;
+    const pricingModel = normalizeCachePricingModel(candidate && candidate.cachePricingModel);
+    if (!hasValidCacheHitRate(candidate) || !pricingModel) return nominalRatio;
+    const baselineCost = cacheUnitCost(pricingModel.baselineHitRate, pricingModel);
+    return nominalRatio * cacheUnitCost(candidate.cacheHitRate, pricingModel) / baselineCost;
+  }
+
+  function candidateSavingScore(candidate, candidates) {
+    const population = Array.isArray(candidates) ? candidates : [];
+    const effectiveRatios = population
+      .map(candidateEffectiveRatio)
+      .filter((ratio) => Number.isFinite(ratio) && ratio > 0);
+    const minimum = effectiveRatios.length ? Math.min(...effectiveRatios) : NaN;
+    const effectiveRatio = candidateEffectiveRatio(candidate);
+    if (!Number.isFinite(minimum) || !Number.isFinite(effectiveRatio) || effectiveRatio <= 0) return 0;
+    return Math.min(100, minimum / effectiveRatio * 100);
+  }
+
   function candidateStrategyScore(candidate, candidates, mode) {
     const selectionMode = normalizeSelectionMode(mode);
     const health = candidateHealthScore(candidate);
     const price = candidatePriceScore(candidate, candidates);
     if (selectionMode === "stable") return health;
     if (selectionMode === "balanced") return health * 0.7 + price * 0.3;
-    return price;
+    return candidateSavingScore(candidate, candidates);
   }
 
   function sortCandidatesForMode(candidates, mode) {
     const selectionMode = normalizeSelectionMode(mode);
     const population = candidates.slice();
     return population.sort((left, right) => {
-      if (selectionMode === "saving") {
-        if (left.ratio !== right.ratio) return left.ratio - right.ratio;
-      } else {
-        const scoreDifference = candidateStrategyScore(right, population, selectionMode)
-          - candidateStrategyScore(left, population, selectionMode);
-        if (Math.abs(scoreDifference) > 0.0001) return scoreDifference;
-      }
+      const scoreDifference = candidateStrategyScore(right, population, selectionMode)
+        - candidateStrategyScore(left, population, selectionMode);
+      if (Math.abs(scoreDifference) > 0.0001) return scoreDifference;
       const healthDifference = candidateHealthScore(right) - candidateHealthScore(left);
       if (Math.abs(healthDifference) > 0.0001) return healthDifference;
       return left.ratio - right.ratio;
@@ -1256,8 +1362,10 @@
 
     if (!available.length) return null;
     const current = available.find((candidate) => candidate.group === currentGroup);
-    if (normalizeSelectionMode(mode) === "saving" && current && current.ratio === available[0].ratio) {
-      return current;
+    if (normalizeSelectionMode(mode) === "saving" && current) {
+      const scoreDifference = candidateSavingScore(available[0], available)
+        - candidateSavingScore(current, available);
+      if (Math.abs(scoreDifference) <= 0.0001) return current;
     }
     return available[0];
   }
@@ -1661,6 +1769,7 @@
 
   const TEST_API = Object.freeze({
     DEFAULT_CONFIG,
+    AIHUB_CACHE_PRICING,
     SITE_METADATA,
     activeGroupFilter,
     aihubMonitorRange,
@@ -1679,8 +1788,17 @@
     parsePercentValue,
     compareVersions,
     applyTemporaryBlacklist,
+    aihubModelHealthStatus,
+    aihubModelName,
+    buildAihubModelCatalog,
+    normalizeAihubModelHealth,
+    normalizeAihubModelKey,
+    cacheUnitCost,
+    hasEffectiveRatioEstimate,
     candidateHasHealthFailure,
+    candidateEffectiveRatio,
     candidateHealthScore,
+    candidateSavingScore,
     candidateStrategyScore,
     evaluateSpendProtection,
     localDateKey,
@@ -1735,7 +1853,9 @@
   }
 
   let config = sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}));
-  if (IS_AIHUB) config = { ...config, model: AIHUB_MONITOR_MODEL };
+  if (IS_AIHUB && config.model === AIHUB_LEGACY_MONITOR_MODEL) {
+    config = { ...config, model: "" };
+  }
   const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let scheduler = null;
   let updateScheduler = null;
@@ -2175,17 +2295,20 @@
         fetchJson("/api/v1/groups/rates"),
       ];
       if (IS_FLUXION) requests.push(fetchJson("/api/v1/channel-monitors"));
-      const [tokenList, groups, rates, monitors] = await Promise.all(requests);
+      else requests.push(fetchJson(`/api/v1/public/providers?timezone=${encodeURIComponent(aihubTimezone())}`));
+      const [tokenList, groups, rates, monitorPayload] = await Promise.all(requests);
       tokensCache = normalizeTokenList(tokenList);
       if (IS_FLUXION) {
         fluxionGroupsCache = normalizeFluxionGroups(groups);
         fluxionRatesCache = normalizeAihubRates(rates);
-        fluxionMonitorsCache = normalizeFluxionMonitors(monitors);
-        pricingCache = buildFluxionModelCatalog(monitors, groups);
+        fluxionMonitorsCache = normalizeFluxionMonitors(monitorPayload);
+        pricingCache = buildFluxionModelCatalog(monitorPayload, groups);
       } else {
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
-        pricingCache = { data: [{ model_name: AIHUB_MONITOR_MODEL }] };
+        pricingCache = buildAihubModelCatalog(
+          normalizeAihubProviderData(monitorPayload, {}).summary,
+        );
       }
       renderOptions();
       render();
@@ -2266,7 +2389,7 @@
     state.candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(now), config.model, now);
     const recommended = selectBestCandidate(state.candidates, "", config.selectionMode);
     state.bestGroup = recommended
-      ? `${recommended.group} ${formatRatio(recommended.ratio)}`
+      ? `${recommended.group} ${formatRatio(candidateEffectiveRatio(recommended))}`
       : "无可用分组";
   }
 
@@ -2628,7 +2751,7 @@
         state.aihubSeriesDegraded = monitorFallback;
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
-        pricingCache = { data: [{ model_name: AIHUB_MONITOR_MODEL }] };
+        pricingCache = buildAihubModelCatalog(summary);
         candidates = evaluateAihubCandidates(
           summary,
           series,
@@ -2675,7 +2798,7 @@
       const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
       state.candidates = candidates;
       state.bestGroup = recommendedCandidate
-        ? `${recommendedCandidate.group} ${formatRatio(recommendedCandidate.ratio)}`
+        ? `${recommendedCandidate.group} ${formatRatio(candidateEffectiveRatio(recommendedCandidate))}`
         : "无可用分组";
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (targetGroup) {
@@ -3014,8 +3137,25 @@
       nameLabel.textContent = candidate.group;
       name.append(signal, nameLabel);
       const ratio = document.createElement("span");
-      ratio.className = "mono";
-      ratio.textContent = formatRatio(candidate.ratio);
+      ratio.className = "candidate-ratio mono";
+      const nominalRatio = document.createElement("span");
+      nominalRatio.textContent = formatRatio(candidate.ratio);
+      const effectiveRatio = document.createElement("small");
+      const pricingModel = normalizeCachePricingModel(candidate && candidate.cachePricingModel);
+      const hasEffectiveEstimate = hasEffectiveRatioEstimate(candidate);
+      effectiveRatio.textContent = hasEffectiveEstimate
+        ? `≈${formatRatio(candidateEffectiveRatio(candidate))}`
+        : "≈-";
+      ratio.append(nominalRatio, effectiveRatio);
+      ratio.title = hasEffectiveEstimate
+        ? `实际倍率 = 标称倍率 × 当前缓存成本 ÷ ${pricingModel.baselineHitRate}% 基线缓存成本；命中 $${pricingModel.hitUnitPrice}/M，未命中 $${pricingModel.missUnitPrice}/M`
+        : `标称倍率 ${formatRatio(candidate.ratio)}；当前站点没有可确认的缓存计费模型，无法计算实际倍率`;
+      ratio.setAttribute(
+        "aria-label",
+        hasEffectiveEstimate
+          ? `标称倍率 ${formatRatio(candidate.ratio)}，实际倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
+          : `标称倍率 ${formatRatio(candidate.ratio)}，实际倍率无法计算`,
+      );
       const success = document.createElement("span");
       success.className = "mono";
       success.textContent = formatPercent(candidate.aggregateSuccess);
@@ -3326,7 +3466,7 @@
     }
     if (refs.selectAllTokens) refs.selectAllTokens.disabled = running;
     if (refs.clearTokens) refs.clearTokens.disabled = running;
-    if (refs.model) refs.model.disabled = running || IS_AIHUB;
+    if (refs.model) refs.model.disabled = running;
     if (refs.tokenList) {
       refs.tokenList.querySelectorAll('input[data-token-id]').forEach((checkbox) => {
         checkbox.disabled = running;
@@ -4157,6 +4297,9 @@
         .candidate-off { color: var(--muted); }
         .candidate-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .candidate-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .candidate-ratio { display: grid; justify-items: center; gap: 1px; line-height: 1.05; }
+        .candidate-ratio small { color: var(--accent); font-size: 8px; font-weight: 650; }
+        .candidate-off .candidate-ratio small { color: var(--muted); }
         .candidate-signal { width: 6px; height: 6px; flex: 0 0 auto; background: var(--warning); }
         .candidate-signal { border-radius: 50%; }
         .candidate-ok .candidate-signal { background: var(--healthy); }
@@ -4534,7 +4677,7 @@
         </div>
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
-          <div class="candidate-head"><span>分组</span><span>倍率</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
+          <div class="candidate-head"><span>分组</span><span title="上方标称倍率；仅有已确认缓存计费模型时下方显示实际倍率">标/实</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
         </section>
@@ -4593,7 +4736,7 @@
               </div>
             </div>
             <div class="field">
-              <label for="kf-model">${IS_AIHUB ? "监测来源（站点未提供模型维度）" : "目标模型"}</label>
+              <label for="kf-model">${IS_AIHUB ? "目标模型（站点探测）" : "目标模型"}</label>
               <select id="kf-model" data-ref="model"></select>
             </div>
             <div class="field field-wide group-filter-field">
