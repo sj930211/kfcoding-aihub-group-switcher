@@ -186,12 +186,34 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.14.4");
+assert.equal(api.extractUserscriptVersion(source), "0.14.5");
 assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
 assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
 assert.equal(
   api.aihubModelHealthStatus({ model_health: { Sol: "HEALTHY" } }, "gpt-5.6-sol"),
   "healthy",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.normalizeAihubModelDetection({
+    applicable: true,
+    status: "SUSPECTED",
+    model: "gpt-5.6-sol",
+    confidence: "HIGH",
+    execution_complete: true,
+    all_targets_passed: false,
+    expires_at: "2026-09-16T16:10:21+08:00",
+  }))),
+  {
+    applicable: true,
+    status: "suspected",
+    model: "gpt-5.6-sol",
+    modelKey: "sol",
+    confidence: "high",
+    executionComplete: true,
+    allTargetsPassed: false,
+    expiresAt: "2026-09-16T16:10:21+08:00",
+    expiresAtMs: Date.parse("2026-09-16T16:10:21+08:00"),
+  },
 );
 assert.equal(api.detectSiteId("kfcoding.codes"), "kfcoding");
 assert.equal(api.detectSiteId("AIHUB.TOP"), "aihub");
@@ -1056,6 +1078,15 @@ const providerSummary = {
     success_rates: { "24h": 0.99 },
     cache_hit_rate: "88%",
     model_health: { sol: "healthy", terra: "healthy", luna: "failed" },
+    model_detection: {
+      applicable: true,
+      status: "passed",
+      model: "gpt-5.6-sol",
+      confidence: "high",
+      execution_complete: true,
+      all_targets_passed: true,
+      expires_at: new Date(aihubNow + 86_400_000).toISOString(),
+    },
   }],
 };
 const providerSeries = {
@@ -1068,6 +1099,8 @@ assert.deepEqual(
   JSON.parse(JSON.stringify(normalizedProviderData.summary.apis[0].modelHealth)),
   { sol: "healthy", terra: "healthy", luna: "failed" },
 );
+assert.equal(normalizedProviderData.summary.apis[0].modelDetection.status, "passed");
+assert.equal(normalizedProviderData.summary.apis[0].modelDetection.modelKey, "sol");
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.buildAihubModelCatalog(normalizedProviderData.summary))),
   { data: [
@@ -1153,6 +1186,79 @@ const failedLatestSolProbe = api.evaluateAihubCandidates(
 assert.equal(failedLatestSolProbe.latestSuccess, 0);
 assert.equal(failedLatestSolProbe.available, false);
 assert.ok(failedLatestSolProbe.reasons.includes("latest-unavailable"));
+
+const detectionBaseSummary = {
+  ...modelScopedAihubSummary,
+  apis: [{
+    ...modelScopedAihubSummary.apis[0],
+    available: true,
+    modelDetection: {
+      applicable: true,
+      status: "passed",
+      model: "gpt-5.6-sol",
+      executionComplete: true,
+      allTargetsPassed: true,
+      expiresAt: new Date(aihubNow + 86_400_000).toISOString(),
+    },
+  }],
+};
+const healthySolSeries = { seriesByApiId: { "monitor-model-scoped": monitorSeries([true, true]) } };
+const evaluateDetection = (detection, model = "gpt-5.6-sol") => api.evaluateAihubCandidates(
+  {
+    ...detectionBaseSummary,
+    apis: [{ ...detectionBaseSummary.apis[0], modelDetection: detection }],
+  },
+  healthySolSeries,
+  solProbeGroups,
+  { 1: 0.04 },
+  api.sanitizeConfig({ ...aihubConfig, model }),
+  aihubNow,
+)[0];
+const passedDetection = evaluateDetection(detectionBaseSummary.apis[0].modelDetection);
+assert.equal(passedDetection.available, true);
+assert.equal(passedDetection.modelDetectionStatus, "passed");
+assert.equal(passedDetection.modelDetectionModelKey, "sol");
+
+const suspectedDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  status: "suspected",
+});
+assert.equal(suspectedDetection.available, false);
+assert.ok(suspectedDetection.reasons.includes("model-detection-suspected"));
+assert.equal(api.candidateHasHealthFailure(suspectedDetection), true);
+
+const insufficientDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  status: "insufficient_evidence",
+});
+assert.ok(insufficientDetection.reasons.includes("model-detection-insufficient"));
+
+const failedDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  status: "detection_failed",
+});
+assert.ok(failedDetection.reasons.includes("model-detection-failed"));
+
+const expiredDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  expiresAt: new Date(aihubNow - 1).toISOString(),
+});
+assert.ok(expiredDetection.reasons.includes("model-detection-expired"));
+
+const incompleteDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  allTargetsPassed: false,
+});
+assert.ok(incompleteDetection.reasons.includes("model-detection-incomplete"));
+
+const otherModelDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  model: "gpt-5.6-terra",
+});
+assert.equal(otherModelDetection.available, true, "Sol checks must ignore Terra-scoped detection evidence");
+
+const legacyWithoutDetection = evaluateDetection(null);
+assert.equal(legacyWithoutDetection.available, true, "legacy provider rows without detection must stay compatible");
 
 const cappedAihubCandidates = api.evaluateAihubCandidates(
   aihubSummary,

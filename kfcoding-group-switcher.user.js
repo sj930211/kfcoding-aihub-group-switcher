@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.14.4
+// @version      0.14.5
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -419,6 +419,14 @@
       "output-latency-high",
       "monitor-disabled",
       "latest-unavailable",
+      "model-unavailable",
+      "model-status-unknown",
+      "model-detection-suspected",
+      "model-detection-insufficient",
+      "model-detection-failed",
+      "model-detection-expired",
+      "model-detection-incomplete",
+      "model-detection-unknown",
     ]);
     return candidate.reasons.some((reason) => healthReasons.has(reason));
   }
@@ -543,6 +551,12 @@
       "latest-unavailable": "最新监测不可用",
       "model-unavailable": "目标模型不可用",
       "model-status-unknown": "模型状态未知",
+      "model-detection-suspected": "模型检测疑似",
+      "model-detection-insufficient": "模型检测证据不足",
+      "model-detection-failed": "模型检测未通过",
+      "model-detection-expired": "模型检测已过期",
+      "model-detection-incomplete": "模型检测未完成",
+      "model-detection-unknown": "模型检测状态未知",
       "temporarily-blacklisted": "故障隔离",
     };
     return labels[reason] || reason;
@@ -692,6 +706,54 @@
         .map(([model, status]) => [normalizeAihubModelKey(model), String(status || "").trim().toLowerCase()])
         .filter(([model]) => Boolean(model)),
     );
+  }
+
+  function normalizeAihubModelDetection(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const model = aihubModelName(value.model ?? value.model_name ?? value.target_model);
+    const expiresAt = String(value.expires_at ?? value.expiresAt ?? "").trim();
+    const expiresAtMs = Date.parse(expiresAt);
+    return {
+      applicable: value.applicable === true,
+      status: String(value.status || "").trim().toLowerCase(),
+      model,
+      modelKey: normalizeAihubModelKey(model),
+      confidence: String(value.confidence || "").trim().toLowerCase(),
+      executionComplete: value.execution_complete === undefined && value.executionComplete === undefined
+        ? null
+        : Boolean(value.execution_complete ?? value.executionComplete),
+      allTargetsPassed: value.all_targets_passed === undefined && value.allTargetsPassed === undefined
+        ? null
+        : Boolean(value.all_targets_passed ?? value.allTargetsPassed),
+      expiresAt,
+      expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : NaN,
+    };
+  }
+
+  function aihubModelDetectionReason(monitor, model, nowMs) {
+    const selectedModelKey = normalizeAihubModelKey(model);
+    const detection = normalizeAihubModelDetection(
+      monitor && (monitor.modelDetection ?? monitor.model_detection),
+    );
+    if (
+      !detection
+      || detection.applicable !== true
+      || !selectedModelKey
+      || detection.modelKey !== selectedModelKey
+    ) return "";
+    const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    if (Number.isFinite(detection.expiresAtMs) && detection.expiresAtMs <= now) {
+      return "model-detection-expired";
+    }
+    if (detection.status === "passed") {
+      return detection.executionComplete === false || detection.allTargetsPassed === false
+        ? "model-detection-incomplete"
+        : "";
+    }
+    if (detection.status === "suspected") return "model-detection-suspected";
+    if (detection.status === "insufficient_evidence") return "model-detection-insufficient";
+    if (["detection_failed", "failed"].includes(detection.status)) return "model-detection-failed";
+    return "model-detection-unknown";
   }
 
   function buildAihubModelCatalog(summaryPayload) {
@@ -1053,6 +1115,7 @@
           outputTokensPerSecond: item.output_tps,
           cacheHitRate: item.cache_hit_rate,
           modelHealth: normalizeAihubModelHealth(item.model_health ?? item.modelHealth),
+          modelDetection: normalizeAihubModelDetection(item.model_detection ?? item.modelDetection),
           successRates: item.success_rates,
           enabled: item.enabled !== false,
         })),
@@ -1156,6 +1219,10 @@
           .sort((left, right) => left.timestampMs - right.timestampMs);
         const latestPoint = parsedSeries.length ? parsedSeries[parsedSeries.length - 1] : null;
         const modelHealthStatus = aihubModelHealthStatus(monitor, config.model);
+        const modelDetection = normalizeAihubModelDetection(
+          monitor && (monitor.modelDetection ?? monitor.model_detection),
+        );
+        const modelDetectionFailure = aihubModelDetectionReason(monitor, config.model, now);
         const selectedModelKey = normalizeAihubModelKey(config.model);
         const probeModelKey = normalizeAihubModelKey(
           (groupMeta && (groupMeta.probe_model ?? groupMeta.probeModel))
@@ -1220,6 +1287,7 @@
         if (latestSuccess !== 100) reasons.push("latest-unavailable");
         if (modelHealthStatus === "failed") reasons.push("model-unavailable");
         else if (modelHealthStatus !== "healthy") reasons.push("model-status-unknown");
+        if (modelDetectionFailure) reasons.push(modelDetectionFailure);
         if (ageMinutes > config.maxMetricAgeMinutes) reasons.push("metrics-stale");
         if (!Number.isFinite(aggregateSuccess) || aggregateSuccess < config.minSuccessRate) {
           reasons.push("success-low");
@@ -1257,6 +1325,8 @@
           cacheHitRate,
           cachePricingModel: AIHUB_CACHE_PRICING,
           modelHealthStatus,
+          modelDetectionStatus: modelDetection ? modelDetection.status : "",
+          modelDetectionModelKey: modelDetection ? modelDetection.modelKey : "",
           probeModelKey,
           ageMinutes,
         };
@@ -1803,9 +1873,11 @@
     compareVersions,
     applyTemporaryBlacklist,
     aihubModelHealthStatus,
+    aihubModelDetectionReason,
     aihubModelName,
     buildAihubModelCatalog,
     normalizeAihubModelHealth,
+    normalizeAihubModelDetection,
     normalizeAihubModelKey,
     cacheUnitCost,
     hasEffectiveRatioEstimate,
