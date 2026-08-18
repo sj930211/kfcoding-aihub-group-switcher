@@ -3,6 +3,14 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
+const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
+const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
+assert.equal(metadataVersion, "0.14.6", "the userscript metadata should expose the patch release");
+assert.equal(
+  runtimeVersion,
+  metadataVersion,
+  "the runtime version shown in the panel must match the Tampermonkey metadata version",
+);
 assert.equal(source.includes("// @match        https://ooioo.work/*"), true, "ooioo pages should load the userscript");
 assert.equal(source.includes("// @match        https://fluxionai.space/*"), true, "FluxionAI pages should load the userscript");
 assert.equal(source.includes('data-ref="refresh"'), false, "manual refresh should be folded into immediate check");
@@ -186,7 +194,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.14.5");
+assert.equal(api.extractUserscriptVersion(source), "0.14.6");
 assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
 assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
 assert.equal(

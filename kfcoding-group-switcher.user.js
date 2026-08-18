@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.14.5
+// @version      0.14.6
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -81,7 +81,7 @@
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_LEGACY_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.14.4";
+  const SCRIPT_VERSION = "0.14.6";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   const AIHUB_CACHE_PRICING = Object.freeze({
     baselineHitRate: 97,
