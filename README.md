@@ -85,7 +85,7 @@ AIHub 和 FluxionAI 复用页面当前的 Bearer 登录状态。脚本每次请�
 - 倍率优先采用当前账号的分组倍率，其次使用可选分组倍率和公共监测倍率。
 - 可用性优先读取 `/api/v1/public/providers` 和 `/api/v1/public/providers/series`，并使用站点返回的供应商、分组倍率、`model_health`、`model_detection` 与最新监测点；新接口不可用时回退到 `/api/v1/public/monitor/summary` 和 `/api/v1/public/monitor/series/{range}`。近期状态只采用时间最新的一个监测点；仅当分组的 `probe_model` 与目标模型相同时才使用该柱状图，否则使用目标模型自己的 `model_health`，避免 Luna 等其他模型的故障误判 Sol。序列接口临时返回非 JSON 数据时会降级使用汇总接口中的最新状态，不中断本次分组检查。
 - 缓存命中率读取公共监测的 `cacheHitRate`；完整输出耗时使用 `outputTokens / outputTokensPerSecond` 计算。
-- 模型下拉从公共监测的 `model_health` 键生成，当前站点返回 Sol、Terra、Luna。只有目标模型状态明确为 `healthy` 的分组才参与自动切换；`failed` 显示“目标模型不可用”，字段缺失或出现未知值时显示“模型状态未知”并禁止自动切换。新版供应商数据若为所选模型提供适用的 `model_detection`，还必须处于未过期的 `passed` 状态；`suspected`、`insufficient_evidence`、`detection_failed`、未完成、过期或未知状态会显示对应原因并禁止自动切换。旧响应没有该字段或检测针对其他模型时，继续沿用原有判定。
+- 模型下拉从公共监测的 `model_health` 键生成，当前站点返回 Sol、Terra、Luna。只有目标模型状态明确为 `healthy` 的分组才参与自动切换；`failed` 显示“目标模型不可用”，字段缺失或出现未知值时显示“模型状态未知”并禁止自动切换。新版供应商数据若为所选模型提供适用的 `model_detection`，脚本会继续展示 `suspected`、`insufficient_evidence`、`detection_failed`、未完成、过期或未知等诊断状态，但这些状态只作为“检测警告”，不再单独阻止自动切换、触发回滚或加入故障隔离；分组仍须满足目标模型健康、最新可用状态和其他自动判定门槛。旧响应没有该字段或检测针对其他模型时，不显示检测警告。
 - 密钥分组更新沿用站点前端接口，只提交 `group_id`，成功后重新读取密钥详情确认结果。
 
 ## 验证

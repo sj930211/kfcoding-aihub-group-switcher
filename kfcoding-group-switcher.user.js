@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.14.6
+// @version      0.14.7
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -81,7 +81,7 @@
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_LEGACY_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.14.6";
+  const SCRIPT_VERSION = "0.14.7";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   const AIHUB_CACHE_PRICING = Object.freeze({
     baselineHitRate: 97,
@@ -421,12 +421,6 @@
       "latest-unavailable",
       "model-unavailable",
       "model-status-unknown",
-      "model-detection-suspected",
-      "model-detection-insufficient",
-      "model-detection-failed",
-      "model-detection-expired",
-      "model-detection-incomplete",
-      "model-detection-unknown",
     ]);
     return candidate.reasons.some((reason) => healthReasons.has(reason));
   }
@@ -1201,6 +1195,7 @@
       })
       .map((monitor) => {
         const reasons = [];
+        const warnings = [];
         const groupId = Number(monitor.group_id);
         const groupMeta = groupMap.get(groupId);
         const group = String((groupMeta && groupMeta.name) || monitor.planType || `#${groupId}`);
@@ -1222,7 +1217,7 @@
         const modelDetection = normalizeAihubModelDetection(
           monitor && (monitor.modelDetection ?? monitor.model_detection),
         );
-        const modelDetectionFailure = aihubModelDetectionReason(monitor, config.model, now);
+        const modelDetectionWarning = aihubModelDetectionReason(monitor, config.model, now);
         const selectedModelKey = normalizeAihubModelKey(config.model);
         const probeModelKey = normalizeAihubModelKey(
           (groupMeta && (groupMeta.probe_model ?? groupMeta.probeModel))
@@ -1287,7 +1282,7 @@
         if (latestSuccess !== 100) reasons.push("latest-unavailable");
         if (modelHealthStatus === "failed") reasons.push("model-unavailable");
         else if (modelHealthStatus !== "healthy") reasons.push("model-status-unknown");
-        if (modelDetectionFailure) reasons.push(modelDetectionFailure);
+        if (modelDetectionWarning) warnings.push(modelDetectionWarning);
         if (ageMinutes > config.maxMetricAgeMinutes) reasons.push("metrics-stale");
         if (!Number.isFinite(aggregateSuccess) || aggregateSuccess < config.minSuccessRate) {
           reasons.push("success-low");
@@ -1313,6 +1308,7 @@
           ratio,
           available: reasons.length === 0,
           reasons,
+          warnings,
           aggregateSuccess,
           latestSuccess,
           recentSuccess: latestSuccess,
@@ -3212,7 +3208,9 @@
 
     rows.forEach((candidate) => {
       const row = document.createElement("div");
-      row.className = `candidate ${candidate.available ? "candidate-ok" : "candidate-off"}`;
+      const warnings = Array.isArray(candidate.warnings) ? candidate.warnings : [];
+      const warningText = warnings.map(reasonLabel).join("、");
+      row.className = `candidate ${candidate.available ? "candidate-ok" : "candidate-off"}${candidate.available && warningText ? " candidate-warning" : ""}`;
       const name = document.createElement("span");
       name.className = "candidate-name";
       const signal = document.createElement("span");
@@ -3279,8 +3277,11 @@
       const verdict = document.createElement("span");
       verdict.className = "verdict";
       verdict.textContent = candidate.available
-        ? "可用"
+        ? (warningText ? "可用·检测警告" : "可用")
         : reasonLabel(candidate.reasons[0] || "不可用");
+      verdict.title = candidate.available
+        ? (warningText ? `不阻断切换：${warningText}` : "符合自动切换条件")
+        : candidate.reasons.map(reasonLabel).join("、") || "不可用";
       row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, cacheHitRate, verdict);
       refs.candidateRows.appendChild(row);
     });
@@ -3298,8 +3299,11 @@
         return (left.ratio || Infinity) - (right.ratio || Infinity);
       })
       .forEach((candidate) => {
+        const warningText = (Array.isArray(candidate.warnings) ? candidate.warnings : [])
+          .map(reasonLabel)
+          .join("、");
         const status = candidate.available
-          ? "可用"
+          ? (warningText ? `可用（警告：${warningText}）` : "可用")
           : candidate.reasons.map(reasonLabel).join("、") || "不可用";
         const currentCount = state.tokenResults.filter((result) => result.group === candidate.group).length;
         const current = currentCount ? ` · 当前 ${currentCount}` : "";
@@ -4389,11 +4393,13 @@
         .candidate-signal { width: 6px; height: 6px; flex: 0 0 auto; background: var(--warning); }
         .candidate-signal { border-radius: 50%; }
         .candidate-ok .candidate-signal { background: var(--healthy); }
+        .candidate-warning .candidate-signal { background: var(--warning); }
         .health-value { position: relative; padding-bottom: 5px; }
         .health-value::after { position: absolute; right: 0; bottom: 1px; left: 0; width: var(--health); height: 1px; background: var(--healthy); content: ""; }
         .candidate-off .health-value::after { background: var(--warning); }
         .verdict { overflow: hidden; color: var(--warning); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
         .candidate-ok .verdict { color: var(--healthy); }
+        .candidate-warning .verdict { color: var(--warning); }
         .secondary-details { margin: 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; }
         .secondary-details > summary { padding: 9px 12px; }
         .secondary-details > div { padding: 0 12px 10px; }
