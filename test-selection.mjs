@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.14.7", "the userscript metadata should expose the patch release");
+assert.equal(metadataVersion, "0.14.8", "the userscript metadata should expose the patch release");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -196,7 +196,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.14.7");
+assert.equal(api.extractUserscriptVersion(source), "0.14.8");
 assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
 assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
 assert.equal(
@@ -1285,6 +1285,121 @@ assert.deepEqual(JSON.parse(JSON.stringify(otherModelDetection.warnings)), []);
 const legacyWithoutDetection = evaluateDetection(null);
 assert.equal(legacyWithoutDetection.available, true, "legacy provider rows without detection must stay compatible");
 assert.deepEqual(JSON.parse(JSON.stringify(legacyWithoutDetection.warnings)), []);
+
+const staleHealthSummary = {
+  ...detectionBaseSummary,
+  apis: [{
+    ...detectionBaseSummary.apis[0],
+    modelHealth: { sol: "stale", terra: "stale", luna: "stale" },
+  }],
+};
+const gpt55ProbeGroups = [{ id: 1, name: "cheap", rate_multiplier: 0.05, probe_model: "gpt-5.5" }];
+const evaluateStaleHealth = (detection, series = healthySolSeries) => api.evaluateAihubCandidates(
+  {
+    ...staleHealthSummary,
+    apis: [{ ...staleHealthSummary.apis[0], modelDetection: detection }],
+  },
+  series,
+  gpt55ProbeGroups,
+  { 1: 0.04 },
+  aihubConfig,
+  aihubNow,
+)[0];
+const staleHealthWithPassedDetection = evaluateStaleHealth(
+  staleHealthSummary.apis[0].modelDetection,
+);
+assert.equal(staleHealthWithPassedDetection.modelHealthStatus, "stale");
+assert.equal(staleHealthWithPassedDetection.modelHealthBackedByDetection, true);
+assert.equal(staleHealthWithPassedDetection.reasons.includes("model-status-unknown"), false);
+assert.equal(staleHealthWithPassedDetection.available, true);
+
+const staleHealthWithSuspectedDetection = evaluateStaleHealth({
+  ...staleHealthSummary.apis[0].modelDetection,
+  status: "suspected",
+});
+assert.equal(staleHealthWithSuspectedDetection.modelHealthBackedByDetection, true);
+assert.equal(staleHealthWithSuspectedDetection.reasons.includes("model-status-unknown"), false);
+assert.ok(staleHealthWithSuspectedDetection.warnings.includes("model-detection-suspected"));
+assert.equal(staleHealthWithSuspectedDetection.available, true);
+
+const staleHealthWithOtherModelDetection = evaluateStaleHealth({
+  ...staleHealthSummary.apis[0].modelDetection,
+  model: "gpt-5.6-terra",
+});
+assert.equal(staleHealthWithOtherModelDetection.modelHealthBackedByDetection, false);
+assert.ok(staleHealthWithOtherModelDetection.reasons.includes("model-status-unknown"));
+
+const staleHealthWithFailedLatestProbe = evaluateStaleHealth(
+  staleHealthSummary.apis[0].modelDetection,
+  { seriesByApiId: { "monitor-model-scoped": monitorSeries([true, false]) } },
+);
+assert.ok(staleHealthWithFailedLatestProbe.reasons.includes("latest-unavailable"));
+assert.equal(staleHealthWithFailedLatestProbe.available, false);
+
+const explicitFailedHealth = api.evaluateAihubCandidates(
+  {
+    ...staleHealthSummary,
+    apis: [{
+      ...staleHealthSummary.apis[0],
+      modelHealth: { sol: "failed", terra: "stale", luna: "stale" },
+    }],
+  },
+  healthySolSeries,
+  gpt55ProbeGroups,
+  { 1: 0.04 },
+  aihubConfig,
+  aihubNow,
+)[0];
+assert.equal(explicitFailedHealth.modelHealthBackedByDetection, false);
+assert.ok(explicitFailedHealth.reasons.includes("model-unavailable"));
+assert.equal(explicitFailedHealth.available, false);
+
+const currentAihubProviderContract = {
+  generated_at: new Date(aihubNow).toISOString(),
+  items: [{
+    code: "A027-BugTeam",
+    group_id: 75,
+    rate_multiplier: 0.04,
+    available: true,
+    last_probed_at: new Date(aihubNow - 10_000).toISOString(),
+    probe_e2e_ttft_ms: 2_000,
+    output_tps: 40,
+    output_tokens: 20,
+    success_rates: { "6h": 1, "24h": 1 },
+    cache_hit_rate: "87.1%",
+    model_health: { luna: "stale", sol: "stale", terra: "stale" },
+    model_detection: {
+      applicable: true,
+      status: "passed",
+      model: "gpt-5.6-sol",
+      execution_complete: true,
+      all_targets_passed: true,
+      expires_at: new Date(aihubNow + 86_400_000).toISOString(),
+    },
+  }],
+};
+const currentAihubSeriesContract = {
+  items: [{ group_id: 75, probe: monitorSeries([true]) }],
+};
+const normalizedCurrentAihubContract = api.normalizeAihubProviderData(
+  currentAihubProviderContract,
+  currentAihubSeriesContract,
+);
+const currentAihubContractCandidate = api.evaluateAihubCandidates(
+  normalizedCurrentAihubContract.summary,
+  normalizedCurrentAihubContract.series,
+  [{ id: 75, name: "A027-BugTeam", rate_multiplier: 0.04, probe_model: "gpt-5.5" }],
+  { 75: 0.04 },
+  api.sanitizeConfig({ ...aihubConfig, metricHours: 6 }),
+  aihubNow,
+)[0];
+assert.equal(currentAihubContractCandidate.group, "A027-BugTeam");
+assert.equal(currentAihubContractCandidate.modelHealthStatus, "stale");
+assert.equal(currentAihubContractCandidate.modelHealthBackedByDetection, true);
+assert.equal(currentAihubContractCandidate.modelDetectionStatus, "passed");
+assert.equal(currentAihubContractCandidate.probeModelKey, "gpt-5.5");
+assert.equal(currentAihubContractCandidate.reasons.includes("model-status-unknown"), false);
+assert.equal(currentAihubContractCandidate.available, true);
 
 const cappedAihubCandidates = api.evaluateAihubCandidates(
   aihubSummary,

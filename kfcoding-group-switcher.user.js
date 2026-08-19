@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.14.7
+// @version      0.14.8
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -81,7 +81,7 @@
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_LEGACY_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.14.7";
+  const SCRIPT_VERSION = "0.14.8";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   const AIHUB_CACHE_PRICING = Object.freeze({
     baselineHitRate: 97,
@@ -724,17 +724,22 @@
     };
   }
 
-  function aihubModelDetectionReason(monitor, model, nowMs) {
+  function aihubScopedModelDetection(monitor, model) {
     const selectedModelKey = normalizeAihubModelKey(model);
     const detection = normalizeAihubModelDetection(
       monitor && (monitor.modelDetection ?? monitor.model_detection),
     );
-    if (
-      !detection
-      || detection.applicable !== true
-      || !selectedModelKey
-      || detection.modelKey !== selectedModelKey
-    ) return "";
+    return detection
+      && detection.applicable === true
+      && selectedModelKey
+      && detection.modelKey === selectedModelKey
+      ? detection
+      : null;
+  }
+
+  function aihubModelDetectionReason(monitor, model, nowMs) {
+    const detection = aihubScopedModelDetection(monitor, model);
+    if (!detection) return "";
     const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
     if (Number.isFinite(detection.expiresAtMs) && detection.expiresAtMs <= now) {
       return "model-detection-expired";
@@ -1217,6 +1222,8 @@
         const modelDetection = normalizeAihubModelDetection(
           monitor && (monitor.modelDetection ?? monitor.model_detection),
         );
+        const scopedModelDetection = aihubScopedModelDetection(monitor, config.model);
+        const modelHealthBackedByDetection = modelHealthStatus === "stale" && Boolean(scopedModelDetection);
         const modelDetectionWarning = aihubModelDetectionReason(monitor, config.model, now);
         const selectedModelKey = normalizeAihubModelKey(config.model);
         const probeModelKey = normalizeAihubModelKey(
@@ -1281,7 +1288,9 @@
         if (summary.monitoringActive === false || monitor.enabled === false) reasons.push("monitor-disabled");
         if (latestSuccess !== 100) reasons.push("latest-unavailable");
         if (modelHealthStatus === "failed") reasons.push("model-unavailable");
-        else if (modelHealthStatus !== "healthy") reasons.push("model-status-unknown");
+        else if (modelHealthStatus !== "healthy" && !modelHealthBackedByDetection) {
+          reasons.push("model-status-unknown");
+        }
         if (modelDetectionWarning) warnings.push(modelDetectionWarning);
         if (ageMinutes > config.maxMetricAgeMinutes) reasons.push("metrics-stale");
         if (!Number.isFinite(aggregateSuccess) || aggregateSuccess < config.minSuccessRate) {
@@ -1321,6 +1330,7 @@
           cacheHitRate,
           cachePricingModel: AIHUB_CACHE_PRICING,
           modelHealthStatus,
+          modelHealthBackedByDetection,
           modelDetectionStatus: modelDetection ? modelDetection.status : "",
           modelDetectionModelKey: modelDetection ? modelDetection.modelKey : "",
           probeModelKey,
