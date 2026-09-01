@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.14.8
+// @version      0.14.9
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -81,13 +81,15 @@
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_LEGACY_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.14.8";
+  const SCRIPT_VERSION = "0.14.9";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
+  /*
   const AIHUB_CACHE_PRICING = Object.freeze({
     baselineHitRate: 97,
     hitUnitPrice: 0.5,
     missUnitPrice: 5,
   });
+  */
 
   const DEFAULT_CONFIG = Object.freeze({
     theme: "system",
@@ -554,6 +556,15 @@
       "temporarily-blacklisted": "故障隔离",
     };
     return labels[reason] || reason;
+  }
+
+  function effectiveRatioReasonLabel(reason) {
+    const labels = {
+      runtime_window_not_ready: "统计窗口未就绪",
+      insufficient_samples: "样本不足",
+    };
+    const normalizedReason = String(reason || "").trim();
+    return labels[normalizedReason] || normalizedReason || "平台暂未提供";
   }
 
   function parsePercentValue(value) {
@@ -1269,6 +1280,40 @@
           ? outputTokens / outputTokensPerSecond * 1000
           : NaN;
         const cacheHitRate = parsePercentValue(monitor.cacheHitRate);
+        const effectiveRatioReady = (
+          monitor.effective_multiplier_ready
+            ?? monitor.effectiveMultiplierReady
+        ) === true;
+        const rawEffectiveRatio = Number(
+          monitor.effective_multiplier
+            ?? monitor.effectiveMultiplier,
+        );
+        const effectiveInputPriceValue = (
+          monitor.effective_input_price_per_million_1h
+            ?? monitor.effectiveInputPricePerMillion1h
+        );
+        const rawEffectiveInputPrice = (
+          effectiveInputPriceValue !== null
+          && effectiveInputPriceValue !== undefined
+          && String(effectiveInputPriceValue).trim() !== ""
+        )
+          ? Number(effectiveInputPriceValue)
+          : NaN;
+        const effectiveRatio = effectiveRatioReady
+          && Number.isFinite(rawEffectiveRatio)
+          && rawEffectiveRatio > 0
+          ? rawEffectiveRatio
+          : NaN;
+        const effectiveInputPricePerMillion = effectiveRatioReady
+          && Number.isFinite(rawEffectiveInputPrice)
+          && rawEffectiveInputPrice >= 0
+          ? rawEffectiveInputPrice
+          : NaN;
+        const effectiveRatioReason = String(
+          monitor.effective_multiplier_reason
+            ?? monitor.effectiveMultiplierReason
+            ?? "",
+        ).trim();
 
         if (!groupMeta) reasons.push("not-user-selectable");
         if (
@@ -1328,7 +1373,10 @@
           outputTokensPerSecond,
           outputTokens,
           cacheHitRate,
-          cachePricingModel: AIHUB_CACHE_PRICING,
+          effectiveRatio,
+          effectiveInputPricePerMillion,
+          effectiveRatioReady: Number.isFinite(effectiveRatio),
+          effectiveRatioReason,
           modelHealthStatus,
           modelHealthBackedByDetection,
           modelDetectionStatus: modelDetection ? modelDetection.status : "",
@@ -1368,6 +1416,9 @@
     return Math.min(100, minimum / ratio * 100);
   }
 
+  /*
+   * Legacy local effective-ratio estimator retained for reference.
+   * AIHub now returns its own runtime-window estimate, so this formula is no longer executed.
   function hasValidCacheHitRate(candidate) {
     const cacheHitRate = candidate && candidate.cacheHitRate;
     return Number.isFinite(cacheHitRate) && cacheHitRate >= 0 && cacheHitRate <= 100;
@@ -1410,14 +1461,42 @@
     const baselineCost = cacheUnitCost(pricingModel.baselineHitRate, pricingModel);
     return nominalRatio * cacheUnitCost(candidate.cacheHitRate, pricingModel) / baselineCost;
   }
+  */
+
+  function hasEffectiveRatioEstimate(candidate) {
+    const effectiveRatio = Number(candidate && candidate.effectiveRatio);
+    return candidate && candidate.effectiveRatioReady === true
+      && Number.isFinite(effectiveRatio)
+      && effectiveRatio > 0;
+  }
+
+  function candidateEffectiveRatio(candidate) {
+    if (hasEffectiveRatioEstimate(candidate)) return Number(candidate.effectiveRatio);
+    const nominalRatio = Number(candidate && candidate.ratio);
+    return Number.isFinite(nominalRatio) && nominalRatio > 0 ? nominalRatio : NaN;
+  }
+
+  function candidateRecommendationLabel(candidate) {
+    if (!candidate) return "无可用分组";
+    return hasEffectiveRatioEstimate(candidate)
+      ? `${candidate.group} ${formatRatio(Number(candidate.effectiveRatio))}`
+      : `${candidate.group} 预测 -`;
+  }
+
+  function candidateSavingRatio(candidate, candidates) {
+    const population = Array.isArray(candidates) ? candidates : [];
+    const hasReadyEstimate = population.some(hasEffectiveRatioEstimate);
+    if (hasReadyEstimate && !hasEffectiveRatioEstimate(candidate)) return Infinity;
+    return candidateEffectiveRatio(candidate);
+  }
 
   function candidateSavingScore(candidate, candidates) {
     const population = Array.isArray(candidates) ? candidates : [];
     const effectiveRatios = population
-      .map(candidateEffectiveRatio)
+      .map((item) => candidateSavingRatio(item, population))
       .filter((ratio) => Number.isFinite(ratio) && ratio > 0);
     const minimum = effectiveRatios.length ? Math.min(...effectiveRatios) : NaN;
-    const effectiveRatio = candidateEffectiveRatio(candidate);
+    const effectiveRatio = candidateSavingRatio(candidate, population);
     if (!Number.isFinite(minimum) || !Number.isFinite(effectiveRatio) || effectiveRatio <= 0) return 0;
     return Math.min(100, minimum / effectiveRatio * 100);
   }
@@ -1859,7 +1938,6 @@
 
   const TEST_API = Object.freeze({
     DEFAULT_CONFIG,
-    AIHUB_CACHE_PRICING,
     SITE_METADATA,
     activeGroupFilter,
     aihubMonitorRange,
@@ -1885,14 +1963,15 @@
     normalizeAihubModelHealth,
     normalizeAihubModelDetection,
     normalizeAihubModelKey,
-    cacheUnitCost,
     hasEffectiveRatioEstimate,
     candidateHasHealthFailure,
     candidateEffectiveRatio,
+    candidateRecommendationLabel,
     candidateHealthScore,
     candidateSavingScore,
     candidateStrategyScore,
     evaluateSpendProtection,
+    effectiveRatioReasonLabel,
     localDateKey,
     loadAihubMonitorData,
     normalizeLogs,
@@ -2480,9 +2559,7 @@
     });
     state.candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(now), config.model, now);
     const recommended = selectBestCandidate(state.candidates, "", config.selectionMode);
-    state.bestGroup = recommended
-      ? `${recommended.group} ${formatRatio(candidateEffectiveRatio(recommended))}`
-      : "无可用分组";
+    state.bestGroup = candidateRecommendationLabel(recommended);
   }
 
   function setIsolationUndo(entries) {
@@ -2889,9 +2966,7 @@
       if (manual) renderOptions(true);
       const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
       state.candidates = candidates;
-      state.bestGroup = recommendedCandidate
-        ? `${recommendedCandidate.group} ${formatRatio(candidateEffectiveRatio(recommendedCandidate))}`
-        : "无可用分组";
+      state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (targetGroup) {
         selectSwitchCandidate(candidates, "", targetGroup, { allowUnavailable: true });
@@ -3235,20 +3310,19 @@
       const nominalRatio = document.createElement("span");
       nominalRatio.textContent = formatRatio(candidate.ratio);
       const effectiveRatio = document.createElement("small");
-      const pricingModel = normalizeCachePricingModel(candidate && candidate.cachePricingModel);
       const hasEffectiveEstimate = hasEffectiveRatioEstimate(candidate);
       effectiveRatio.textContent = hasEffectiveEstimate
         ? `≈${formatRatio(candidateEffectiveRatio(candidate))}`
         : "≈-";
       ratio.append(nominalRatio, effectiveRatio);
       ratio.title = hasEffectiveEstimate
-        ? `实际倍率 = 标称倍率 × 当前缓存成本 ÷ ${pricingModel.baselineHitRate}% 基线缓存成本；命中 $${pricingModel.hitUnitPrice}/M，未命中 $${pricingModel.missUnitPrice}/M`
-        : `标称倍率 ${formatRatio(candidate.ratio)}；当前站点没有可确认的缓存计费模型，无法计算实际倍率`;
+        ? `平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}；有效输入价格 ${Number.isFinite(candidate.effectiveInputPricePerMillion) ? `${candidate.effectiveInputPricePerMillion.toFixed(4)}/M` : "暂无"}`
+        : `标称倍率 ${formatRatio(candidate.ratio)}；平台预测倍率暂不可用（${effectiveRatioReasonLabel(candidate.effectiveRatioReason)}）`;
       ratio.setAttribute(
         "aria-label",
         hasEffectiveEstimate
-          ? `标称倍率 ${formatRatio(candidate.ratio)}，实际倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
-          : `标称倍率 ${formatRatio(candidate.ratio)}，实际倍率无法计算`,
+          ? `标称倍率 ${formatRatio(candidate.ratio)}，平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
+          : `标称倍率 ${formatRatio(candidate.ratio)}，平台预测倍率待统计`,
       );
       const success = document.createElement("span");
       success.className = "mono";
@@ -4779,7 +4853,7 @@
         </div>
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
-          <div class="candidate-head"><span>分组</span><span title="上方标称倍率；仅有已确认缓存计费模型时下方显示实际倍率">标/实</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
+          <div class="candidate-head"><span>分组</span><span title="上方为标称倍率；下方为平台根据近 1 小时运行数据返回的预测倍率，未就绪时显示 -">标/预</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
         </section>

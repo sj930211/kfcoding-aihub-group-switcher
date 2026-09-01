@@ -5,11 +5,22 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.14.8", "the userscript metadata should expose the patch release");
+assert.equal(metadataVersion, "0.14.9", "the userscript metadata should expose the patch release");
 assert.equal(
   runtimeVersion,
   metadataVersion,
   "the runtime version shown in the panel must match the Tampermonkey metadata version",
+);
+const legacyEffectiveRatioCommentStart = source.indexOf("/*\n   * Legacy local effective-ratio estimator retained for reference.");
+const legacyEffectiveRatioCommentEnd = source.indexOf("*/", legacyEffectiveRatioCommentStart);
+const legacyEffectiveRatioComment = source.slice(
+  legacyEffectiveRatioCommentStart,
+  legacyEffectiveRatioCommentEnd + 2,
+);
+assert.ok(legacyEffectiveRatioCommentStart >= 0, "the previous effective-ratio formula should remain documented");
+assert.ok(
+  legacyEffectiveRatioComment.includes("return nominalRatio * cacheUnitCost(candidate.cacheHitRate, pricingModel) / baselineCost;"),
+  "the previous effective-ratio formula should remain inside the legacy comment",
 );
 assert.equal(source.includes("// @match        https://ooioo.work/*"), true, "ooioo pages should load the userscript");
 assert.equal(source.includes("// @match        https://fluxionai.space/*"), true, "FluxionAI pages should load the userscript");
@@ -117,14 +128,14 @@ assert.equal(
   "candidate status should display latency and cache metrics separately",
 );
 assert.equal(
-  source.includes('>标/实</span><span>整体</span>'),
+  source.includes('>标/预</span><span>整体</span>'),
   true,
-  "candidate status should label nominal and actual multipliers separately",
+  "candidate status should label nominal and predicted multipliers separately",
 );
 assert.equal(
   source.includes('ratio.className = "candidate-ratio mono";'),
   true,
-  "candidate rows should render nominal and actual multipliers together",
+  "candidate rows should render nominal and predicted multipliers together",
 );
 assert.equal(
   source.includes("const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;"),
@@ -196,9 +207,16 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.14.8");
+assert.equal(api.extractUserscriptVersion(source), "0.14.9");
 assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
 assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
+assert.equal(api.effectiveRatioReasonLabel("runtime_window_not_ready"), "统计窗口未就绪");
+assert.equal(api.effectiveRatioReasonLabel("insufficient_samples"), "样本不足");
+assert.equal(
+  api.effectiveRatioReasonLabel("provider_recalibrating"),
+  "provider_recalibrating",
+  "unknown non-empty platform reasons should remain visible",
+);
 assert.equal(
   api.aihubModelHealthStatus({ model_health: { Sol: "HEALTHY" } }, "gpt-5.6-sol"),
   "healthy",
@@ -933,6 +951,9 @@ const aihubSummary = {
       outputTokens: 18,
       outputTokensPerSecond: 42,
       cacheHitRate: "89.25%",
+      effective_multiplier: 0.0375,
+      effective_input_price_per_million_1h: 0.1456,
+      effective_multiplier_ready: true,
       modelHealth: { sol: "healthy", terra: "healthy", luna: "failed" },
       successRates: { "24h": 0.994 },
     },
@@ -1016,10 +1037,54 @@ assert.equal(aihubCandidates.find((item) => item.group === "cheap").firstTokenLa
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").outputTokensPerSecond, 42);
 assert.ok(Math.abs(aihubCandidates.find((item) => item.group === "cheap").outputLatencyMs - (18 / 42 * 1000)) < 1e-9);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").cacheHitRate, 89.25);
-assert.ok(
-  Math.abs(api.candidateEffectiveRatio(aihubCandidates.find((item) => item.group === "cheap")) - 0.061968503937007875) < 1e-12,
-  "AIHub actual ratio should normalize cache cost against the 97% baseline",
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").effectiveRatioReady, true);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").effectiveRatio, 0.0375);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").effectiveInputPricePerMillion, 0.1456);
+assert.equal(
+  api.candidateEffectiveRatio(aihubCandidates.find((item) => item.group === "cheap")),
+  0.0375,
+  "AIHub should use the provider-supplied effective multiplier",
 );
+const nullEffectivePriceCandidate = api.evaluateAihubCandidates(
+  {
+    ...aihubSummary,
+    apis: [{
+      ...aihubSummary.apis[0],
+      effective_input_price_per_million_1h: null,
+    }],
+  },
+  aihubSeries,
+  aihubGroups,
+  { 1: 0.04 },
+  aihubConfig,
+  aihubNow,
+)[0];
+assert.equal(
+  Number.isNaN(nullEffectivePriceCandidate.effectiveInputPricePerMillion),
+  true,
+  "a null effective input price must remain unavailable instead of becoming zero",
+);
+for (const emptyEffectivePrice of ["", "   "]) {
+  const emptyEffectivePriceCandidate = api.evaluateAihubCandidates(
+    {
+      ...aihubSummary,
+      apis: [{
+        ...aihubSummary.apis[0],
+        effective_input_price_per_million_1h: emptyEffectivePrice,
+      }],
+    },
+    aihubSeries,
+    aihubGroups,
+    { 1: 0.04 },
+    aihubConfig,
+    aihubNow,
+  )[0];
+  assert.equal(
+    Number.isNaN(emptyEffectivePriceCandidate.effectiveInputPricePerMillion),
+    true,
+    "an empty effective input price must remain unavailable instead of becoming zero",
+  );
+}
 assert.equal(aihubCandidates.find((item) => item.group === "balanced").available, false);
 assert.ok(aihubCandidates.find((item) => item.group === "balanced").reasons.includes("latest-unavailable"));
 assert.ok(aihubCandidates.find((item) => item.group === "balanced").reasons.includes("model-unavailable"));
@@ -1031,7 +1096,11 @@ assert.equal(
 );
 assert.ok(aihubCandidates.find((item) => item.group === "private").reasons.includes("not-user-selectable"));
 assert.ok(aihubCandidates.find((item) => item.group === "private").reasons.includes("model-status-unknown"));
-assert.equal(api.selectBestCandidate(aihubCandidates, "balanced").group, "recent-bad");
+assert.equal(
+  api.selectBestCandidate(aihubCandidates, "balanced").group,
+  "cheap",
+  "saving mode should use the ready platform multiplier before nominal-only candidates",
+);
 
 const degradedAihubCandidates = api.evaluateAihubCandidates(
   aihubSummary,
@@ -1087,6 +1156,9 @@ const providerSummary = {
     output_tokens: 20,
     success_rates: { "24h": 0.99 },
     cache_hit_rate: "88%",
+    effective_multiplier: 0.04125,
+    effective_input_price_per_million_1h: 0.1523,
+    effective_multiplier_ready: true,
     model_health: { sol: "healthy", terra: "healthy", luna: "failed" },
     model_detection: {
       applicable: true,
@@ -1111,6 +1183,17 @@ assert.deepEqual(
 );
 assert.equal(normalizedProviderData.summary.apis[0].modelDetection.status, "passed");
 assert.equal(normalizedProviderData.summary.apis[0].modelDetection.modelKey, "sol");
+const normalizedProviderCandidate = api.evaluateAihubCandidates(
+  normalizedProviderData.summary,
+  normalizedProviderData.series,
+  aihubGroups,
+  { 1: 0.04 },
+  aihubConfig,
+  aihubNow,
+)[0];
+assert.equal(normalizedProviderCandidate.effectiveRatioReady, true);
+assert.equal(normalizedProviderCandidate.effectiveRatio, 0.04125);
+assert.equal(normalizedProviderCandidate.effectiveInputPricePerMillion, 0.1523);
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.buildAihubModelCatalog(normalizedProviderData.summary))),
   { data: [
@@ -1531,9 +1614,9 @@ assert.ok(
 
 assert.equal(api.selectBestCandidate(candidates, "balanced").group, "recent-bad");
 assert.equal(api.selectBestCandidate(candidates, "cheap").group, "recent-bad");
-const withAihubCachePricing = (candidate) => ({
+const withPlatformEffectiveRatio = (candidate) => ({
   ...candidate,
-  cachePricingModel: api.AIHUB_CACHE_PRICING,
+  effectiveRatioReady: true,
 });
 const strategyCandidates = [
   {
@@ -1545,6 +1628,7 @@ const strategyCandidates = [
     firstTokenLatencyMs: 12000,
     outputLatencyMs: 50000,
     cacheHitRate: 10,
+    effectiveRatio: 0.2,
   },
   {
     group: "balanced-choice",
@@ -1555,6 +1639,7 @@ const strategyCandidates = [
     firstTokenLatencyMs: 1200,
     outputLatencyMs: 7000,
     cacheHitRate: 80,
+    effectiveRatio: 0.15,
   },
   {
     group: "most-stable",
@@ -1565,8 +1650,9 @@ const strategyCandidates = [
     firstTokenLatencyMs: 500,
     outputLatencyMs: 2500,
     cacheHitRate: 99,
+    effectiveRatio: 0.08,
   },
-].map(withAihubCachePricing);
+].map(withPlatformEffectiveRatio);
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "saving").group, "most-stable");
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "stable").group, "most-stable");
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "balanced").group, "balanced-choice");
@@ -1574,77 +1660,60 @@ assert.ok(
   api.candidateHealthScore(strategyCandidates[2]) > api.candidateHealthScore(strategyCandidates[1]),
   "stable scoring should reward recent success, latency, output time, and cache hit rate",
 );
-assert.ok(
-  Math.abs(api.cacheUnitCost(97) - 0.635) < 1e-12,
-  "the 97% cache baseline should cost 0.635 per million input tokens",
-);
 [
-  { group: "A027-BugTeam", ratio: 0.04, cacheHitRate: 81.49, displayed: 0.08 },
-  { group: "A015-Plus", ratio: 0.08, cacheHitRate: 92.31, displayed: 0.11 },
-  { group: "A003-Pro", ratio: 0.22, cacheHitRate: 94.7, displayed: 0.26 },
-  { group: "A015-Pro", ratio: 0.16, cacheHitRate: 91.02, displayed: 0.23 },
-].map(withAihubCachePricing).forEach((example) => {
+  { group: "A010-Pro", ratio: 0.17, effectiveRatio: 0.11365664 },
+  { group: "A015-Plus", ratio: 0.11, effectiveRatio: 0.1224299 },
+  { group: "A003-Pro", ratio: 0.22, effectiveRatio: 0.14466609 },
+].map(withPlatformEffectiveRatio).forEach((example) => {
   assert.equal(
-    Number(api.candidateEffectiveRatio(example).toFixed(2)),
-    example.displayed,
-    `${example.group} should match the AIHub channel-status actual ratio`,
+    api.candidateEffectiveRatio(example),
+    example.effectiveRatio,
+    `${example.group} should use the platform effective multiplier without recalculation`,
   );
 });
-assert.ok(
-  Math.abs(api.candidateEffectiveRatio(withAihubCachePricing({ ratio: 0.1, cacheHitRate: 60 })) - 0.36220472440944884) < 1e-12,
-  "candidate actual ratio should use current cache cost over the 97% baseline",
-);
-const cacheBalancedSavingCandidates = [
-  { group: "lower-ratio", available: true, ratio: 0.05, cacheHitRate: 10 },
-  { group: "higher-cache", available: true, ratio: 0.06, cacheHitRate: 90 },
-].map(withAihubCachePricing);
 assert.equal(
-  api.selectBestCandidate(cacheBalancedSavingCandidates, "", "saving").group,
-  "higher-cache",
-  "saving mode should allow a much higher cache hit rate to offset a small ratio increase",
+  api.selectBestCandidate([
+    { group: "platform-ready", available: true, ratio: 0.1, effectiveRatio: 0.12, effectiveRatioReady: true },
+    { group: "platform-pending", available: true, ratio: 0.01, effectiveRatioReady: false, effectiveRatioReason: "runtime_window_not_ready" },
+  ], "", "saving").group,
+  "platform-ready",
+  "saving mode should rank ready platform estimates ahead of pending estimates",
 );
 assert.equal(
   api.selectBestCandidate([
-    { group: "much-lower-ratio", available: true, ratio: 0.05, cacheHitRate: 10 },
-    { group: "much-higher-cache", available: true, ratio: 0.1, cacheHitRate: 90 },
-  ].map(withAihubCachePricing), "", "saving").group,
-  "much-higher-cache",
-  "saving mode should compare calculated effective multipliers instead of arbitrary ranking weights",
+    { group: "all-pending-lower", available: true, ratio: 0.04, effectiveRatioReady: false },
+    { group: "all-pending-higher", available: true, ratio: 0.09, effectiveRatioReady: false },
+  ], "", "saving").group,
+  "all-pending-lower",
+  "saving mode should fall back to nominal ratio only when every estimate is pending",
 );
 assert.equal(
-  api.selectBestCandidate([
-    { group: "lower-effective-ratio", available: true, ratio: 0.05, cacheHitRate: 10 },
-    { group: "higher-effective-ratio", available: true, ratio: 0.2, cacheHitRate: 50 },
-  ].map(withAihubCachePricing), "", "saving").group,
-  "lower-effective-ratio",
-  "a cache discount should not beat a nominal ratio when its calculated effective multiplier is higher",
-);
-assert.equal(
-  api.selectBestCandidate([
-    { group: "known-cache", available: true, ratio: 0.1, cacheHitRate: 90 },
-    { group: "unknown-cache", available: true, ratio: 0.015, cacheHitRate: null },
-  ].map(withAihubCachePricing), "", "saving").group,
-  "unknown-cache",
-  "a candidate with missing cache data should conservatively use its nominal ratio",
-);
-assert.equal(api.candidateEffectiveRatio({ ratio: 0.06, cacheHitRate: null }), 0.06);
-assert.equal(
-  api.candidateEffectiveRatio({ ratio: 0.06, cacheHitRate: 99 }),
+  api.candidateEffectiveRatio({ ratio: 0.06, effectiveRatioReady: false }),
   0.06,
-  "cache metrics without a confirmed pricing model must fall back to the nominal ratio",
+  "a pending platform estimate should retain nominal-ratio fallback for saving-mode ranking",
 );
 assert.equal(
-  api.hasEffectiveRatioEstimate({ ratio: 0.06, cacheHitRate: 99 }),
+  api.candidateRecommendationLabel({ group: "pending", ratio: 0.06, effectiveRatioReady: false }),
+  "pending 预测 -",
+  "a pending platform estimate must remain unavailable in the recommendation summary",
+);
+assert.equal(
+  api.candidateRecommendationLabel({ group: "ready", ratio: 0.06, effectiveRatio: 0.04, effectiveRatioReady: true }),
+  "ready 0.04x",
+  "a ready platform estimate should be displayed in the recommendation summary",
+);
+assert.equal(
+  api.hasEffectiveRatioEstimate({ ratio: 0.06, effectiveRatio: 0.04, effectiveRatioReady: false }),
   false,
-  "a cache rate alone must not be presented as an actual multiplier",
+  "an unready platform value must not be presented as a current estimate",
 );
 assert.equal(
   api.selectBestCandidate([
-    { group: "current-low-cache", available: true, ratio: 0.05, cacheHitRate: 10 },
-    { group: "same-ratio-high-cache", available: true, ratio: 0.05, cacheHitRate: 90 },
-  ].map(withAihubCachePricing), "current-low-cache", "saving").group,
-  "same-ratio-high-cache",
-  "saving mode should switch away from the current group when the same ratio has a higher cache rate",
+    { group: "current-pending", available: true, ratio: 0.05, effectiveRatioReady: false },
+    { group: "same-ratio-ready", available: true, ratio: 0.05, effectiveRatio: 0.05, effectiveRatioReady: true },
+  ], "current-pending", "saving").group,
+  "same-ratio-ready",
+  "saving mode should prefer a ready platform estimate over a pending current group",
 );
 assert.equal(
   api.selectSwitchCandidate(candidates, "cheap", "balanced").group,
