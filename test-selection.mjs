@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.14.9", "the userscript metadata should expose the patch release");
+assert.equal(metadataVersion, "0.15.0", "the userscript metadata should expose the routing compatibility release");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -118,17 +118,18 @@ assert.equal(source.includes('" candidate-warning"'), true, "non-blocking detect
 assert.equal(source.includes('"可用·检测警告"'), true, "eligible AIHub groups should surface model-detection warnings without claiming full clearance");
 assert.equal(source.includes('recentSuccess.className = "mono health-value"'), true, "recent health should expose a compact trajectory");
 assert.equal(
-  source.includes("sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}))"),
+  source.includes("const storedConfig = GM_getValue(STORAGE_CONFIG, {});")
+    && source.includes("let config = sanitizeConfig(storedConfig);"),
   true,
   "legacy group filters must be sanitized before defaults are applied",
 );
 assert.equal(
-  source.includes('<span>首字</span><span>输出</span><span>缓存</span><span>判定</span>'),
+  source.includes('>首字</span><span>输出</span><span>缓存</span><span>判定</span>'),
   true,
   "candidate status should display latency and cache metrics separately",
 );
 assert.equal(
-  source.includes('>标/预</span><span>整体</span>'),
+  source.includes('>标/预</span><span title=') && source.includes('>整体</span><span>近期</span>'),
   true,
   "candidate status should label nominal and predicted multipliers separately",
 );
@@ -170,6 +171,9 @@ assert.equal(source.includes('<div class="control-grid">'), true, "key and model
 assert.equal(source.includes('class="button button-check"'), true, "immediate checks should be the primary command");
 assert.equal(source.includes('class="icon-button route-apply"'), true, "recommended-route switching should remain directly accessible");
 assert.equal(source.includes('目标模型（站点探测）'), true, "AIHub should expose a monitored target-model selector");
+assert.equal(source.includes('AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口'), true, "the AIHub aggregate column must disclose current and fallback windows");
+assert.equal(source.includes('优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针'), true, "the AIHub latency column must disclose its fallback chain");
+assert.equal(source.includes('${IS_AIHUB ? "趋势窗口（小时）" : "统计窗口（小时）"}'), true, "AIHub settings must not imply that the trend control changes its fixed one-hour aggregate");
 assert.equal(source.includes('refs.model.disabled = running || IS_AIHUB'), false, "AIHub model selection must remain interactive");
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
@@ -207,7 +211,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.14.9");
+assert.equal(api.extractUserscriptVersion(source), "0.15.0");
 assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
 assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
 assert.equal(api.effectiveRatioReasonLabel("runtime_window_not_ready"), "统计窗口未就绪");
@@ -1138,6 +1142,7 @@ assert.deepEqual(
     "/api/v1/public/monitor/series/24h",
     "/api/v1/public/monitor/summary",
     "/api/v1/public/providers?timezone=Asia%2FShanghai",
+    "/api/v2/public/providers?timezone=Asia%2FShanghai",
   ],
 );
 
@@ -1176,6 +1181,7 @@ const providerSeries = {
   items: [{ group_id: 1, probe: monitorSeries([false, true]) }],
 };
 const normalizedProviderData = api.normalizeAihubProviderData(providerSummary, providerSeries);
+assert.equal(normalizedProviderData.summary.providerVersion, 0);
 assert.equal(normalizedProviderData.summary.apis[0].firstTokenLatencyMs, 2300);
 assert.deepEqual(
   JSON.parse(JSON.stringify(normalizedProviderData.summary.apis[0].modelHealth)),
@@ -1213,9 +1219,265 @@ const loadedProviderData = await api.loadAihubMonitorData(async (path) => {
   throw new Error(`unexpected path ${path}`);
 }, "24h", "Asia/Shanghai");
 assert.equal(loadedProviderData.source, "providers");
+assert.equal(loadedProviderData.providerVersion, 1, "unavailable v2 summary must retain v1 compatibility");
 assert.equal(loadedProviderData.seriesError, null);
 assert.equal(loadedProviderData.summary.apis[0].firstTokenLatencyMs, 2300);
 assert.equal(providerPaths.some((path) => path.includes("/public/monitor/")), false);
+
+const v2ProviderPaths = [];
+const v2ProviderSummaryWithoutVersion = {
+  ...providerSummary,
+  items: providerSummary.items.map((item) => ({ ...item, success_rates: { "1h": 0.99, "24h": 0 } })),
+};
+const loadedV2ProviderData = await api.loadAihubMonitorData(async (path) => {
+  v2ProviderPaths.push(path);
+  if (path === "/api/v2/public/providers?timezone=Asia%2FShanghai") return v2ProviderSummaryWithoutVersion;
+  if (path === "/api/v2/public/providers/series?range=24h&timezone=Asia%2FShanghai") return providerSeries;
+  if (path === "/api/v1/groups/available") return aihubGroups;
+  if (path === "/api/v1/groups/rates") return { 1: 0.04 };
+  throw new Error(`unexpected v2 request ${path}`);
+}, "24h", "Asia/Shanghai");
+assert.equal(loadedV2ProviderData.providerVersion, 2);
+const loadedV2Candidate = api.evaluateAihubCandidates(
+  loadedV2ProviderData.summary, loadedV2ProviderData.series,
+  loadedV2ProviderData.groups, loadedV2ProviderData.rates, aihubConfig, aihubNow,
+)[0];
+assert.equal(loadedV2Candidate.aggregateSuccessWindow, "1h", "the v2 endpoint must retain current-window semantics even if its body omits version");
+assert.equal(loadedV2Candidate.aggregateSuccess, 99);
+assert.equal(loadedV2Candidate.available, true);
+assert.equal(loadedV2ProviderData.summary.apis[0].group_id, 1);
+assert.equal(loadedV2ProviderData.series.seriesByApiId["1"].length, 2);
+assert.equal(v2ProviderPaths.some((path) => path.includes("/api/v1/public/")), false, "healthy v2 data must not read obsolete public endpoints");
+
+const degradedV2Paths = [];
+const degradedV2Data = await api.loadAihubMonitorData(async (path) => {
+  degradedV2Paths.push(path);
+  if (path === "/api/v2/public/providers?timezone=Asia%2FShanghai") return providerSummary;
+  if (path === "/api/v2/public/providers/series?range=24h&timezone=Asia%2FShanghai") throw new Error("series temporarily unavailable");
+  if (path === "/api/v1/groups/available") return aihubGroups;
+  if (path === "/api/v1/groups/rates") return {};
+  throw new Error(`unexpected degraded request ${path}`);
+}, "24h", "Asia/Shanghai");
+assert.equal(degradedV2Data.providerVersion, 2);
+assert.match(degradedV2Data.seriesError.message, /temporarily unavailable/);
+assert.equal(degradedV2Data.summary.apis[0].available, true);
+assert.deepEqual(JSON.parse(JSON.stringify(degradedV2Data.series.seriesByApiId)), {});
+assert.equal(degradedV2Paths.some((path) => path.includes("/api/v1/public/")), false, "an optional series failure must not replace a valid modern summary with legacy data");
+await assert.rejects(api.loadAihubMonitorData(async (path) => {
+  if (path === "/api/v1/groups/available") throw new Error("account groups unavailable");
+  if (path === "/api/v1/groups/rates") return {};
+  if (path.includes("/series?")) return providerSeries;
+  return providerSummary;
+}, "24h", "Asia/Shanghai"), /account groups unavailable/);
+
+function routingProvider(groupId, code, overrides = {}) {
+  return {
+    group_id: groupId,
+    code,
+    rate_multiplier: 0.1,
+    available: true,
+    last_probed_at: new Date(aihubNow).toISOString(),
+    probe_model: "gpt-5.6-sol",
+    probe_e2e_ttft_ms: 1000,
+    output_tokens: 100,
+    output_tps: 100,
+    cache_hit_rate: "90%",
+    success_rates: { "1h": 1, "5m": 1 },
+    model_health: { sol: "healthy" },
+    effective_multiplier: 0.1,
+    effective_multiplier_ready: true,
+    ...overrides,
+  };
+}
+
+function evaluateRoutingProviders(items, overrides = {}, providerVersion = 2) {
+  const normalized = api.normalizeAihubProviderData({
+    ...(providerVersion ? { version: providerVersion } : {}),
+    items,
+  }, {});
+  const groups = items.map((item) => ({
+    id: item.group_id,
+    name: item.code,
+    rate_multiplier: item.rate_multiplier,
+    probe_model: item.probe_model,
+  }));
+  return api.evaluateAihubCandidates(
+    normalized.summary,
+    normalized.series,
+    groups,
+    {},
+    api.sanitizeConfig({ ...aihubConfig, ...overrides }),
+    aihubNow,
+  );
+}
+
+const invertedAihubPrices = evaluateRoutingProviders([
+  routingProvider(501, "nominal-cheap", { rate_multiplier: 0.05, effective_multiplier: 0.20 }),
+  routingProvider(502, "predicted-cheap", { rate_multiplier: 0.20, effective_multiplier: 0.05 }),
+]);
+assert.equal(
+  api.selectBestCandidate(invertedAihubPrices, "", "balanced").group,
+  "predicted-cheap",
+  "equal-health AIHub balanced routing must prefer the lower ready platform prediction",
+);
+
+const currentWindowAihubCandidate = evaluateRoutingProviders([
+  routingProvider(503, "current-window", { success_rates: { "1h": 0.99, "5m": 0 } }),
+])[0];
+assert.equal(currentWindowAihubCandidate.aggregateSuccess, 99, "current AIHub aggregate success must use its explicit 1h window");
+assert.equal(currentWindowAihubCandidate.aggregateSuccessWindow, "1h");
+assert.equal(currentWindowAihubCandidate.latestSuccess, 100, "the 5m statistic must not replace selected-model latest availability");
+assert.equal(currentWindowAihubCandidate.available, true);
+
+for (const invalidRate of [undefined, null, "", " ", false, [], 1.01, -0.1]) {
+  const candidate = evaluateRoutingProviders([
+    routingProvider(504, "invalid-1h", { success_rates: { "1h": invalidRate, "5m": 1, "24h": 1 } }),
+  ])[0];
+  assert.equal(Number.isNaN(candidate.aggregateSuccess), true, "invalid 1h data must not become zero or borrow a healthy legacy window");
+  assert.equal(candidate.available, false);
+  assert.equal(candidate.aggregateSuccessWindow, "1h");
+}
+const zeroOneHour = evaluateRoutingProviders([
+  routingProvider(505, "zero-1h", { success_rates: { "1h": 0, "24h": 1 } }),
+])[0];
+assert.equal(zeroOneHour.aggregateSuccess, 0);
+assert.equal(zeroOneHour.available, false, "a real zero success rate must not fall back to an older healthy rate");
+const missingOneHour = evaluateRoutingProviders([
+  routingProvider(506, "only-5m", { success_rates: { "5m": 1 } }),
+])[0];
+assert.equal(Number.isNaN(missingOneHour.aggregateSuccess), true);
+assert.equal(missingOneHour.available, false);
+const legacySixHour = evaluateRoutingProviders([
+  routingProvider(507, "legacy-6h", { success_rates: { "6h": 0.96, "24h": 1 } }),
+], { metricHours: 6 }, null)[0];
+assert.equal(legacySixHour.aggregateSuccess, 96);
+assert.equal(legacySixHour.aggregateSuccessWindow, "6h");
+const legacyWithOneHour = evaluateRoutingProviders([
+  routingProvider(519, "legacy-with-1h", { success_rates: { "1h": 0, "24h": 1 } }),
+], { metricHours: 24 }, null)[0];
+assert.equal(legacyWithOneHour.aggregateSuccess, 100, "legacy payloads must retain the selected window even when they also expose 1h");
+assert.equal(legacyWithOneHour.aggregateSuccessWindow, "24h");
+const currentV1Window = evaluateRoutingProviders([
+  routingProvider(520, "current-v1", { success_rates: { "1h": 0.99, "6h": 0.96, "5m": 1 } }),
+], { metricHours: 24 }, null)[0];
+assert.equal(currentV1Window.aggregateSuccess, 99, "current v1 fallback must use its available 1h window when requested and 24h windows are absent");
+assert.equal(currentV1Window.aggregateSuccessWindow, "1h");
+
+const runtimeLatencyCandidates = evaluateRoutingProviders([
+  routingProvider(508, "probe-fast-user-slow", {
+    success_rates: { "1h": 1, "5m": 1 },
+    probe_e2e_ttft_ms: 1000,
+    runtime_trimmed_avg_ttft_ms: 60000,
+    runtime_trimmed_avg_sample_count: 32,
+    runtime_trimmed_avg_has_data: true,
+  }),
+  routingProvider(509, "user-fast", {
+    success_rates: { "1h": 1, "5m": 1 },
+    probe_e2e_ttft_ms: 4000,
+    runtime_trimmed_avg_ttft_ms: 2000,
+    runtime_trimmed_avg_sample_count: 32,
+    runtime_trimmed_avg_has_data: true,
+  }),
+]);
+assert.equal(
+  api.selectBestCandidate(runtimeLatencyCandidates, "", "stable").group,
+  "user-fast",
+  "AIHub stable routing must use the sampled fastest-95-percent average rather than a fast probe",
+);
+assert.equal(runtimeLatencyCandidates[1].firstTokenLatencyMs, 2000);
+assert.equal(runtimeLatencyCandidates[1].firstTokenLatencySource, "runtime-trimmed-avg");
+assert.equal(runtimeLatencyCandidates[1].probeFirstTokenLatencyMs, 4000);
+assert.equal(api.candidateAggregateSuccessTitle(runtimeLatencyCandidates[1]), "1 小时整体成功率");
+assert.equal(api.candidateFirstTokenLatencyTitle(runtimeLatencyCandidates[1]), "用户首字延迟 · 最快95%平均");
+
+const latencyFallbackRow = routingProvider(510, "latency-fallback", {
+  runtime_trimmed_avg_ttft_ms: 1500,
+  runtime_trimmed_avg_sample_count: 30,
+  runtime_trimmed_avg_has_data: false,
+  runtime_p90_ttft_ms: 4500,
+  runtime_p90_sample_count: 12,
+  runtime_p90_has_data: true,
+});
+const p90Fallback = evaluateRoutingProviders([latencyFallbackRow])[0];
+assert.equal(p90Fallback.firstTokenLatencyMs, 4500);
+assert.equal(p90Fallback.firstTokenLatencySource, "runtime-p90");
+for (const badLatency of [null, "", " ", false, [], 0, -1, Infinity]) {
+  const candidate = evaluateRoutingProviders([{
+    ...latencyFallbackRow,
+    runtime_trimmed_avg_has_data: true,
+    runtime_trimmed_avg_ttft_ms: badLatency,
+  }])[0];
+  assert.equal(candidate.firstTokenLatencyMs, 4500, "an invalid preferred runtime statistic must fall back to sampled P90");
+  assert.equal(candidate.firstTokenLatencySource, "runtime-p90");
+}
+for (const badSamples of [undefined, null, 0, -1, 1.5, Infinity, false]) {
+  const candidate = evaluateRoutingProviders([{
+    ...latencyFallbackRow,
+    runtime_trimmed_avg_has_data: true,
+    runtime_trimmed_avg_sample_count: badSamples,
+    runtime_p90_has_data: false,
+  }])[0];
+  assert.equal(candidate.firstTokenLatencyMs, 1000);
+  assert.equal(candidate.firstTokenLatencySource, "probe", "unsampled runtime values must use the explicit probe fallback");
+}
+const userLatencyTooHigh = evaluateRoutingProviders([routingProvider(511, "user-too-slow", {
+  runtime_trimmed_avg_ttft_ms: 120001,
+  runtime_trimmed_avg_sample_count: 10,
+  runtime_trimmed_avg_has_data: true,
+})])[0];
+assert.equal(userLatencyTooHigh.available, false);
+assert.deepEqual(Array.from(userLatencyTooHigh.reasons), ["first-token-latency-high"]);
+const absentLatency = evaluateRoutingProviders([routingProvider(512, "missing-latency", { probe_e2e_ttft_ms: null })])[0];
+assert.equal(Number.isNaN(absentLatency.firstTokenLatencyMs), true);
+assert.equal(absentLatency.firstTokenLatencySource, "unknown");
+assert.equal(absentLatency.available, false);
+
+assert.equal(api.normalizeAihubModelKey("gpt-6-astra"), "astra", "the canonical Astra name must resolve to its public health key");
+assert.equal(api.aihubModelName("astra"), "gpt-6-astra");
+const migratedAstraState = api.migrateAihubStoredModelAliases(
+  { model: "astra", tokenIds: [7] },
+  { byToken: { 7: { model: "astra", group: "A015-Pro", at: 123 } } },
+  {
+    byToken: { 7: { model: "astra", fromGroup: "A003-Pro", toGroup: "A015-Pro", remaining: 2, at: 123 } },
+    blacklist: [{ model: "astra", group: "A009-Pro", until: 999 }],
+  },
+);
+assert.equal(migratedAstraState.changed, true);
+assert.equal(migratedAstraState.config.model, "gpt-6-astra");
+assert.equal(migratedAstraState.history.byToken[7].model, "gpt-6-astra");
+assert.equal(migratedAstraState.guard.byToken[7].model, "gpt-6-astra");
+assert.equal(migratedAstraState.guard.blacklist[0].model, "gpt-6-astra");
+assert.equal(migratedAstraState.history.byToken[7].at, 123);
+assert.equal(migratedAstraState.guard.byToken[7].remaining, 2);
+assert.equal(migratedAstraState.guard.byToken[7].fromGroup, "A003-Pro");
+assert.equal(migratedAstraState.guard.blacklist[0].until, 999);
+assert.equal(api.migrateAihubStoredModelAliases(
+  migratedAstraState.config, migratedAstraState.history, migratedAstraState.guard,
+).changed, false, "already migrated state must not trigger repeated storage writes");
+for (const model of ["astra", "gpt-6-astra"]) {
+  const candidate = evaluateRoutingProviders([routingProvider(513, "astra-only", {
+    probe_model: "gpt-6-astra",
+    model_health: { astra: "healthy", sol: "failed" },
+  })], { model })[0];
+  assert.equal(candidate.available, true);
+  assert.equal(candidate.probeModelKey, "astra");
+}
+const failedSolWithHealthyAstra = evaluateRoutingProviders([routingProvider(514, "astra-not-sol", {
+  probe_model: "gpt-6-astra",
+  model_health: { astra: "healthy", sol: "failed" },
+})])[0];
+assert.equal(failedSolWithHealthyAstra.available, false);
+assert.equal(failedSolWithHealthyAstra.reasons.includes("model-unavailable"), true);
+assert.equal(api.normalizeAihubModelKey("gpt-7-astra"), "gpt-7-astra", "unrecognized model versions must not silently borrow Astra health");
+
+assert.equal(api.selectBestCandidate(evaluateRoutingProviders([
+  routingProvider(515, "prediction-ready", { rate_multiplier: 0.2, effective_multiplier: 0.2 }),
+  routingProvider(516, "prediction-missing", { rate_multiplier: 0.01, effective_multiplier_ready: false }),
+]), "", "balanced").group, "prediction-ready", "missing AIHub predictions must not receive an invented cheap-price advantage");
+assert.equal(api.selectBestCandidate(evaluateRoutingProviders([
+  routingProvider(517, "pending-cheaper", { rate_multiplier: 0.05, effective_multiplier_ready: false }),
+  routingProvider(518, "pending-higher", { rate_multiplier: 0.2, effective_multiplier_ready: false }),
+]), "", "balanced").group, "pending-cheaper", "all-pending AIHub estimates must retain the documented nominal-price fallback");
 
 const modelScopedAihubSummary = {
   generatedAt: new Date(aihubNow).toISOString(),

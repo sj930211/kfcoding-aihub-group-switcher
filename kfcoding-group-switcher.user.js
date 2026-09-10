@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.14.9
+// @version      0.15.0
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -81,7 +81,13 @@
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_LEGACY_MONITOR_MODEL = "AIHub 公共渠道监测";
-  const SCRIPT_VERSION = "0.14.9";
+  const AIHUB_MODEL_NAMES = Object.freeze({
+    sol: "gpt-5.6-sol",
+    terra: "gpt-5.6-terra",
+    luna: "gpt-5.6-luna",
+    astra: "gpt-6-astra",
+  });
+  const SCRIPT_VERSION = "0.15.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -695,13 +701,37 @@
   function normalizeAihubModelKey(value) {
     const normalized = String(value || "").trim().toLowerCase();
     if (!normalized) return "";
-    const prefixed = normalized.match(/^gpt-5\.6-(sol|terra|luna)$/);
-    return prefixed ? prefixed[1] : normalized;
+    const entry = Object.entries(AIHUB_MODEL_NAMES).find(([, name]) => name === normalized);
+    return entry ? entry[0] : normalized;
   }
 
   function aihubModelName(value) {
     const key = normalizeAihubModelKey(value);
-    return ["sol", "terra", "luna"].includes(key) ? `gpt-5.6-${key}` : key;
+    return AIHUB_MODEL_NAMES[key] || key;
+  }
+
+  function migrateAihubStoredModelAliases(configValue, historyValue, guardValue) {
+    const config = sanitizeConfig(configValue);
+    const history = normalizeSwitchHistory(historyValue);
+    const guard = normalizeSwitchGuardState(guardValue);
+    let changed = false;
+    const canonicalize = (value) => {
+      const source = String(value || "");
+      const canonical = source === AIHUB_LEGACY_MONITOR_MODEL ? "" : aihubModelName(source);
+      if (source !== canonical) changed = true;
+      return canonical;
+    };
+    config.model = canonicalize(config.model);
+    Object.values(history.byToken).forEach((entry) => {
+      entry.model = canonicalize(entry.model);
+    });
+    Object.values(guard.byToken).forEach((entry) => {
+      entry.model = canonicalize(entry.model);
+    });
+    guard.blacklist.forEach((entry) => {
+      entry.model = canonicalize(entry.model);
+    });
+    return { config, history, guard, changed };
   }
 
   function normalizeAihubModelHealth(value) {
@@ -773,7 +803,7 @@
       Object.keys(normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health)))
         .forEach((model) => keys.add(model));
     });
-    const order = new Map(["sol", "terra", "luna"].map((model, index) => [model, index]));
+    const order = new Map(Object.keys(AIHUB_MODEL_NAMES).map((model, index) => [model, index]));
     return {
       data: [...keys]
         .sort((left, right) => (order.get(left) ?? 99) - (order.get(right) ?? 99) || left.localeCompare(right))
@@ -1109,6 +1139,7 @@
     });
     return {
       summary: {
+        providerVersion: Number(providers.version) || 0,
         generatedAt: providers.generated_at || providers.generatedAt || "",
         monitoringActive: true,
         apis: providerItems.map((item) => ({
@@ -1154,39 +1185,89 @@
     return "30d";
   }
 
-  async function loadAihubMonitorData(fetcher, range, timezone) {
+  async function loadAihubProviderData(fetcher, range, timezone) {
     const zone = encodeURIComponent(String(timezone || aihubTimezone()));
-    const providerSummaryPath = `/api/v1/public/providers?timezone=${zone}`;
-    const providerSeriesPath = `/api/v1/public/providers/series?range=${range}&timezone=${zone}`;
-    const catalogsRequest = Promise.all([
-      fetcher("/api/v1/groups/available"),
-      fetcher("/api/v1/groups/rates"),
-    ]);
-    let monitorResult;
-    try {
-      const providers = await fetcher(providerSummaryPath);
-      let providerSeries = {};
-      let seriesError = null;
+    let providerError = null;
+    for (const version of [2, 1]) {
       try {
-        providerSeries = await fetcher(providerSeriesPath);
+        const providers = await fetcher(`/api/v${version}/public/providers?timezone=${zone}`);
+        let providerSeries = {};
+        let seriesError = null;
+        if (range) {
+          try {
+            providerSeries = await fetcher(`/api/v${version}/public/providers/series?range=${range}&timezone=${zone}`);
+          } catch (error) {
+            seriesError = error;
+          }
+        }
+        const normalized = normalizeAihubProviderData(providers, providerSeries);
+        normalized.summary.providerVersion = version;
+        return { ...normalized, seriesError, source: "providers", providerVersion: version };
       } catch (error) {
-        seriesError = error;
+        providerError = error;
       }
-      const normalized = normalizeAihubProviderData(providers, providerSeries);
-      monitorResult = { ...normalized, seriesError, source: "providers" };
-    } catch (providerError) {
-      const summary = await fetcher("/api/v1/public/monitor/summary");
-      let series = {};
-      let seriesError = null;
+    }
+    const summary = await fetcher("/api/v1/public/monitor/summary");
+    let series = {};
+    let seriesError = null;
+    if (range) {
       try {
         series = await fetcher(`/api/v1/public/monitor/series/${range}`);
       } catch (error) {
         seriesError = error;
       }
-      monitorResult = { summary, series, seriesError, source: "legacy", providerError };
     }
-    const [groups, rates] = await catalogsRequest;
+    return { summary, series, seriesError, source: "legacy", providerError };
+  }
+
+  async function loadAihubMonitorData(fetcher, range, timezone) {
+    const [monitorResult, groups, rates] = await Promise.all([
+      loadAihubProviderData(fetcher, range, timezone),
+      fetcher("/api/v1/groups/available"),
+      fetcher("/api/v1/groups/rates"),
+    ]);
     return { ...monitorResult, groups, rates };
+  }
+
+  function positiveAihubMetric(value) {
+    if (typeof value !== "number" && typeof value !== "string") return NaN;
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : NaN;
+  }
+
+  function aihubFirstTokenMetric(monitor) {
+    const probeLatencyMs = positiveAihubMetric(
+      monitor.probe_e2e_ttft_ms
+        ?? monitor.probeE2eTtftMs
+        ?? monitor.firstTokenLatencyMs
+        ?? monitor.probe_ttft_ms,
+    );
+    const runtimeMetrics = [
+      {
+        source: "runtime-trimmed-avg",
+        value: monitor.runtime_trimmed_avg_ttft_ms,
+        hasData: monitor.runtime_trimmed_avg_has_data,
+        samples: monitor.runtime_trimmed_avg_sample_count,
+      },
+      {
+        source: "runtime-p90",
+        value: monitor.runtime_p90_ttft_ms,
+        hasData: monitor.runtime_p90_has_data,
+        samples: monitor.runtime_p90_sample_count,
+      },
+    ];
+    for (const metric of runtimeMetrics) {
+      const value = positiveAihubMetric(metric.value);
+      const samples = positiveAihubMetric(metric.samples);
+      if (metric.hasData === true && Number.isInteger(samples) && Number.isFinite(value)) {
+        return { value, source: metric.source, probeLatencyMs };
+      }
+    }
+    return {
+      value: probeLatencyMs,
+      source: Number.isFinite(probeLatencyMs) ? "probe" : "unknown",
+      probeLatencyMs,
+    };
   }
 
   function evaluateAihubCandidates(summaryPayload, seriesPayload, groupsPayload, ratesPayload, config, nowMs) {
@@ -1248,10 +1329,20 @@
         );
         const useSelectedModelHealth = modelHealthKnown && !seriesMatchesSelectedModel;
         const successKey = aihubMonitorRange(config.metricHours);
-        const summarySuccess = Number(
-          monitor.successRates && (monitor.successRates[successKey] ?? monitor.successRates["24h"]),
-        );
-        const aggregateSuccess = Number.isFinite(summarySuccess) ? summarySuccess * 100 : NaN;
+        const successRates = monitor.successRates || {};
+        const hasSuccessWindow = (key) => Object.prototype.hasOwnProperty.call(successRates, key);
+        const aggregateSuccessWindow = Number(summary.providerVersion) >= 2
+          ? "1h"
+          : hasSuccessWindow(successKey) ? successKey
+            : hasSuccessWindow("24h") ? "24h" : "1h";
+        const successValue = successRates[aggregateSuccessWindow];
+        const summarySuccess = typeof successValue === "number"
+          || (typeof successValue === "string" && successValue.trim() !== "")
+          ? Number(successValue)
+          : NaN;
+        const aggregateSuccess = Number.isFinite(summarySuccess) && summarySuccess >= 0 && summarySuccess <= 1
+          ? summarySuccess * 100
+          : NaN;
         const latestSuccess = useSelectedModelHealth
           ? (modelHealthStatus === "healthy" ? 100 : 0)
           : latestPoint
@@ -1265,12 +1356,8 @@
         const ageMinutes = Number.isFinite(checkedAtMs)
           ? Math.max(0, now - checkedAtMs) / 60000
           : Infinity;
-        const firstTokenLatencyMs = Number(
-          monitor.probe_e2e_ttft_ms
-            ?? monitor.probeE2eTtftMs
-            ?? monitor.firstTokenLatencyMs
-            ?? monitor.probe_ttft_ms,
-        );
+        const firstTokenMetric = aihubFirstTokenMetric(monitor);
+        const firstTokenLatencyMs = firstTokenMetric.value;
         const outputTokensPerSecond = Number(monitor.outputTokensPerSecond);
         const outputTokens = Number(monitor.outputTokens);
         const outputLatencyMs = Number.isFinite(outputTokens)
@@ -1364,11 +1451,14 @@
           reasons,
           warnings,
           aggregateSuccess,
+          aggregateSuccessWindow,
           latestSuccess,
           recentSuccess: latestSuccess,
           recentMinSuccess: latestSuccess,
           recentSampleCount: Number.isFinite(latestSuccess) ? 1 : 0,
           firstTokenLatencyMs,
+          firstTokenLatencySource: firstTokenMetric.source,
+          probeFirstTokenLatencyMs: firstTokenMetric.probeLatencyMs,
           outputLatencyMs,
           outputTokensPerSecond,
           outputTokens,
@@ -1377,6 +1467,7 @@
           effectiveInputPricePerMillion,
           effectiveRatioReady: Number.isFinite(effectiveRatio),
           effectiveRatioReason,
+          providerId: "aihub",
           modelHealthStatus,
           modelHealthBackedByDetection,
           modelDetectionStatus: modelDetection ? modelDetection.status : "",
@@ -1407,6 +1498,9 @@
   }
 
   function candidatePriceScore(candidate, candidates) {
+    if (candidate && candidate.providerId === "aihub") {
+      return candidateSavingScore(candidate, candidates.filter((item) => item.providerId === "aihub"));
+    }
     const ratios = candidates
       .map((item) => Number(item.ratio))
       .filter((ratio) => Number.isFinite(ratio) && ratio > 0);
@@ -1481,6 +1575,23 @@
     return hasEffectiveRatioEstimate(candidate)
       ? `${candidate.group} ${formatRatio(Number(candidate.effectiveRatio))}`
       : `${candidate.group} 预测 -`;
+  }
+
+  function candidateAggregateSuccessTitle(candidate) {
+    if (!candidate || candidate.providerId !== "aihub") return "整体成功率";
+    const labels = { "1h": "1 小时", "5m": "5 分钟", "6h": "6 小时", "24h": "24 小时", "7d": "7 天", "30d": "30 天" };
+    return `${labels[candidate.aggregateSuccessWindow] || candidate.aggregateSuccessWindow || "未知窗口"}整体成功率`;
+  }
+
+  function candidateFirstTokenLatencyTitle(candidate) {
+    if (!candidate || candidate.providerId !== "aihub") return "首字延迟";
+    const labels = {
+      "runtime-trimmed-avg": "用户首字延迟 · 最快95%平均",
+      "runtime-p90": "用户首字延迟 · P90 回退",
+      probe: "首字延迟 · 探针回退",
+      unknown: "首字延迟 · 暂无有效数据",
+    };
+    return labels[candidate.firstTokenLatencySource] || labels.unknown;
   }
 
   function candidateSavingRatio(candidate, candidates) {
@@ -1963,10 +2074,13 @@
     normalizeAihubModelHealth,
     normalizeAihubModelDetection,
     normalizeAihubModelKey,
+    migrateAihubStoredModelAliases,
     hasEffectiveRatioEstimate,
     candidateHasHealthFailure,
     candidateEffectiveRatio,
     candidateRecommendationLabel,
+    candidateAggregateSuccessTitle,
+    candidateFirstTokenLatencyTitle,
     candidateHealthScore,
     candidateSavingScore,
     candidateStrategyScore,
@@ -2023,9 +2137,20 @@
     return;
   }
 
-  let config = sanitizeConfig(GM_getValue(STORAGE_CONFIG, {}));
-  if (IS_AIHUB && config.model === AIHUB_LEGACY_MONITOR_MODEL) {
-    config = { ...config, model: "" };
+  const storedConfig = GM_getValue(STORAGE_CONFIG, {});
+  let config = sanitizeConfig(storedConfig);
+  if (IS_AIHUB) {
+    const migrated = migrateAihubStoredModelAliases(
+      storedConfig,
+      GM_getValue(STORAGE_LAST_SWITCH, {}),
+      GM_getValue(STORAGE_SWITCH_GUARD, {}),
+    );
+    config = migrated.config;
+    if (migrated.changed) {
+      GM_setValue(STORAGE_CONFIG, migrated.config);
+      GM_setValue(STORAGE_LAST_SWITCH, migrated.history);
+      GM_setValue(STORAGE_SWITCH_GUARD, migrated.guard);
+    }
   }
   const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let scheduler = null;
@@ -2466,7 +2591,7 @@
         fetchJson("/api/v1/groups/rates"),
       ];
       if (IS_FLUXION) requests.push(fetchJson("/api/v1/channel-monitors"));
-      else requests.push(fetchJson(`/api/v1/public/providers?timezone=${encodeURIComponent(aihubTimezone())}`));
+      else requests.push(loadAihubProviderData(fetchJson));
       const [tokenList, groups, rates, monitorPayload] = await Promise.all(requests);
       tokensCache = normalizeTokenList(tokenList);
       if (IS_FLUXION) {
@@ -2477,9 +2602,7 @@
       } else {
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
-        pricingCache = buildAihubModelCatalog(
-          normalizeAihubProviderData(monitorPayload, {}).summary,
-        );
+        pricingCache = buildAihubModelCatalog(monitorPayload.summary);
       }
       renderOptions();
       render();
@@ -3327,6 +3450,7 @@
       const success = document.createElement("span");
       success.className = "mono";
       success.textContent = formatPercent(candidate.aggregateSuccess);
+      success.title = candidateAggregateSuccessTitle(candidate);
       const recentSuccess = document.createElement("span");
       recentSuccess.className = "mono health-value";
       recentSuccess.textContent = formatPercent(candidate.recentMinSuccess);
@@ -3338,7 +3462,7 @@
       const firstTokenLatency = document.createElement("span");
       firstTokenLatency.className = "mono";
       firstTokenLatency.textContent = formatLatency(candidate.firstTokenLatencyMs);
-      firstTokenLatency.title = "首字延迟";
+      firstTokenLatency.title = candidateFirstTokenLatencyTitle(candidate);
       const outputLatency = document.createElement("span");
       outputLatency.className = "mono";
       outputLatency.textContent = formatLatency(candidate.outputLatencyMs);
@@ -4853,7 +4977,7 @@
         </div>
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
-          <div class="candidate-head"><span>分组</span><span title="上方为标称倍率；下方为平台根据近 1 小时运行数据返回的预测倍率，未就绪时显示 -">标/预</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
+          <div class="candidate-head"><span>分组</span><span title="上方为标称倍率；下方为平台根据近 1 小时运行数据返回的预测倍率，未就绪时显示 -">标/预</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
         </section>
@@ -4957,7 +5081,7 @@
             <summary>判定与保护参数</summary>
             <div class="grid advanced">
               <div class="field"><label>轮询（秒）</label><input data-ref="pollSeconds" type="number" min="15"></div>
-              <div class="field"><label>统计窗口（小时）</label><input data-ref="metricHours" type="number" min="1"></div>
+              <div class="field"><label title="${IS_AIHUB ? "AIHub v2 整体成功率采用平台 1 小时统计；此项控制探测序列和旧接口回退窗口" : "整体性能与趋势的统计窗口"}">${IS_AIHUB ? "趋势窗口（小时）" : "统计窗口（小时）"}</label><input data-ref="metricHours" type="number" min="1"></div>
               <div class="field"><label>总成功率（%）</label><input data-ref="minSuccessRate" type="number" min="0" max="100" step="0.1"></div>
               <div class="field"><label>最新成功率（%）</label><input data-ref="minLatestSuccessRate" type="number" min="0" max="100" step="0.1"></div>
               <div class="field"><label>指标时效（分钟）</label><input data-ref="maxMetricAgeMinutes" type="number" min="5"></div>
