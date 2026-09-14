@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.0", "the userscript metadata should expose the routing compatibility release");
+assert.equal(metadataVersion, "0.15.2", "the userscript metadata should expose the complete-list and metric-parity release");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -26,7 +26,7 @@ assert.equal(source.includes("// @match        https://ooioo.work/*"), true, "oo
 assert.equal(source.includes("// @match        https://fluxionai.space/*"), true, "FluxionAI pages should load the userscript");
 assert.equal(source.includes('data-ref="refresh"'), false, "manual refresh should be folded into immediate check");
 assert.equal(
-  source.indexOf("const manualUsageRefresh = manual ? refreshTodayUsage() : null;") < source.indexOf("if (!config.model)"),
+  source.indexOf("const manualUsageRefresh = manual ? refreshTodayUsage() : null;") < source.indexOf("if (!models.length)"),
   true,
   "manual checks should refresh account usage before group-check prerequisites can return early",
 );
@@ -37,7 +37,13 @@ assert.equal(
 );
 assert.equal(source.includes('data-ref="save"'), false, "settings should save automatically without an ambiguous save button");
 assert.equal(source.includes('data-ref="tokenSelectToggle"'), true, "API keys should use a compact dropdown trigger");
+assert.equal(source.includes('data-ref="modelSelectToggle"'), true, "target models should use a compact multi-select trigger");
+assert.equal(source.includes('data-ref="modelList"'), true, "target models should expose checkbox options");
+assert.equal(source.includes('<select id="kf-model"'), false, "target models should not remain a single native select");
 assert.equal(source.includes('<dialog class="manual-dialog"'), true, "manual group selection should use a confirmation dialog");
+assert.equal(source.includes('role="radiogroup" aria-labelledby="kf-manual-group-label"'), true, "manual group choices should render inside the dialog instead of an OS-native popup");
+assert.equal(source.includes('<select id="kf-manual-group"'), false, "manual group selection should not rely on OS-native option rendering");
+assert.equal(source.includes('select option, select optgroup'), true, "remaining native dropdowns should define an explicit cross-platform option palette");
 assert.equal(source.includes('<section class="overview"'), true, "the primary route state should lead the redesigned hierarchy");
 assert.equal(source.includes('<section class="usage-strip"'), true, "today usage should use a compact monitoring strip");
 assert.equal(source.includes('data-ref="balance"'), true, "the account balance should be visible in the monitoring strip");
@@ -129,9 +135,9 @@ assert.equal(
   "candidate status should display latency and cache metrics separately",
 );
 assert.equal(
-  source.includes('>标/预</span><span title=') && source.includes('>整体</span><span>近期</span>'),
+  source.includes('IS_AIHUB ? "倍率/价/预" : "标/预"') && source.includes('>整体</span><span>近期</span>'),
   true,
-  "candidate status should label nominal and predicted multipliers separately",
+  "candidate status should label nominal, real-price, and predicted values separately",
 );
 assert.equal(
   source.includes('ratio.className = "candidate-ratio mono";'),
@@ -170,11 +176,11 @@ assert.equal(source.includes('<div class="automation-bar">'), true, "automatic r
 assert.equal(source.includes('<div class="control-grid">'), true, "key and model selectors should use a compact responsive grid");
 assert.equal(source.includes('class="button button-check"'), true, "immediate checks should be the primary command");
 assert.equal(source.includes('class="icon-button route-apply"'), true, "recommended-route switching should remain directly accessible");
-assert.equal(source.includes('目标模型（站点探测）'), true, "AIHub should expose a monitored target-model selector");
+assert.equal(source.includes('目标模型（站点探测，可多选）'), true, "AIHub should expose a monitored multi-model selector");
 assert.equal(source.includes('AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口'), true, "the AIHub aggregate column must disclose current and fallback windows");
 assert.equal(source.includes('优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针'), true, "the AIHub latency column must disclose its fallback chain");
 assert.equal(source.includes('${IS_AIHUB ? "趋势窗口（小时）" : "统计窗口（小时）"}'), true, "AIHub settings must not imply that the trend control changes its fixed one-hour aggregate");
-assert.equal(source.includes('refs.model.disabled = running || IS_AIHUB'), false, "AIHub model selection must remain interactive");
+assert.equal(source.includes('refs.modelSelectToggle.disabled = running'), true, "the multi-model selector should be disabled only while a check is running");
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
   (source.match(/<section class="work-view/g) || []).length,
@@ -211,11 +217,17 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.0");
+assert.equal(api.extractUserscriptVersion(source), "0.15.2");
+assert.equal(source.includes(".slice(0, 8)"), false, "the channel status table must not truncate the evaluated groups");
+assert.equal(source.includes('IS_AIHUB ? "倍率/价/预" : "标/预"'), true, "the multiplier column should expose route ratio, real price, and predicted values");
+assert.equal(source.includes("formatAihubLatency(candidate.firstTokenLatencyMs)"), true, "AIHub latency should use the provider page's millisecond display");
 assert.equal(api.normalizeAihubModelKey("gpt-5.6-sol"), "sol");
 assert.equal(api.normalizeAihubModelKey("Terra"), "terra");
 assert.equal(api.effectiveRatioReasonLabel("runtime_window_not_ready"), "统计窗口未就绪");
 assert.equal(api.effectiveRatioReasonLabel("insufficient_samples"), "样本不足");
+assert.equal(api.formatAihubLatency(10648.631), "10,649ms");
+assert.equal(api.formatAihubLatency(800), "800ms");
+assert.equal(api.formatAihubLatency(NaN), "-");
 assert.equal(
   api.effectiveRatioReasonLabel("provider_recalibrating"),
   "provider_recalibrating",
@@ -330,6 +342,117 @@ assert.deepEqual(
   }).tokenIds)),
   [9, 7],
 );
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.sanitizeConfig({ model: "gpt-5.6-sol" }).models)),
+  ["gpt-5.6-sol"],
+  "legacy single-model configuration should migrate automatically",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.sanitizeConfig({
+    model: "legacy-ignored-when-models-exist",
+    models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-sol", "", null],
+  }).models)),
+  ["gpt-5.6-sol", "gpt-5.6-terra"],
+  "multiple target models should be deduplicated without inventing empty values",
+);
+assert.equal(api.sanitizeConfig({ models: ["gpt-5.6-sol", "gpt-5.6-terra"] }).model, "gpt-5.6-sol");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.targetModels({ model: "gpt-5.6-sol" }))),
+  ["gpt-5.6-sol"],
+  "runtime helpers should remain compatible with unsanitized legacy config",
+);
+assert.equal(
+  api.targetModelIdentity({ models: ["gpt-5.6-terra", "gpt-5.6-sol"] }),
+  api.targetModelIdentity({ models: ["gpt-5.6-sol", "gpt-5.6-terra"] }),
+  "selection order should not reset cooldown or rollback protection",
+);
+
+const mergedTargetCandidates = api.mergeTargetModelCandidates([
+  {
+    model: "gpt-5.6-sol",
+    candidates: [
+      {
+        group: "common-risky",
+        available: true,
+        reasons: [],
+        warnings: [],
+        ratio: 0.08,
+        aggregateSuccess: 99,
+        recentMinSuccess: 100,
+        firstTokenLatencyMs: 900,
+        outputLatencyMs: 5000,
+        cacheHitRate: 80,
+      },
+      {
+        group: "common-safe",
+        available: true,
+        reasons: [],
+        warnings: [],
+        ratio: 0.12,
+        aggregateSuccess: 99.5,
+        recentMinSuccess: 100,
+        firstTokenLatencyMs: 1200,
+        outputLatencyMs: 6000,
+        cacheHitRate: 75,
+      },
+      {
+        group: "sol-only",
+        available: true,
+        reasons: [],
+        warnings: [],
+        ratio: 0.05,
+        aggregateSuccess: 100,
+        recentMinSuccess: 100,
+        firstTokenLatencyMs: 500,
+        outputLatencyMs: 4000,
+        cacheHitRate: 90,
+      },
+    ],
+  },
+  {
+    model: "gpt-5.6-terra",
+    candidates: [
+      {
+        group: "common-risky",
+        available: false,
+        reasons: ["success-low"],
+        warnings: ["model-detection-suspected"],
+        ratio: 0.1,
+        aggregateSuccess: 93,
+        recentMinSuccess: 100,
+        firstTokenLatencyMs: 3000,
+        outputLatencyMs: 9000,
+        cacheHitRate: 65,
+      },
+      {
+        group: "common-safe",
+        available: true,
+        reasons: [],
+        warnings: [],
+        ratio: 0.12,
+        aggregateSuccess: 99,
+        recentMinSuccess: 100,
+        firstTokenLatencyMs: 1500,
+        outputLatencyMs: 7000,
+        cacheHitRate: 70,
+      },
+    ],
+  },
+]);
+const mergedRisky = mergedTargetCandidates.find((candidate) => candidate.group === "common-risky");
+const mergedSafe = mergedTargetCandidates.find((candidate) => candidate.group === "common-safe");
+const mergedSolOnly = mergedTargetCandidates.find((candidate) => candidate.group === "sol-only");
+assert.equal(mergedRisky.available, false, "one failing target model must reject the shared group");
+assert.equal(mergedRisky.aggregateSuccess, 93, "multi-model health should expose the worst aggregate success");
+assert.equal(mergedRisky.firstTokenLatencyMs, 3000, "multi-model health should expose the worst first-token latency");
+assert.equal(mergedRisky.cacheHitRate, 65, "multi-model health should expose the least favorable cache hit rate");
+assert.deepEqual(Array.from(mergedRisky.reasons), ["success-low"]);
+assert.deepEqual(Array.from(mergedRisky.warnings), ["model-detection-suspected"]);
+assert.equal(mergedSafe.available, true);
+assert.equal(mergedSolOnly.available, false, "a group missing any selected model must not be auto-routable");
+assert.ok(mergedSolOnly.reasons.includes("model-unavailable"));
+assert.match(api.candidateIssueText(mergedSolOnly), /gpt-5\.6-terra：目标模型不可用/);
+assert.equal(api.selectBestCandidate(mergedTargetCandidates, "", "saving").group, "common-safe");
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG }).maxGroupRatio, 0);
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, maxGroupRatio: 0.08 }).maxGroupRatio, 0.08);
 assert.equal(api.sanitizeConfig({ ...api.DEFAULT_CONFIG, maxGroupRatio: -1 }).maxGroupRatio, 0);
@@ -937,7 +1060,7 @@ assert.deepEqual(
 );
 
 const aihubNow = 2_000_000_000;
-const aihubConfig = api.sanitizeConfig({ ...config, model: "gpt-5.6-sol" });
+const aihubConfig = api.sanitizeConfig({ ...config, models: ["gpt-5.6-sol"], model: "gpt-5.6-sol" });
 const aihubSummary = {
   generatedAt: new Date(aihubNow).toISOString(),
   monitoringActive: true,
@@ -1037,7 +1160,14 @@ const aihubCandidates = api.evaluateAihubCandidates(
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").available, true);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").modelHealthStatus, "healthy");
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").ratio, 0.04);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").publicRatio, 0.05);
+assert.equal(aihubCandidates.find((item) => item.group === "cheap").ratioSource, "account");
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").firstTokenLatencyMs, 13000);
+assert.equal(
+  aihubCandidates.find((item) => item.group === "cheap").firstTokenLatencySource,
+  "probe",
+  "AIHub fixtures without sampled runtime data should use probe latency explicitly",
+);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").outputTokensPerSecond, 42);
 assert.ok(Math.abs(aihubCandidates.find((item) => item.group === "cheap").outputLatencyMs - (18 / 42 * 1000)) < 1e-9);
 assert.equal(aihubCandidates.find((item) => item.group === "cheap").cacheHitRate, 89.25);
@@ -1100,6 +1230,30 @@ assert.equal(
 );
 assert.ok(aihubCandidates.find((item) => item.group === "private").reasons.includes("not-user-selectable"));
 assert.ok(aihubCandidates.find((item) => item.group === "private").reasons.includes("model-status-unknown"));
+const aihubMultiModelCandidates = api.mergeTargetModelCandidates([
+  { model: "gpt-5.6-sol", candidates: aihubCandidates },
+  {
+    model: "gpt-5.6-terra",
+    candidates: api.evaluateAihubCandidates(
+      aihubSummary,
+      aihubSeries,
+      aihubGroups,
+      { 1: 0.04 },
+      api.sanitizeConfig({ ...aihubConfig, models: ["gpt-5.6-terra"], model: "gpt-5.6-terra" }),
+      aihubNow,
+    ),
+  },
+]);
+assert.equal(aihubMultiModelCandidates.find((item) => item.group === "cheap").available, true);
+assert.equal(
+  aihubMultiModelCandidates.find((item) => item.group === "balanced").available,
+  false,
+  "AIHub multi-model routing must reject a group when any selected model is unhealthy",
+);
+assert.match(
+  api.candidateIssueText(aihubMultiModelCandidates.find((item) => item.group === "balanced")),
+  /gpt-5\.6-sol：.*目标模型不可用/,
+);
 assert.equal(
   api.selectBestCandidate(aihubCandidates, "balanced").group,
   "cheap",
@@ -1306,7 +1460,11 @@ function evaluateRoutingProviders(items, overrides = {}, providerVersion = 2) {
     normalized.series,
     groups,
     {},
-    api.sanitizeConfig({ ...aihubConfig, ...overrides }),
+    api.sanitizeConfig({
+      ...aihubConfig,
+      ...overrides,
+      ...(overrides.model && !overrides.models ? { models: [overrides.model] } : {}),
+    }),
     aihubNow,
   );
 }
@@ -1454,6 +1612,17 @@ assert.equal(migratedAstraState.guard.blacklist[0].until, 999);
 assert.equal(api.migrateAihubStoredModelAliases(
   migratedAstraState.config, migratedAstraState.history, migratedAstraState.guard,
 ).changed, false, "already migrated state must not trigger repeated storage writes");
+const migratedMultiAstraState = api.migrateAihubStoredModelAliases(
+  { models: ["astra", "gpt-5.6-sol"], model: "astra", tokenIds: [7] },
+  { byToken: { 7: { model: "astra\u001fgpt-5.6-sol", group: "A015-Pro", at: 123 } } },
+  { blacklist: [{ model: "astra\u001fgpt-5.6-sol", group: "A009-Pro", until: 999 }] },
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(migratedMultiAstraState.config.models)),
+  ["gpt-6-astra", "gpt-5.6-sol"],
+);
+assert.equal(migratedMultiAstraState.history.byToken[7].model, "gpt-5.6-sol\u001fgpt-6-astra");
+assert.equal(migratedMultiAstraState.guard.blacklist[0].model, "gpt-5.6-sol\u001fgpt-6-astra");
 for (const model of ["astra", "gpt-6-astra"]) {
   const candidate = evaluateRoutingProviders([routingProvider(513, "astra-only", {
     probe_model: "gpt-6-astra",
@@ -1521,7 +1690,7 @@ const lunaWithFailedLuna = api.evaluateAihubCandidates(
   modelScopedSeries,
   lunaProbeGroups,
   { 1: 0.04 },
-  api.sanitizeConfig({ ...aihubConfig, model: "gpt-5.6-luna" }),
+  api.sanitizeConfig({ ...aihubConfig, models: ["gpt-5.6-luna"], model: "gpt-5.6-luna" }),
   aihubNow,
 )[0];
 assert.equal(lunaWithFailedLuna.modelHealthStatus, "failed");
@@ -1566,7 +1735,7 @@ const evaluateDetection = (detection, model = "gpt-5.6-sol") => api.evaluateAihu
   healthySolSeries,
   solProbeGroups,
   { 1: 0.04 },
-  api.sanitizeConfig({ ...aihubConfig, model }),
+  api.sanitizeConfig({ ...aihubConfig, models: [model], model }),
   aihubNow,
 )[0];
 const passedDetection = evaluateDetection(detectionBaseSummary.apis[0].modelDetection);
@@ -1993,7 +2162,7 @@ assert.equal(
 );
 assert.throws(
   () => api.selectSwitchCandidate(candidates, "cheap", "missing"),
-  /不在当前模型的可选范围内/,
+  /不在当前目标模型组合的可选范围内/,
 );
 assert.equal(api.shouldSwitchCandidate(candidates.find((item) => item.group === "cheap"), "cheap"), false);
 assert.equal(api.shouldSwitchCandidate(candidates.find((item) => item.group === "balanced"), "cheap"), true);

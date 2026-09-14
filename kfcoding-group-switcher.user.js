@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.15.0
+// @version      0.15.2
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -81,13 +81,14 @@
   const SITE_LABEL = SITE.label;
   const SITE_SHORT_LABEL = SITE.shortLabel;
   const AIHUB_LEGACY_MONITOR_MODEL = "AIHub 公共渠道监测";
+  const MODEL_IDENTITY_SEPARATOR = "\u001f";
   const AIHUB_MODEL_NAMES = Object.freeze({
     sol: "gpt-5.6-sol",
     terra: "gpt-5.6-terra",
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.0";
+  const SCRIPT_VERSION = "0.15.2";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -102,6 +103,7 @@
     glassTransparency: 0,
     enabled: false,
     tokenIds: [],
+    models: [],
     model: "",
     selectionMode: "saving",
     groupFilterMode: "whitelist",
@@ -248,6 +250,28 @@
         .map((item) => Math.trunc(Number(item) || 0))
         .filter((item) => item > 0),
     )];
+  }
+
+  function normalizeTargetModels(value, legacyModel) {
+    const source = Array.isArray(value) && value.length ? value : [legacyModel];
+    return [...new Set(source.map((item) => String(item || "").trim()).filter(Boolean))];
+  }
+
+  function targetModels(config) {
+    const source = config && typeof config === "object" ? config : {};
+    return normalizeTargetModels(source.models, source.model);
+  }
+
+  function targetModelIdentity(config) {
+    return targetModels(config).slice().sort().join(MODEL_IDENTITY_SEPARATOR);
+  }
+
+  function targetModelLabel(config) {
+    return targetModels(config).join("、");
+  }
+
+  function modelIdentityLabel(value) {
+    return String(value || "").split(MODEL_IDENTITY_SEPARATOR).filter(Boolean).join("、");
   }
 
   function activeGroupFilter(config) {
@@ -455,6 +479,7 @@
 
   function sanitizeConfig(value) {
     const source = value && typeof value === "object" ? value : {};
+    const models = normalizeTargetModels(source.models, source.model);
     const groupFilterMode = source.groupFilterMode === "blacklist" ? "blacklist" : "whitelist";
     const hasModeAwareLegacyFilter = source.groupFilterGroups !== undefined;
     const legacyGroupFilter = parseAllowedGroups(
@@ -475,7 +500,8 @@
       glassTransparency: normalizeGlassTransparency(source.glassTransparency),
       enabled: Boolean(source.enabled),
       tokenIds: parseTokenIds(source.tokenIds, source.tokenId),
-      model: String(source.model || "").trim(),
+      models,
+      model: models[0] || "",
       selectionMode: normalizeSelectionMode(source.selectionMode),
       groupFilterMode,
       groupWhitelist,
@@ -721,15 +747,22 @@
       if (source !== canonical) changed = true;
       return canonical;
     };
-    config.model = canonicalize(config.model);
+    const canonicalizeIdentity = (value) => String(value || "")
+      .split(MODEL_IDENTITY_SEPARATOR)
+      .map(canonicalize)
+      .filter(Boolean)
+      .sort()
+      .join(MODEL_IDENTITY_SEPARATOR);
+    config.models = config.models.map(canonicalize).filter(Boolean);
+    config.model = config.models[0] || "";
     Object.values(history.byToken).forEach((entry) => {
-      entry.model = canonicalize(entry.model);
+      entry.model = canonicalizeIdentity(entry.model);
     });
     Object.values(guard.byToken).forEach((entry) => {
-      entry.model = canonicalize(entry.model);
+      entry.model = canonicalizeIdentity(entry.model);
     });
     guard.blacklist.forEach((entry) => {
-      entry.model = canonicalize(entry.model);
+      entry.model = canonicalizeIdentity(entry.model);
     });
     return { config, history, guard, changed };
   }
@@ -1304,6 +1337,11 @@
           : Number.isFinite(groupRatio) && groupRatio > 0
             ? groupRatio
             : publicRatio;
+        const ratioSource = Number.isFinite(userRatio) && userRatio > 0
+          ? "account"
+          : Number.isFinite(groupRatio) && groupRatio > 0
+            ? "group"
+            : "public";
         const rawSeries = Array.isArray(seriesByApiId[monitor.id]) ? seriesByApiId[monitor.id] : [];
         const parsedSeries = rawSeries
           .map(aihubSeriesPoint)
@@ -1447,6 +1485,8 @@
           group,
           groupId,
           ratio,
+          publicRatio,
+          ratioSource,
           available: reasons.length === 0,
           reasons,
           warnings,
@@ -1476,6 +1516,128 @@
           ageMinutes,
         };
       });
+  }
+
+  function finiteCandidateValues(candidates, key, predicate = Number.isFinite) {
+    return candidates
+      .map((candidate) => Number(candidate && candidate[key]))
+      .filter((value) => predicate(value));
+  }
+
+  function mergeTargetModelCandidates(modelCandidateSets) {
+    const sets = (Array.isArray(modelCandidateSets) ? modelCandidateSets : [])
+      .map((entry) => ({
+        model: String(entry && entry.model || "").trim(),
+        candidates: Array.isArray(entry && entry.candidates) ? entry.candidates : [],
+      }))
+      .filter((entry) => entry.model);
+    const models = [...new Set(sets.map((entry) => entry.model))];
+    const groups = [...new Set(sets.flatMap((entry) => entry.candidates.map((candidate) => candidate.group).filter(Boolean)))];
+
+    return groups.map((group) => {
+      const modelResults = sets.map((entry) => {
+        const candidate = entry.candidates.find((item) => item.group === group) || null;
+        return {
+          model: entry.model,
+          candidate,
+          available: Boolean(candidate && candidate.available),
+          reasons: candidate
+            ? [...new Set(Array.isArray(candidate.reasons) ? candidate.reasons : [])]
+            : ["model-unavailable"],
+          warnings: candidate
+            ? [...new Set(Array.isArray(candidate.warnings) ? candidate.warnings : [])]
+            : [],
+        };
+      });
+      const candidates = modelResults.map((entry) => entry.candidate).filter(Boolean);
+      const representative = candidates[0] || { group };
+      const reasons = [...new Set(modelResults.flatMap((entry) => entry.reasons))];
+      const warnings = [...new Set(modelResults.flatMap((entry) => entry.warnings))];
+      const ratios = finiteCandidateValues(candidates, "ratio", (value) => Number.isFinite(value) && value > 0);
+      const aggregateSuccesses = finiteCandidateValues(candidates, "aggregateSuccess");
+      const recentSuccesses = finiteCandidateValues(candidates, "recentMinSuccess");
+      const cacheHitRates = finiteCandidateValues(candidates, "cacheHitRate");
+      const firstTokenCandidates = candidates.filter((candidate) => Number.isFinite(Number(candidate.firstTokenLatencyMs)));
+      const outputCandidates = candidates.filter((candidate) => Number.isFinite(Number(candidate.outputLatencyMs)));
+      const worstFirstToken = firstTokenCandidates.slice().sort(
+        (left, right) => Number(right.firstTokenLatencyMs) - Number(left.firstTokenLatencyMs),
+      )[0];
+      const worstOutput = outputCandidates.slice().sort(
+        (left, right) => Number(right.outputLatencyMs) - Number(left.outputLatencyMs),
+      )[0];
+      const readyEffectiveCandidates = candidates.filter(hasEffectiveRatioEstimate);
+      const allEffectiveReady = candidates.length === models.length
+        && readyEffectiveCandidates.length === models.length;
+      const effectiveRatios = allEffectiveReady
+        ? finiteCandidateValues(readyEffectiveCandidates, "effectiveRatio", (value) => Number.isFinite(value) && value > 0)
+        : [];
+      const effectiveInputPrices = allEffectiveReady
+        ? finiteCandidateValues(readyEffectiveCandidates, "effectiveInputPricePerMillion", (value) => Number.isFinite(value) && value >= 0)
+        : [];
+      const aggregateWindows = [...new Set(candidates.map((candidate) => candidate.aggregateSuccessWindow).filter(Boolean))];
+
+      return {
+        ...representative,
+        group,
+        targetModels: models.slice(),
+        modelResults,
+        available: modelResults.length > 0 && modelResults.every((entry) => entry.available),
+        reasons,
+        warnings,
+        ratio: ratios.length ? Math.max(...ratios) : NaN,
+        aggregateSuccess: aggregateSuccesses.length === models.length ? Math.min(...aggregateSuccesses) : NaN,
+        aggregateSuccessWindow: aggregateWindows.length === 1 ? aggregateWindows[0] : aggregateWindows.length ? "mixed" : "",
+        latestSuccess: recentSuccesses.length === models.length ? Math.min(...recentSuccesses) : NaN,
+        recentSuccess: recentSuccesses.length === models.length ? Math.min(...recentSuccesses) : NaN,
+        recentMinSuccess: recentSuccesses.length === models.length ? Math.min(...recentSuccesses) : NaN,
+        recentSampleCount: modelResults.reduce(
+          (count, entry) => count + (Number(entry.candidate && entry.candidate.recentSampleCount) || 0),
+          0,
+        ),
+        firstTokenLatencyMs: worstFirstToken ? Number(worstFirstToken.firstTokenLatencyMs) : NaN,
+        firstTokenLatencySource: worstFirstToken ? worstFirstToken.firstTokenLatencySource : "unknown",
+        probeFirstTokenLatencyMs: worstFirstToken ? worstFirstToken.probeFirstTokenLatencyMs : NaN,
+        outputLatencyMs: worstOutput ? Number(worstOutput.outputLatencyMs) : NaN,
+        outputTokensPerSecond: worstOutput ? worstOutput.outputTokensPerSecond : NaN,
+        outputTokens: worstOutput ? worstOutput.outputTokens : NaN,
+        cacheHitRate: cacheHitRates.length === models.length ? Math.min(...cacheHitRates) : NaN,
+        effectiveRatio: effectiveRatios.length === models.length ? Math.max(...effectiveRatios) : NaN,
+        effectiveInputPricePerMillion: effectiveInputPrices.length === models.length
+          ? Math.max(...effectiveInputPrices)
+          : NaN,
+        effectiveRatioReady: effectiveRatios.length === models.length,
+        effectiveRatioReason: allEffectiveReady
+          ? ""
+          : String(candidates.find((candidate) => candidate.effectiveRatioReason)?.effectiveRatioReason || ""),
+        publicRatio: finiteCandidateValues(candidates, "publicRatio", (value) => Number.isFinite(value) && value > 0).length === models.length
+          ? Math.max(...finiteCandidateValues(candidates, "publicRatio", (value) => Number.isFinite(value) && value > 0))
+          : NaN,
+        ratioSource: candidates.some((candidate) => candidate.ratioSource === "account")
+          ? "account"
+          : candidates.some((candidate) => candidate.ratioSource === "group")
+            ? "group"
+            : "public",
+        ageMinutes: finiteCandidateValues(candidates, "ageMinutes").length === models.length
+          ? Math.max(...finiteCandidateValues(candidates, "ageMinutes"))
+          : Infinity,
+      };
+    });
+  }
+
+  function candidateIssueText(candidate) {
+    const modelResults = Array.isArray(candidate && candidate.modelResults) ? candidate.modelResults : [];
+    if (modelResults.length <= 1) {
+      return [...(candidate && candidate.reasons || []), ...(candidate && candidate.warnings || [])]
+        .map(reasonLabel)
+        .join("、");
+    }
+    return modelResults
+      .map((entry) => {
+        const issues = [...entry.reasons, ...entry.warnings].map(reasonLabel);
+        return issues.length ? `${entry.model}：${issues.join("、")}` : "";
+      })
+      .filter(Boolean)
+      .join("；");
   }
 
   function boundedPercent(value, fallback) {
@@ -1578,20 +1740,29 @@
   }
 
   function candidateAggregateSuccessTitle(candidate) {
-    if (!candidate || candidate.providerId !== "aihub") return "整体成功率";
+    const targetPrefix = Array.isArray(candidate && candidate.targetModels) && candidate.targetModels.length > 1
+      ? "全部目标模型最差 · "
+      : "";
+    if (!candidate || candidate.providerId !== "aihub") return `${targetPrefix}整体成功率`;
     const labels = { "1h": "1 小时", "5m": "5 分钟", "6h": "6 小时", "24h": "24 小时", "7d": "7 天", "30d": "30 天" };
-    return `${labels[candidate.aggregateSuccessWindow] || candidate.aggregateSuccessWindow || "未知窗口"}整体成功率`;
+    const windowLabel = candidate.aggregateSuccessWindow === "mixed"
+      ? "不同统计窗口"
+      : labels[candidate.aggregateSuccessWindow] || candidate.aggregateSuccessWindow || "未知窗口";
+    return `${targetPrefix}${windowLabel}整体成功率`;
   }
 
   function candidateFirstTokenLatencyTitle(candidate) {
-    if (!candidate || candidate.providerId !== "aihub") return "首字延迟";
+    const targetPrefix = Array.isArray(candidate && candidate.targetModels) && candidate.targetModels.length > 1
+      ? "全部目标模型最慢 · "
+      : "";
+    if (!candidate || candidate.providerId !== "aihub") return `${targetPrefix}首字延迟`;
     const labels = {
       "runtime-trimmed-avg": "用户首字延迟 · 最快95%平均",
       "runtime-p90": "用户首字延迟 · P90 回退",
       probe: "首字延迟 · 探针回退",
       unknown: "首字延迟 · 暂无有效数据",
     };
-    return labels[candidate.firstTokenLatencySource] || labels.unknown;
+    return `${targetPrefix}${labels[candidate.firstTokenLatencySource] || labels.unknown}`;
   }
 
   function candidateSavingRatio(candidate, candidates) {
@@ -1657,7 +1828,7 @@
 
     const candidate = candidates.find((item) => item.group === target);
     if (!candidate) {
-      throw new Error(`目标分组 ${target} 不在当前模型的可选范围内`);
+      throw new Error(`目标分组 ${target} 不在当前目标模型组合的可选范围内`);
     }
     if (!candidate.available && !request.allowUnavailable) {
       const reasons = candidate.reasons.map(reasonLabel).join("，") || "未知原因";
@@ -2058,8 +2229,10 @@
     evaluateAihubCandidates,
     evaluateCandidates,
     evaluateFluxionCandidates,
+    mergeTargetModelCandidates,
     extractUserscriptVersion,
     formatBalance,
+    formatAihubLatency,
     formatTokenCount,
     fluxionEffectiveGroupRatio,
     fluxionGroupSupportsModel,
@@ -2103,6 +2276,7 @@
     normalizeSelectionMode,
     normalizeThemeMode,
     normalizeUiPositions,
+    normalizeTargetModels,
     parseAllowedGroups,
     parseTokenIds,
     pruneSwitchGuardState,
@@ -2127,6 +2301,9 @@
     shouldSwitchCandidate,
     storagePrefixForSite,
     summarizeTokenGroups,
+    candidateIssueText,
+    targetModelIdentity,
+    targetModels,
     tokenSupportsModel,
     todayTimestampRange,
     unwrapUserGroups,
@@ -2648,7 +2825,7 @@
 
   function cooldownRemainingMs(tokenId, now) {
     const last = getSwitchHistory().byToken[tokenId] || {};
-    if (last.model !== config.model) return 0;
+    if (last.model !== targetModelIdentity(config)) return 0;
     const elapsed = now - Number(last.at || 0);
     return Math.max(0, config.cooldownMinutes * 60000 - elapsed);
   }
@@ -2656,7 +2833,7 @@
   function recordSwitch(tokenId, candidate) {
     const history = getSwitchHistory();
     history.byToken[tokenId] = {
-      model: config.model,
+      model: targetModelIdentity(config),
       group: candidate.group,
       at: Date.now(),
     };
@@ -2680,7 +2857,7 @@
       const reasons = candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted");
       return { ...candidate, reasons, available: reasons.length === 0 };
     });
-    state.candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(now), config.model, now);
+    state.candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(now), targetModelIdentity(config), now);
     const recommended = selectBestCandidate(state.candidates, "", config.selectionMode);
     state.bestGroup = candidateRecommendationLabel(recommended);
   }
@@ -2748,7 +2925,7 @@
       return;
     }
     state.byToken[tokenId] = {
-      model: config.model,
+      model: targetModelIdentity(config),
       fromGroup,
       toGroup,
       remaining: config.rollbackChecks,
@@ -2822,8 +2999,9 @@
     if (token.status != null && Number(token.status) !== 1) {
       throw new Error("选中的 API 密钥未启用");
     }
-    if (!tokenSupportsModel(token, config.model)) {
-      throw new Error(`选中的 API 密钥未允许模型 ${config.model}`);
+    const unsupportedModels = targetModels(config).filter((model) => !tokenSupportsModel(token, model));
+    if (unsupportedModels.length) {
+      throw new Error(`选中的 API 密钥未允许模型 ${unsupportedModels.join("、")}`);
     }
   }
 
@@ -2835,7 +3013,7 @@
     if (!guard) return null;
     if (
       config.rollbackChecks <= 0 ||
-      guard.model !== config.model ||
+      guard.model !== targetModelIdentity(config) ||
       guard.toGroup !== String(token.group || "")
     ) {
       delete guardState.byToken[tokenId];
@@ -2869,10 +3047,10 @@
 
     if (candidateHasHealthFailure(current)) {
       guardState.blacklist = guardState.blacklist.filter(
-        (entry) => entry.model !== config.model || entry.group !== guard.toGroup,
+        (entry) => entry.model !== targetModelIdentity(config) || entry.group !== guard.toGroup,
       );
       guardState.blacklist.push({
-        model: config.model,
+        model: targetModelIdentity(config),
         group: guard.toGroup,
         until: now + config.blacklistMinutes * 60000,
       });
@@ -2880,7 +3058,7 @@
     delete guardState.byToken[tokenId];
     saveSwitchGuardState(guardState);
 
-    const eligible = applyTemporaryBlacklist(candidates, guardState, config.model, now);
+    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now);
     const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup, config.selectionMode);
     const fallback = rollbackTarget.candidate;
     if (!fallback) return null;
@@ -2994,12 +3172,13 @@
     const targetGroup = String((options && options.targetGroup) || "").trim();
     // A manual check must refresh account-level usage even when group checks cannot start yet.
     const manualUsageRefresh = manual ? refreshTodayUsage() : null;
+    const models = targetModels(config);
     if (running) {
       if (manual) setStatus("已有检查正在进行", "warning");
       return;
     }
-    if (!config.model) {
-      setStatus("请先选择目标模型", "warning");
+    if (!models.length) {
+      setStatus("请先选择至少一个目标模型", "warning");
       return;
     }
     if (!config.tokenIds.length && requiresTokenSelection(SITE_ID, options)) {
@@ -3044,14 +3223,17 @@
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
         pricingCache = buildAihubModelCatalog(summary);
-        candidates = evaluateAihubCandidates(
-          summary,
-          series,
-          aihubGroupsCache,
-          aihubRatesCache,
-          config,
-          Date.now(),
-        );
+        candidates = mergeTargetModelCandidates(models.map((model) => ({
+          model,
+          candidates: evaluateAihubCandidates(
+            summary,
+            series,
+            aihubGroupsCache,
+            aihubRatesCache,
+            { ...config, models: [model], model },
+            Date.now(),
+          ),
+        })));
       } else if (IS_FLUXION) {
         const [monitors, groups, rates] = await Promise.all([
           fetchJson("/api/v1/channel-monitors"),
@@ -3062,28 +3244,42 @@
         fluxionGroupsCache = normalizeFluxionGroups(groups);
         fluxionRatesCache = normalizeAihubRates(rates);
         pricingCache = buildFluxionModelCatalog(monitors, groups);
-        candidates = evaluateFluxionCandidates(
-          monitors,
-          groups,
-          rates,
-          config,
-          Date.now(),
-        );
+        candidates = mergeTargetModelCandidates(models.map((model) => ({
+          model,
+          candidates: evaluateFluxionCandidates(
+            monitors,
+            groups,
+            rates,
+            { ...config, models: [model], model },
+            Date.now(),
+          ),
+        })));
       } else {
-        const [pricing, metrics, userGroups] = await Promise.all([
+        const [pricing, userGroups, metricsByModel] = await Promise.all([
           fetchJson("/api/pricing"),
-          fetchJson(`/api/perf-metrics?model=${encodeURIComponent(config.model)}&hours=${config.metricHours}`),
           fetchJson("/api/user/self/groups"),
+          Promise.all(models.map((model) => fetchJson(
+            `/api/perf-metrics?model=${encodeURIComponent(model)}&hours=${config.metricHours}`,
+          ))),
         ]);
         pricingCache = pricing;
         userGroupsCache = unwrapUserGroups(userGroups);
-        candidates = evaluateCandidates(pricing, metrics, userGroups, config, Date.now() / 1000);
+        candidates = mergeTargetModelCandidates(models.map((model, index) => ({
+          model,
+          candidates: evaluateCandidates(
+            pricing,
+            metricsByModel[index],
+            userGroups,
+            { ...config, models: [model], model },
+            Date.now() / 1000,
+          ),
+        })));
       }
       const candidateTimestamp = Date.now();
       candidates = applyTemporaryBlacklist(
         candidates,
         getSwitchGuardState(candidateTimestamp),
-        config.model,
+        targetModelIdentity(config),
         candidateTimestamp,
       );
       if (manual) renderOptions(true);
@@ -3157,14 +3353,14 @@
       if (switchedCount > 0) {
         GM_notification({
           title: `${SITE_LABEL} 分组已切换`,
-          text: `${config.model}: 已切换 ${switchedCount} 个 API 密钥`,
+          text: `${targetModelLabel(config)}: 已切换 ${switchedCount} 个 API 密钥`,
           timeout: 8000,
         });
       }
       if (rolledBackCount > 0) {
         GM_notification({
           title: `${SITE_LABEL} 分组已自动回滚`,
-          text: `${config.model}: 已回滚 ${rolledBackCount} 个 API 密钥`,
+          text: `${targetModelLabel(config)}: 已回滚 ${rolledBackCount} 个 API 密钥`,
           timeout: 10000,
         });
       }
@@ -3236,6 +3432,11 @@
     return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`;
   }
 
+  function formatAihubLatency(value) {
+    if (!Number.isFinite(value) || value <= 0) return "-";
+    return `${Math.round(value).toLocaleString("en-US")}ms`;
+  }
+
   function formatSpend(usage) {
     if (!usage || !usage.available) return "-";
     return formatSpendValue(usage.spend, usage.symbol);
@@ -3258,15 +3459,8 @@
     return available ? Math.max(0, Number(value) || 0).toLocaleString() : "-";
   }
 
-  function createOption(value, label) {
-    const option = document.createElement("option");
-    option.value = String(value);
-    option.textContent = label;
-    return option;
-  }
-
   function renderOptions(preserveFormState) {
-    if (!refs.tokenList || !refs.model) return;
+    if (!refs.tokenList || !refs.modelList) return;
 
     const selectedTokens = new Set(
       preserveFormState
@@ -3274,7 +3468,12 @@
           .map((checkbox) => Number(checkbox.value))
         : config.tokenIds.map(Number),
     );
-    const selectedModel = preserveFormState ? refs.model.value : config.model;
+    const selectedModels = new Set(
+      preserveFormState
+        ? [...refs.modelList.querySelectorAll('input[data-model-name]:checked')]
+          .map((checkbox) => checkbox.dataset.modelName)
+        : targetModels(config),
+    );
     refs.tokenList.replaceChildren();
     if (!tokensCache.length) {
       const empty = document.createElement("div");
@@ -3297,13 +3496,46 @@
     });
     renderTokenSelectionCount();
 
-    refs.model.replaceChildren(createOption("", "请选择模型"));
-    const models = pricingCache && Array.isArray(pricingCache.data)
-      ? pricingCache.data.map((item) => item.model_name).filter(Boolean).sort()
-      : [];
-    models.forEach((model) => refs.model.appendChild(createOption(model, model)));
-    refs.model.value = selectedModel;
+    refs.modelList.replaceChildren();
+    const models = [...new Set([
+      ...(pricingCache && Array.isArray(pricingCache.data)
+        ? pricingCache.data.map((item) => item.model_name).filter(Boolean)
+        : []),
+      ...selectedModels,
+    ])].sort();
+    if (!models.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty token-empty";
+      empty.textContent = "暂无可选模型";
+      refs.modelList.appendChild(empty);
+    }
+    models.forEach((model) => {
+      const option = document.createElement("label");
+      option.className = "token-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.modelName = model;
+      checkbox.checked = selectedModels.has(model);
+      const name = document.createElement("span");
+      name.textContent = model;
+      option.append(checkbox, name);
+      refs.modelList.appendChild(option);
+    });
+    renderModelSelectionCount();
     renderGroupFilterOptions();
+  }
+
+  function renderModelSelectionCount() {
+    if (!refs.modelList || !refs.modelCount || !refs.modelSelectLabel) return;
+    const selected = [...refs.modelList.querySelectorAll('input[data-model-name]:checked')]
+      .map((checkbox) => checkbox.dataset.modelName);
+    refs.modelCount.textContent = `已选 ${selected.length}`;
+    refs.modelSelectLabel.textContent = selected.length === 0
+      ? "请选择目标模型"
+      : selected.length === 1
+        ? selected[0]
+        : `已选择 ${selected.length} 个模型`;
+    refs.modelSelectLabel.title = selected.join("、");
   }
 
   function renderTokenSelectionCount() {
@@ -3345,10 +3577,10 @@
       });
     } else {
       Object.keys(userGroupsCache).forEach((group) => names.add(group));
-      const selectedModel = pricingCache && Array.isArray(pricingCache.data)
-        ? pricingCache.data.find((item) => item && item.model_name === config.model)
-        : null;
-      (selectedModel && Array.isArray(selectedModel.enable_groups) ? selectedModel.enable_groups : [])
+      const selectedModels = new Set(targetModels(config));
+      (pricingCache && Array.isArray(pricingCache.data) ? pricingCache.data : [])
+        .filter((item) => item && selectedModels.has(item.model_name))
+        .flatMap((item) => Array.isArray(item.enable_groups) ? item.enable_groups : [])
         .forEach((group) => names.add(String(group)));
     }
     return [...names].filter(Boolean).sort((left, right) => left.localeCompare(right, "zh-CN"));
@@ -3403,8 +3635,7 @@
       .sort((left, right) => {
         if (left.available !== right.available) return left.available ? -1 : 1;
         return (left.ratio || Infinity) - (right.ratio || Infinity);
-      })
-      .slice(0, 8);
+      });
 
     if (!rows.length) {
       const empty = document.createElement("div");
@@ -3432,20 +3663,34 @@
       ratio.className = "candidate-ratio mono";
       const nominalRatio = document.createElement("span");
       nominalRatio.textContent = formatRatio(candidate.ratio);
+      const effectiveInputPrice = document.createElement("small");
+      const hasEffectiveInputPrice = Number.isFinite(candidate.effectiveInputPricePerMillion)
+        && candidate.effectiveInputPricePerMillion >= 0;
+      effectiveInputPrice.textContent = IS_AIHUB && hasEffectiveInputPrice
+        ? `￥${candidate.effectiveInputPricePerMillion.toFixed(2)}/M`
+        : "";
+      effectiveInputPrice.className = "candidate-price";
       const effectiveRatio = document.createElement("small");
       const hasEffectiveEstimate = hasEffectiveRatioEstimate(candidate);
+      const hasPublicRatio = Number.isFinite(candidate.publicRatio) && candidate.publicRatio > 0;
+      const routeRatioLabel = candidate.ratioSource === "account" ? "账号倍率" : "页面倍率";
+      const multiModelPrefix = Array.isArray(candidate.targetModels) && candidate.targetModels.length > 1
+        ? "全部目标模型最不利值；"
+        : "";
       effectiveRatio.textContent = hasEffectiveEstimate
         ? `≈${formatRatio(candidateEffectiveRatio(candidate))}`
         : "≈-";
-      ratio.append(nominalRatio, effectiveRatio);
+      ratio.append(nominalRatio);
+      if (IS_AIHUB) ratio.append(effectiveInputPrice);
+      ratio.append(effectiveRatio);
       ratio.title = hasEffectiveEstimate
-        ? `平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}；有效输入价格 ${Number.isFinite(candidate.effectiveInputPricePerMillion) ? `${candidate.effectiveInputPricePerMillion.toFixed(4)}/M` : "暂无"}`
-        : `标称倍率 ${formatRatio(candidate.ratio)}；平台预测倍率暂不可用（${effectiveRatioReasonLabel(candidate.effectiveRatioReason)}）`;
+        ? `${multiModelPrefix}${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `；页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}；真实输入价格 ${hasEffectiveInputPrice ? `${candidate.effectiveInputPricePerMillion.toFixed(4)}/M` : "暂无"}；平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
+        : `${multiModelPrefix}${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `；页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}；平台预测倍率暂不可用（${effectiveRatioReasonLabel(candidate.effectiveRatioReason)}）`;
       ratio.setAttribute(
         "aria-label",
         hasEffectiveEstimate
-          ? `标称倍率 ${formatRatio(candidate.ratio)}，平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
-          : `标称倍率 ${formatRatio(candidate.ratio)}，平台预测倍率待统计`,
+          ? `${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `，页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}，真实输入价格 ${hasEffectiveInputPrice ? `${candidate.effectiveInputPricePerMillion.toFixed(2)}/M` : "暂无"}，平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
+          : `${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `，页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}，平台预测倍率待统计`,
       );
       const success = document.createElement("span");
       success.className = "mono";
@@ -3461,7 +3706,9 @@
       );
       const firstTokenLatency = document.createElement("span");
       firstTokenLatency.className = "mono";
-      firstTokenLatency.textContent = formatLatency(candidate.firstTokenLatencyMs);
+      firstTokenLatency.textContent = candidate.providerId === "aihub"
+        ? formatAihubLatency(candidate.firstTokenLatencyMs)
+        : formatLatency(candidate.firstTokenLatencyMs);
       firstTokenLatency.title = candidateFirstTokenLatencyTitle(candidate);
       const outputLatency = document.createElement("span");
       outputLatency.className = "mono";
@@ -3480,16 +3727,17 @@
       cacheHitRate.className = "mono";
       cacheHitRate.textContent = formatPercent(candidate.cacheHitRate);
       cacheHitRate.title = Number.isFinite(candidate.cacheHitRate)
-        ? "缓存命中率"
+        ? `${Array.isArray(candidate.targetModels) && candidate.targetModels.length > 1 ? "全部目标模型最低 · " : ""}缓存命中率`
         : `${SITE_LABEL} 当前分组指标未提供缓存命中率`;
       const verdict = document.createElement("span");
       verdict.className = "verdict";
+      const issueText = candidateIssueText(candidate);
       verdict.textContent = candidate.available
         ? (warningText ? "可用·检测警告" : "可用")
         : reasonLabel(candidate.reasons[0] || "不可用");
       verdict.title = candidate.available
-        ? (warningText ? `不阻断切换：${warningText}` : "符合自动切换条件")
-        : candidate.reasons.map(reasonLabel).join("、") || "不可用";
+        ? (issueText ? `不阻断切换：${issueText}` : "符合全部目标模型的自动切换条件")
+        : issueText || candidate.reasons.map(reasonLabel).join("、") || "不可用";
       row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, cacheHitRate, verdict);
       refs.candidateRows.appendChild(row);
     });
@@ -3497,8 +3745,15 @@
 
   function renderManualGroups() {
     if (!refs.manualGroup) return;
-    const selectedGroup = refs.manualGroup.value;
-    refs.manualGroup.replaceChildren(createOption("", state.candidates.length ? "请选择目标分组" : "暂无检查结果"));
+    const selectedGroup = refs.manualGroup.querySelector('input[data-manual-group]:checked')?.value || "";
+    refs.manualGroup.replaceChildren();
+
+    if (!state.candidates.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty manual-group-empty";
+      empty.textContent = "暂无检查结果";
+      refs.manualGroup.appendChild(empty);
+    }
 
     state.candidates
       .slice()
@@ -3515,24 +3770,36 @@
           : candidate.reasons.map(reasonLabel).join("、") || "不可用";
         const currentCount = state.tokenResults.filter((result) => result.group === candidate.group).length;
         const current = currentCount ? ` · 当前 ${currentCount}` : "";
-        const option = createOption(
-          candidate.group,
-          `${candidate.group} · ${formatRatio(candidate.ratio)} · 状态：${status}${current}`,
-        );
+        const option = document.createElement("label");
+        option.className = `manual-group-option${candidate.available ? "" : " manual-group-option-warning"}`;
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "kf-manual-group";
+        radio.value = candidate.group;
+        radio.dataset.manualGroup = candidate.group;
+        radio.checked = candidate.group === selectedGroup;
+        const copy = document.createElement("span");
+        const name = document.createElement("strong");
+        name.textContent = `${candidate.group} · ${formatRatio(candidate.ratio)}`;
+        const detail = document.createElement("small");
+        const modelIssues = candidateIssueText(candidate);
+        const modelDetails = Array.isArray(candidate.modelResults) && candidate.modelResults.length > 1 && modelIssues
+          ? ` · ${modelIssues}`
+          : "";
+        detail.textContent = `状态：${status}${current}${modelDetails}`;
+        copy.append(name, detail);
+        option.append(radio, copy);
         refs.manualGroup.appendChild(option);
       });
-
-    const preserved = [...refs.manualGroup.options].some(
-      (option) => option.value === selectedGroup,
-    );
-    refs.manualGroup.value = preserved ? selectedGroup : "";
     if (refs.manualHint) {
       const availableCount = state.candidates.filter((candidate) => candidate.available).length;
       refs.manualHint.textContent = state.candidates.length
         ? `${state.candidates.length} 个分组均可人工选择，其中 ${availableCount} 个符合自动策略；账号权限仍由站点接口校验`
         : "请先执行一次立即检查";
     }
-    if (refs.manualConfirm) refs.manualConfirm.disabled = running || !refs.manualGroup.value;
+    if (refs.manualConfirm) {
+      refs.manualConfirm.disabled = running || !refs.manualGroup.querySelector('input[data-manual-group]:checked');
+    }
   }
 
   function renderLogs() {
@@ -3623,8 +3890,8 @@
       const meta = document.createElement("div");
       meta.className = "isolation-meta";
       const model = document.createElement("span");
-      model.textContent = entry.model;
-      model.title = `模型：${entry.model}`;
+      model.textContent = modelIdentityLabel(entry.model);
+      model.title = `模型：${modelIdentityLabel(entry.model)}`;
       const reason = document.createElement("span");
       reason.textContent = "切换后健康检查失败";
       const remaining = document.createElement("span");
@@ -3764,14 +4031,25 @@
     }
     if (refs.selectAllTokens) refs.selectAllTokens.disabled = running;
     if (refs.clearTokens) refs.clearTokens.disabled = running;
-    if (refs.model) refs.model.disabled = running;
+    if (refs.selectAllModels) refs.selectAllModels.disabled = running;
+    if (refs.clearModels) refs.clearModels.disabled = running;
+    if (refs.modelSelectToggle) refs.modelSelectToggle.disabled = running;
     if (refs.tokenList) {
       refs.tokenList.querySelectorAll('input[data-token-id]').forEach((checkbox) => {
         checkbox.disabled = running;
       });
     }
+    if (refs.modelList) {
+      refs.modelList.querySelectorAll('input[data-model-name]').forEach((checkbox) => {
+        checkbox.disabled = running;
+      });
+    }
     renderManualGroups();
-    if (refs.manualGroup) refs.manualGroup.disabled = running || !state.candidates.length;
+    if (refs.manualGroup) {
+      refs.manualGroup.querySelectorAll('input[data-manual-group]').forEach((radio) => {
+        radio.disabled = running;
+      });
+    }
     if (refs.manualSwitch) refs.manualSwitch.disabled = running;
     renderIsolations();
     if (refs.isolationToast) {
@@ -3811,7 +4089,8 @@
       enabled: refs.enabled.checked,
       tokenIds: [...refs.tokenList.querySelectorAll('input[data-token-id]:checked')]
         .map((checkbox) => checkbox.value),
-      model: refs.model.value,
+      models: [...refs.modelList.querySelectorAll('input[data-model-name]:checked')]
+        .map((checkbox) => checkbox.dataset.modelName),
       selectionMode: refs.selectionMode.value,
       groupFilterMode: config.groupFilterMode,
       groupWhitelist: config.groupWhitelist,
@@ -3857,12 +4136,12 @@
   }
 
   function persistFormConfig() {
-    const previousIdentity = `${config.tokenIds.join(",")}:${config.model}`;
+    const previousIdentity = `${config.tokenIds.join(",")}:${targetModelIdentity(config)}`;
     const wasEnabled = config.enabled;
     config = readFormConfig();
     GM_setValue(STORAGE_CONFIG, config);
     if (state.todayUsage.available) syncSpendProtection({ notify: true });
-    if (`${config.tokenIds.join(",")}:${config.model}` !== previousIdentity) {
+    if (`${config.tokenIds.join(",")}:${targetModelIdentity(config)}` !== previousIdentity) {
       pendingCandidates.clear();
       state.candidates = [];
       state.tokenResults = [];
@@ -3884,6 +4163,12 @@
     refs.tokenSelectToggle.setAttribute("aria-expanded", String(open));
   }
 
+  function setModelMenuOpen(open) {
+    if (!refs.modelMenu || !refs.modelSelectToggle) return;
+    refs.modelMenu.hidden = !open;
+    refs.modelSelectToggle.setAttribute("aria-expanded", String(open));
+  }
+
   function setGroupFilterMenuOpen(open) {
     if (!refs.groupFilterMenu || !refs.groupFilterSelectToggle) return;
     refs.groupFilterMenu.hidden = !open;
@@ -3894,6 +4179,7 @@
     state.activeView = normalizeActiveView(view);
     persistUiState();
     setTokenMenuOpen(false);
+    setModelMenuOpen(false);
     setGroupFilterMenuOpen(false);
     if (refs.workspace) refs.workspace.scrollTop = 0;
     render();
@@ -3952,33 +4238,50 @@
       persistFormConfig();
     });
     refs.tokenSelectToggle.addEventListener("click", () => {
+      setModelMenuOpen(false);
+      setGroupFilterMenuOpen(false);
       setTokenMenuOpen(refs.tokenMenu.hidden);
     });
+    refs.modelSelectToggle.addEventListener("click", () => {
+      setTokenMenuOpen(false);
+      setGroupFilterMenuOpen(false);
+      setModelMenuOpen(refs.modelMenu.hidden);
+    });
     refs.groupFilterSelectToggle.addEventListener("click", () => {
+      setTokenMenuOpen(false);
+      setModelMenuOpen(false);
       setGroupFilterMenuOpen(refs.groupFilterMenu.hidden);
     });
     root.addEventListener("click", (event) => {
       if (!refs.tokenSelect.contains(event.target)) setTokenMenuOpen(false);
+      if (!refs.modelSelect.contains(event.target)) setModelMenuOpen(false);
       if (!refs.groupFilterSelect.contains(event.target)) setGroupFilterMenuOpen(false);
     });
     document.addEventListener("pointerdown", (event) => {
       if (!event.composedPath().includes(root.host)) {
         setTokenMenuOpen(false);
+        setModelMenuOpen(false);
         setGroupFilterMenuOpen(false);
       }
     });
     refs.manualSwitch.addEventListener("click", () => {
+      setTokenMenuOpen(false);
+      setModelMenuOpen(false);
+      setGroupFilterMenuOpen(false);
       renderManualGroups();
       if (!state.candidates.length) {
         setStatus("请先执行一次立即检查，再选择手动目标分组", "warning");
       }
       refs.manualDialog.showModal();
+      const firstChoice = refs.manualGroup.querySelector('input[data-manual-group]:checked')
+        || refs.manualGroup.querySelector('input[data-manual-group]');
+      (firstChoice || refs.manualClose).focus();
     });
     refs.manualGroup.addEventListener("change", () => {
-      refs.manualConfirm.disabled = running || !refs.manualGroup.value;
+      refs.manualConfirm.disabled = running || !refs.manualGroup.querySelector('input[data-manual-group]:checked');
     });
     refs.manualConfirm.addEventListener("click", () => {
-      const targetGroup = refs.manualGroup.value;
+      const targetGroup = refs.manualGroup.querySelector('input[data-manual-group]:checked')?.value || "";
       if (!targetGroup) return;
       refs.manualDialog.close();
       runCheck({ manual: true, forceSwitch: true, targetGroup });
@@ -3986,8 +4289,18 @@
     [refs.manualClose, refs.manualCancel].forEach((button) => {
       button.addEventListener("click", () => refs.manualDialog.close());
     });
+    root.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || refs.manualDialog.open) return;
+      setTokenMenuOpen(false);
+      setModelMenuOpen(false);
+      setGroupFilterMenuOpen(false);
+    });
     refs.tokenList.addEventListener("change", () => {
       renderTokenSelectionCount();
+      persistFormConfig();
+    });
+    refs.modelList.addEventListener("change", () => {
+      renderModelSelectionCount();
       persistFormConfig();
     });
     refs.selectAllTokens.addEventListener("click", () => {
@@ -4002,6 +4315,20 @@
         checkbox.checked = false;
       });
       renderTokenSelectionCount();
+      persistFormConfig();
+    });
+    refs.selectAllModels.addEventListener("click", () => {
+      refs.modelList.querySelectorAll('input[data-model-name]').forEach((checkbox) => {
+        checkbox.checked = true;
+      });
+      renderModelSelectionCount();
+      persistFormConfig();
+    });
+    refs.clearModels.addEventListener("click", () => {
+      refs.modelList.querySelectorAll('input[data-model-name]').forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+      renderModelSelectionCount();
       persistFormConfig();
     });
     refs.groupFilterMode.addEventListener("change", () => {
@@ -4098,6 +4425,8 @@
           --toolbar: rgb(28 31 36 / 20%);
           --control: rgb(255 255 255 / 7%);
           --menu: rgb(22 26 31 / 82%);
+          --native-option-bg: #171a1f;
+          --native-option-text: #f5f7f8;
           --glass-transparency: 0%;
           --panel-glass: linear-gradient(135deg, rgb(31 37 45 / 49%), rgb(13 17 22 / 38%));
           --shadow-panel: 0 34px 90px rgb(0 0 0 / 46%), inset 1px 1px 0 rgb(255 255 255 / 24%), inset -1px -1px 0 rgb(255 255 255 / 4.5%);
@@ -4131,6 +4460,8 @@
           --toolbar: rgb(255 255 255 / 20%);
           --control: rgb(255 255 255 / 48%);
           --menu: rgb(244 247 249 / 88%);
+          --native-option-bg: #f4f7f9;
+          --native-option-text: #17212a;
           --glass-transparency: 0%;
           --panel-glass: linear-gradient(135deg, rgb(255 255 255 / 62%), rgb(235 240 244 / 48%));
           --shadow-panel: 0 28px 72px rgb(31 44 54 / 22%), inset 1px 1px 0 rgb(255 255 255 / 72%), inset -1px -1px 0 rgb(255 255 255 / 18%);
@@ -4494,6 +4825,10 @@
           font-size: 11px;
           outline: none;
         }
+        select option, select optgroup {
+          background-color: var(--native-option-bg);
+          color: var(--native-option-text);
+        }
         input:hover, select:hover, .token-select-trigger:hover { border-color: var(--line-strong); }
         input:focus, select:focus, .token-select-trigger:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--focus); }
         input[type="checkbox"] { accent-color: var(--accent); }
@@ -4523,6 +4858,7 @@
           backdrop-filter: blur(18px) saturate(145%);
           box-shadow: var(--shadow-menu);
         }
+        .model-select .token-menu { z-index: 6; }
         .group-filter-select .token-menu { z-index: 5; }
         .token-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 5px; }
         .text-button { border: 0; background: transparent; color: var(--accent); padding: 2px; font-size: 10px; }
@@ -4579,7 +4915,7 @@
         .candidate-section .section-head { margin: 0; padding: 12px 14px 10px; }
         .candidate-head, .candidate {
           display: grid;
-          grid-template-columns: minmax(72px, 1fr) 40px 40px 40px 43px 43px 43px 70px;
+          grid-template-columns: minmax(72px, 1fr) 58px 40px 40px 43px 43px 43px 70px;
           align-items: center;
           gap: 5px;
           min-height: 30px;
@@ -4597,6 +4933,7 @@
         .candidate-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .candidate-ratio { display: grid; justify-items: center; gap: 1px; line-height: 1.05; }
         .candidate-ratio small { color: var(--accent); font-size: 8px; font-weight: 650; }
+        .candidate-ratio .candidate-price { color: var(--text-soft); font-size: 7px; font-weight: 550; }
         .candidate-off .candidate-ratio small { color: var(--muted); }
         .candidate-signal { width: 6px; height: 6px; flex: 0 0 auto; background: var(--warning); }
         .candidate-signal { border-radius: 50%; }
@@ -4638,6 +4975,7 @@
         .empty { padding: 8px 0; color: var(--muted); font-size: 10px; }
         .manual-dialog {
           width: min(380px, calc(100vw - 28px));
+          max-height: min(680px, calc(100vh - 28px));
           border: 1px solid var(--line-strong);
           border-radius: 16px;
           background: var(--panel-glass);
@@ -4648,6 +4986,37 @@
           backdrop-filter: blur(24px) saturate(175%) contrast(108%);
         }
         .manual-dialog::backdrop { background: var(--dialog-backdrop); }
+        .manual-group-list {
+          display: grid;
+          max-height: min(440px, calc(100vh - 190px));
+          overflow: auto;
+          border: 1px solid var(--line);
+          border-radius: 9px;
+          background: var(--control);
+          scrollbar-color: var(--line-strong) transparent;
+          scrollbar-width: thin;
+        }
+        .manual-group-option {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: start;
+          gap: 8px;
+          min-height: 44px;
+          margin: 0;
+          padding: 8px 9px;
+          border-bottom: 1px solid var(--line-soft);
+          color: var(--text);
+          cursor: pointer;
+        }
+        .manual-group-option:last-child { border-bottom: 0; }
+        .manual-group-option:hover { background: var(--surface-raised); }
+        .manual-group-option:has(input:checked) { background: var(--accent-soft); }
+        .manual-group-option input { margin: 3px 0 0; accent-color: var(--accent); }
+        .manual-group-option span { display: grid; gap: 2px; min-width: 0; }
+        .manual-group-option strong { overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+        .manual-group-option small { color: var(--muted); font-size: 9px; line-height: 1.45; }
+        .manual-group-option-warning strong { color: var(--text-soft); }
+        .manual-group-empty { padding: 18px 10px; text-align: center; }
         .settings-view .control-section { padding: 14px 16px; border-bottom: 0; }
         .settings-appearance {
           display: flex;
@@ -4915,6 +5284,12 @@
           .work-nav button[data-active="true"], input, select, .token-select-trigger { border-color: var(--line-strong); }
           .header, .work-nav { background: var(--surface); }
         }
+        @media (forced-colors: active) {
+          .panel, .launcher, .manual-dialog, .token-menu, .manual-group-list { background: Canvas; color: CanvasText; forced-color-adjust: auto; }
+          select option, select optgroup { background-color: Canvas; color: CanvasText; }
+          .token-option, .manual-group-option, .manual-group-option small { color: CanvasText; }
+          .manual-group-option:has(input:checked) { outline: 2px solid Highlight; outline-offset: -2px; }
+        }
       </style>
 
       <button class="launcher" type="button" title="打开 ${SITE_LABEL} 分组监控" hidden>${SITE_SHORT_LABEL}</button>
@@ -4977,7 +5352,7 @@
         </div>
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
-          <div class="candidate-head"><span>分组</span><span title="上方为标称倍率；下方为平台根据近 1 小时运行数据返回的预测倍率，未就绪时显示 -">标/预</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
+          <div class="candidate-head"><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
         </section>
@@ -5036,8 +5411,21 @@
               </div>
             </div>
             <div class="field">
-              <label for="kf-model">${IS_AIHUB ? "目标模型（站点探测）" : "目标模型"}</label>
-              <select id="kf-model" data-ref="model"></select>
+              <label id="kf-model-label">${IS_AIHUB ? "目标模型（站点探测，可多选）" : "目标模型（可多选）"}</label>
+              <div class="token-select model-select" data-ref="modelSelect">
+                <button class="token-select-trigger" data-ref="modelSelectToggle" type="button" aria-labelledby="kf-model-label" aria-expanded="false">
+                  <span class="token-select-label" data-ref="modelSelectLabel">请选择目标模型</span>
+                  <span class="token-count" data-ref="modelCount">已选 0</span>
+                  <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                </button>
+                <div class="token-menu" data-ref="modelMenu" hidden>
+                  <div class="token-toolbar">
+                    <button class="text-button" data-ref="selectAllModels" type="button">全选</button>
+                    <button class="text-button" data-ref="clearModels" type="button">清空</button>
+                  </div>
+                  <div class="token-list" data-ref="modelList"></div>
+                </div>
+              </div>
             </div>
             <div class="field field-wide group-filter-field">
               <div class="group-filter-heading">
@@ -5149,8 +5537,8 @@
             <button class="icon-button" data-ref="manualClose" type="button" title="关闭" aria-label="关闭">×</button>
           </div>
           <div class="field">
-            <label for="kf-manual-group">目标分组</label>
-            <select id="kf-manual-group" data-ref="manualGroup"></select>
+            <label id="kf-manual-group-label">目标分组</label>
+            <div class="manual-group-list" data-ref="manualGroup" role="radiogroup" aria-labelledby="kf-manual-group-label"></div>
             <p class="dialog-hint" data-ref="manualHint"></p>
           </div>
           <div class="dialog-actions">
@@ -5164,7 +5552,7 @@
     const refNames = [
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
-      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "model", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
+      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "modelSelect", "modelSelectToggle", "modelSelectLabel", "modelCount", "modelMenu", "modelList", "selectAllModels", "clearModels", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
       "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
