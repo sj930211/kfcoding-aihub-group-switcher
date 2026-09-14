@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.2", "the userscript metadata should expose the complete-list and metric-parity release");
+assert.equal(metadataVersion, "0.15.3", "the userscript metadata should expose switch-hold and strict model-detection controls");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -95,6 +95,9 @@ assert.equal(source.includes('data-ref="groupFilterSelectToggle"'), true, "group
 assert.equal(source.includes('data-ref="groupFilterGroups"'), false, "whitelist and blacklist must not share a text input");
 assert.equal(source.includes('data-ref="selectionMode"'), true, "users should be able to choose a routing strategy");
 assert.equal(source.includes('data-ref="spendProtectionEnabled"'), true, "daily spend protection should be configurable");
+assert.equal(source.includes('data-ref="requireModelDetection"'), true, "AIHub model detection should have an explicit decision toggle");
+assert.equal(source.includes('data-ref="switchHoldMinutes"'), true, "post-switch stability should have a dedicated hold-duration field");
+assert.equal(source.includes('切换后保持（分钟）'), true, "the hold control should describe its behavior instead of using cooldown jargon");
 assert.equal(source.includes('data-ref="resetSpendProtection"'), true, "spend protection should support resetting its baseline");
 assert.equal(source.includes("option.disabled = !candidate.available"), false, "manual routing should expose every checked group");
 assert.equal(
@@ -217,7 +220,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.2");
+assert.equal(api.extractUserscriptVersion(source), "0.15.3");
 assert.equal(source.includes(".slice(0, 8)"), false, "the channel status table must not truncate the evaluated groups");
 assert.equal(source.includes('IS_AIHUB ? "倍率/价/预" : "标/预"'), true, "the multiplier column should expose route ratio, real price, and predicted values");
 assert.equal(source.includes("formatAihubLatency(candidate.firstTokenLatencyMs)"), true, "AIHub latency should use the provider page's millisecond display");
@@ -309,6 +312,49 @@ assert.equal(api.resolveThemeMode("system", false), "light");
 assert.equal(api.resolveThemeMode("light", true), "light");
 assert.equal(api.normalizeActiveView("settings"), "settings");
 assert.equal(api.DEFAULT_CONFIG.selectionMode, "saving");
+assert.equal(api.DEFAULT_CONFIG.requireModelDetection, false);
+assert.equal(api.DEFAULT_CONFIG.switchHoldMinutes, 10);
+assert.equal(api.sanitizeConfig({ requireModelDetection: true }).requireModelDetection, true);
+assert.equal(api.sanitizeConfig({ requireModelDetection: false }).requireModelDetection, false);
+assert.equal(api.sanitizeConfig({ cooldownMinutes: 25 }).switchHoldMinutes, 25, "legacy cooldown should migrate to switch hold");
+assert.equal(api.sanitizeConfig({ cooldownMinutes: 25, switchHoldMinutes: 40 }).switchHoldMinutes, 40, "the explicit hold setting should win after migration");
+const activeHold = api.switchHoldState(
+  { byToken: { 7: { model: "gpt-5.6-sol", group: "A001", at: 1_000 } } },
+  7,
+  "gpt-5.6-sol",
+  "A001",
+  10,
+  301_000,
+);
+assert.equal(activeHold.tracked, true);
+assert.equal(activeHold.remainingMs, 300_000);
+assert.equal(activeHold.expired, false);
+assert.equal(api.shouldKeepCurrentDuringHold({ available: true }, activeHold), true);
+assert.equal(api.shouldKeepCurrentDuringHold({ available: false }, activeHold), false, "an unhealthy current channel must bypass the hold");
+const expiredHold = api.switchHoldState(
+  { byToken: { 7: { model: "gpt-5.6-sol", group: "A001", at: 1_000 } } },
+  7,
+  "gpt-5.6-sol",
+  "A001",
+  10,
+  601_001,
+);
+assert.equal(expiredHold.tracked, true);
+assert.equal(expiredHold.remainingMs, 0);
+assert.equal(expiredHold.expired, true);
+assert.equal(api.shouldKeepCurrentDuringHold({ available: true }, expiredHold), false, "an expired hold must restore strategy switching");
+assert.equal(
+  api.switchHoldState(
+    { byToken: { 7: { model: "gpt-5.6-sol", group: "A001", at: 1_000 } } },
+    7,
+    "gpt-5.6-terra",
+    "A001",
+    10,
+    2_000,
+  ).tracked,
+  false,
+  "another target-model selection must not inherit an old hold",
+);
 assert.equal(api.sanitizeConfig({ selectionMode: "stable" }).selectionMode, "stable");
 assert.equal(api.sanitizeConfig({ selectionMode: "balanced" }).selectionMode, "balanced");
 assert.equal(api.sanitizeConfig({ selectionMode: "unknown" }).selectionMode, "saving");
@@ -364,7 +410,7 @@ assert.deepEqual(
 assert.equal(
   api.targetModelIdentity({ models: ["gpt-5.6-terra", "gpt-5.6-sol"] }),
   api.targetModelIdentity({ models: ["gpt-5.6-sol", "gpt-5.6-terra"] }),
-  "selection order should not reset cooldown or rollback protection",
+  "selection order should not reset hold or rollback protection",
 );
 
 const mergedTargetCandidates = api.mergeTargetModelCandidates([
@@ -1727,7 +1773,7 @@ const detectionBaseSummary = {
   }],
 };
 const healthySolSeries = { seriesByApiId: { "monitor-model-scoped": monitorSeries([true, true]) } };
-const evaluateDetection = (detection, model = "gpt-5.6-sol") => api.evaluateAihubCandidates(
+const evaluateDetection = (detection, model = "gpt-5.6-sol", configOverrides = {}) => api.evaluateAihubCandidates(
   {
     ...detectionBaseSummary,
     apis: [{ ...detectionBaseSummary.apis[0], modelDetection: detection }],
@@ -1735,7 +1781,7 @@ const evaluateDetection = (detection, model = "gpt-5.6-sol") => api.evaluateAihu
   healthySolSeries,
   solProbeGroups,
   { 1: 0.04 },
-  api.sanitizeConfig({ ...aihubConfig, models: [model], model }),
+  api.sanitizeConfig({ ...aihubConfig, ...configOverrides, models: [model], model }),
   aihubNow,
 )[0];
 const passedDetection = evaluateDetection(detectionBaseSummary.apis[0].modelDetection);
@@ -1743,6 +1789,42 @@ assert.equal(passedDetection.available, true);
 assert.deepEqual(JSON.parse(JSON.stringify(passedDetection.warnings)), []);
 assert.equal(passedDetection.modelDetectionStatus, "passed");
 assert.equal(passedDetection.modelDetectionModelKey, "sol");
+assert.equal(
+  evaluateDetection(
+    detectionBaseSummary.apis[0].modelDetection,
+    "gpt-5.6-sol",
+    { requireModelDetection: true },
+  ).available,
+  true,
+  "an explicit completed and passed matching detection should remain eligible in strict mode",
+);
+const strictIncompleteDetection = evaluateDetection({
+  applicable: true,
+  status: "passed",
+  model: "gpt-5.6-sol",
+  expiresAt: new Date(aihubNow + 86_400_000).toISOString(),
+}, "gpt-5.6-sol", { requireModelDetection: true });
+assert.equal(strictIncompleteDetection.available, false, "strict mode should require explicit detection completion evidence");
+assert.ok(strictIncompleteDetection.reasons.includes("model-detection-incomplete"));
+const strictMissingExpiryDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  expiresAt: "",
+}, "gpt-5.6-sol", { requireModelDetection: true });
+assert.equal(strictMissingExpiryDetection.available, false, "strict mode should require an explicit current detection window");
+assert.ok(strictMissingExpiryDetection.reasons.includes("model-detection-unknown"));
+const missingExpiryDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  expiresAt: "",
+});
+assert.equal(missingExpiryDetection.available, true);
+assert.ok(missingExpiryDetection.warnings.includes("model-detection-unknown"), "disabled strict detection should still warn about an unverifiable expiry");
+const missingCompletionDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  executionComplete: undefined,
+  allTargetsPassed: undefined,
+});
+assert.equal(missingCompletionDetection.available, true);
+assert.ok(missingCompletionDetection.warnings.includes("model-detection-incomplete"), "disabled strict detection should still warn about incomplete evidence");
 
 const suspectedDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
@@ -1767,6 +1849,14 @@ const failedDetection = evaluateDetection({
 });
 assert.equal(failedDetection.available, true);
 assert.ok(failedDetection.warnings.includes("model-detection-failed"));
+const strictFailedDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  status: "detection_failed",
+}, "gpt-5.6-sol", { requireModelDetection: true });
+assert.equal(strictFailedDetection.available, false, "a matching failed detection must block a channel in strict mode");
+assert.ok(strictFailedDetection.reasons.includes("model-detection-failed"));
+assert.deepEqual(JSON.parse(JSON.stringify(strictFailedDetection.warnings)), []);
+assert.equal(api.candidateHasHealthFailure(strictFailedDetection), true, "strict detection failure must bypass switch hold");
 
 const expiredDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
@@ -1795,10 +1885,21 @@ const otherModelDetection = evaluateDetection({
 });
 assert.equal(otherModelDetection.available, true, "Sol checks must ignore Terra-scoped detection evidence");
 assert.deepEqual(JSON.parse(JSON.stringify(otherModelDetection.warnings)), []);
+const strictOtherModelDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  model: "gpt-5.6-terra",
+  status: "detection_failed",
+}, "gpt-5.6-sol", { requireModelDetection: true });
+assert.equal(strictOtherModelDetection.available, true, "strict mode must ignore a detection record scoped to another model");
 
 const legacyWithoutDetection = evaluateDetection(null);
 assert.equal(legacyWithoutDetection.available, true, "legacy provider rows without detection must stay compatible");
 assert.deepEqual(JSON.parse(JSON.stringify(legacyWithoutDetection.warnings)), []);
+assert.equal(
+  evaluateDetection(null, "gpt-5.6-sol", { requireModelDetection: true }).available,
+  true,
+  "strict mode must keep using model_health when the provider exposes no matching detection record",
+);
 
 const staleHealthSummary = {
   ...detectionBaseSummary,
@@ -1808,7 +1909,7 @@ const staleHealthSummary = {
   }],
 };
 const gpt55ProbeGroups = [{ id: 1, name: "cheap", rate_multiplier: 0.05, probe_model: "gpt-5.5" }];
-const evaluateStaleHealth = (detection, series = healthySolSeries) => api.evaluateAihubCandidates(
+const evaluateStaleHealth = (detection, series = healthySolSeries, configOverrides = {}) => api.evaluateAihubCandidates(
   {
     ...staleHealthSummary,
     apis: [{ ...staleHealthSummary.apis[0], modelDetection: detection }],
@@ -1816,25 +1917,40 @@ const evaluateStaleHealth = (detection, series = healthySolSeries) => api.evalua
   series,
   gpt55ProbeGroups,
   { 1: 0.04 },
-  aihubConfig,
+  api.sanitizeConfig({ ...aihubConfig, ...configOverrides }),
   aihubNow,
 )[0];
 const staleHealthWithPassedDetection = evaluateStaleHealth(
   staleHealthSummary.apis[0].modelDetection,
 );
 assert.equal(staleHealthWithPassedDetection.modelHealthStatus, "stale");
-assert.equal(staleHealthWithPassedDetection.modelHealthBackedByDetection, true);
-assert.equal(staleHealthWithPassedDetection.reasons.includes("model-status-unknown"), false);
-assert.equal(staleHealthWithPassedDetection.available, true);
+assert.equal(staleHealthWithPassedDetection.modelHealthBackedByDetection, false);
+assert.equal(staleHealthWithPassedDetection.reasons.includes("model-status-unknown"), true);
+assert.equal(staleHealthWithPassedDetection.available, false, "disabled model detection must not make stale model health eligible");
+const strictStaleHealthWithPassedDetection = evaluateStaleHealth(
+  staleHealthSummary.apis[0].modelDetection,
+  healthySolSeries,
+  { requireModelDetection: true },
+);
+assert.equal(strictStaleHealthWithPassedDetection.modelHealthBackedByDetection, true);
+assert.equal(strictStaleHealthWithPassedDetection.reasons.includes("model-status-unknown"), false);
+assert.equal(strictStaleHealthWithPassedDetection.available, true, "strict passed detection may provide current evidence for stale model health");
 
 const staleHealthWithSuspectedDetection = evaluateStaleHealth({
   ...staleHealthSummary.apis[0].modelDetection,
   status: "suspected",
 });
-assert.equal(staleHealthWithSuspectedDetection.modelHealthBackedByDetection, true);
-assert.equal(staleHealthWithSuspectedDetection.reasons.includes("model-status-unknown"), false);
+assert.equal(staleHealthWithSuspectedDetection.modelHealthBackedByDetection, false);
+assert.equal(staleHealthWithSuspectedDetection.reasons.includes("model-status-unknown"), true);
 assert.ok(staleHealthWithSuspectedDetection.warnings.includes("model-detection-suspected"));
-assert.equal(staleHealthWithSuspectedDetection.available, true);
+assert.equal(staleHealthWithSuspectedDetection.available, false);
+const strictStaleHealthWithSuspectedDetection = evaluateStaleHealth({
+  ...staleHealthSummary.apis[0].modelDetection,
+  status: "suspected",
+}, healthySolSeries, { requireModelDetection: true });
+assert.equal(strictStaleHealthWithSuspectedDetection.modelHealthBackedByDetection, false);
+assert.ok(strictStaleHealthWithSuspectedDetection.reasons.includes("model-detection-suspected"));
+assert.equal(strictStaleHealthWithSuspectedDetection.available, false);
 
 const staleHealthWithOtherModelDetection = evaluateStaleHealth({
   ...staleHealthSummary.apis[0].modelDetection,
@@ -1846,6 +1962,7 @@ assert.ok(staleHealthWithOtherModelDetection.reasons.includes("model-status-unkn
 const staleHealthWithFailedLatestProbe = evaluateStaleHealth(
   staleHealthSummary.apis[0].modelDetection,
   { seriesByApiId: { "monitor-model-scoped": monitorSeries([true, false]) } },
+  { requireModelDetection: true },
 );
 assert.ok(staleHealthWithFailedLatestProbe.reasons.includes("latest-unavailable"));
 assert.equal(staleHealthWithFailedLatestProbe.available, false);
@@ -1904,7 +2021,7 @@ const currentAihubContractCandidate = api.evaluateAihubCandidates(
   normalizedCurrentAihubContract.series,
   [{ id: 75, name: "A027-BugTeam", rate_multiplier: 0.04, probe_model: "gpt-5.5" }],
   { 75: 0.04 },
-  api.sanitizeConfig({ ...aihubConfig, metricHours: 6 }),
+  api.sanitizeConfig({ ...aihubConfig, metricHours: 6, requireModelDetection: true }),
   aihubNow,
 )[0];
 assert.equal(currentAihubContractCandidate.group, "A027-BugTeam");

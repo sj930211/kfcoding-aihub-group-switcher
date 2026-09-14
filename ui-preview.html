@@ -41,8 +41,8 @@
     const previewParams = new URLSearchParams(location.search);
     if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
-    values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, model: "gpt-4.1", selectionMode: "balanced" });
-    values.set("aihub-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, model: "gpt-5.6-sol", selectionMode: "balanced" });
+    values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, models: ["gpt-4.1"], model: "gpt-4.1", selectionMode: "balanced" });
+    values.set("aihub-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, models: ["gpt-5.6-sol", "gpt-5.6-terra"], model: "gpt-5.6-sol", selectionMode: "balanced" });
     values.set("kfcoding-group-switcher:switch-guard:v1", {
       blacklist: [{ model: "gpt-4.1", group: "promo-night", until: Date.now() + 42 * 60 * 1000 }],
     });

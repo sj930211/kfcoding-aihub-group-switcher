@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.15.2
+// @version      0.15.3
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -88,7 +88,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.2";
+  const SCRIPT_VERSION = "0.15.3";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -109,6 +109,7 @@
     groupFilterMode: "whitelist",
     groupWhitelist: [],
     groupBlacklist: [],
+    requireModelDetection: false,
     spendProtectionEnabled: false,
     dailySpendLimit: 0,
     pollSeconds: 30,
@@ -120,7 +121,7 @@
     maxOutputDurationSeconds: 0,
     maxGroupRatio: 0,
     confirmPolls: 2,
-    cooldownMinutes: 10,
+    switchHoldMinutes: 10,
     rollbackChecks: 2,
     blacklistMinutes: 60,
   });
@@ -453,6 +454,12 @@
       "latest-unavailable",
       "model-unavailable",
       "model-status-unknown",
+      "model-detection-suspected",
+      "model-detection-insufficient",
+      "model-detection-failed",
+      "model-detection-expired",
+      "model-detection-incomplete",
+      "model-detection-unknown",
     ]);
     return candidate.reasons.some((reason) => healthReasons.has(reason));
   }
@@ -506,6 +513,7 @@
       groupFilterMode,
       groupWhitelist,
       groupBlacklist,
+      requireModelDetection: Boolean(source.requireModelDetection),
       spendProtectionEnabled: Boolean(source.spendProtectionEnabled),
       dailySpendLimit: clampNumber(source.dailySpendLimit, DEFAULT_CONFIG.dailySpendLimit, 0, 1000000000),
       pollSeconds: clampNumber(source.pollSeconds, DEFAULT_CONFIG.pollSeconds, 15, 3600),
@@ -539,9 +547,9 @@
       confirmPolls: Math.trunc(
         clampNumber(source.confirmPolls, DEFAULT_CONFIG.confirmPolls, 1, 10),
       ),
-      cooldownMinutes: clampNumber(
-        source.cooldownMinutes,
-        DEFAULT_CONFIG.cooldownMinutes,
+      switchHoldMinutes: clampNumber(
+        source.switchHoldMinutes ?? source.cooldownMinutes,
+        DEFAULT_CONFIG.switchHoldMinutes,
         0,
         1440,
       ),
@@ -819,14 +827,26 @@
       return "model-detection-expired";
     }
     if (detection.status === "passed") {
-      return detection.executionComplete === false || detection.allTargetsPassed === false
-        ? "model-detection-incomplete"
-        : "";
+      if (!Number.isFinite(detection.expiresAtMs)) return "model-detection-unknown";
+      return detection.executionComplete === true && detection.allTargetsPassed === true
+        ? ""
+        : "model-detection-incomplete";
     }
     if (detection.status === "suspected") return "model-detection-suspected";
     if (detection.status === "insufficient_evidence") return "model-detection-insufficient";
     if (["detection_failed", "failed"].includes(detection.status)) return "model-detection-failed";
     return "model-detection-unknown";
+  }
+
+  function aihubRequiredModelDetectionReason(monitor, model, nowMs) {
+    const detection = aihubScopedModelDetection(monitor, model);
+    if (!detection) return "";
+    const reason = aihubModelDetectionReason(monitor, model, nowMs);
+    if (reason) return reason;
+    if (!Number.isFinite(detection.expiresAtMs)) return "model-detection-unknown";
+    return detection.executionComplete === true && detection.allTargetsPassed === true
+      ? ""
+      : "model-detection-incomplete";
   }
 
   function buildAihubModelCatalog(summaryPayload) {
@@ -1353,8 +1373,14 @@
           monitor && (monitor.modelDetection ?? monitor.model_detection),
         );
         const scopedModelDetection = aihubScopedModelDetection(monitor, config.model);
-        const modelHealthBackedByDetection = modelHealthStatus === "stale" && Boolean(scopedModelDetection);
         const modelDetectionWarning = aihubModelDetectionReason(monitor, config.model, now);
+        const modelDetectionFailure = config.requireModelDetection
+          ? aihubRequiredModelDetectionReason(monitor, config.model, now)
+          : "";
+        const modelHealthBackedByDetection = modelHealthStatus === "stale"
+          && config.requireModelDetection
+          && Boolean(scopedModelDetection)
+          && !modelDetectionFailure;
         const selectedModelKey = normalizeAihubModelKey(config.model);
         const probeModelKey = normalizeAihubModelKey(
           (groupMeta && (groupMeta.probe_model ?? groupMeta.probeModel))
@@ -1461,7 +1487,8 @@
         else if (modelHealthStatus !== "healthy" && !modelHealthBackedByDetection) {
           reasons.push("model-status-unknown");
         }
-        if (modelDetectionWarning) warnings.push(modelDetectionWarning);
+        if (modelDetectionFailure) reasons.push(modelDetectionFailure);
+        else if (modelDetectionWarning) warnings.push(modelDetectionWarning);
         if (ageMinutes > config.maxMetricAgeMinutes) reasons.push("metrics-stale");
         if (!Number.isFinite(aggregateSuccess) || aggregateSuccess < config.minSuccessRate) {
           reasons.push("success-low");
@@ -2301,6 +2328,8 @@
     shouldSwitchCandidate,
     storagePrefixForSite,
     summarizeTokenGroups,
+    switchHoldState,
+    shouldKeepCurrentDuringHold,
     candidateIssueText,
     targetModelIdentity,
     targetModels,
@@ -2823,14 +2852,34 @@
     return normalizeSwitchHistory(GM_getValue(STORAGE_LAST_SWITCH, {}));
   }
 
-  function cooldownRemainingMs(tokenId, now) {
-    const last = getSwitchHistory().byToken[tokenId] || {};
-    if (last.model !== targetModelIdentity(config)) return 0;
-    const elapsed = now - Number(last.at || 0);
-    return Math.max(0, config.cooldownMinutes * 60000 - elapsed);
+  function switchHoldState(history, tokenId, model, group, holdMinutes, now) {
+    const last = normalizeSwitchHistory(history).byToken[Number(tokenId)] || null;
+    const durationMs = Math.max(0, Number(holdMinutes) || 0) * 60000;
+    const matches = Boolean(
+      last
+      && last.model === String(model || "")
+      && last.group === String(group || ""),
+    );
+    if (!matches) return { tracked: false, remainingMs: 0, expired: false };
+    const elapsedMs = Math.max(0, Number(now) - Number(last.at || 0));
+    const remainingMs = Math.max(0, durationMs - elapsedMs);
+    return {
+      tracked: true,
+      remainingMs,
+      expired: durationMs > 0 && remainingMs === 0,
+    };
   }
 
-  function recordSwitch(tokenId, candidate) {
+  function shouldKeepCurrentDuringHold(currentCandidate, holdState) {
+    return Boolean(
+      currentCandidate
+      && currentCandidate.available
+      && holdState
+      && Number(holdState.remainingMs) > 0,
+    );
+  }
+
+  function recordSwitchHoldStart(tokenId, candidate) {
     const history = getSwitchHistory();
     history.byToken[tokenId] = {
       model: targetModelIdentity(config),
@@ -2966,7 +3015,7 @@
       if (Number(verified.groupId) !== Number(candidate.groupId)) {
         throw new Error(`切换校验失败，服务端当前分组为 ${verified.group || "空"}`);
       }
-      recordSwitch(token.id, candidate);
+      recordSwitchHoldStart(token.id, candidate);
       if (switchOptions.trackRollback !== false) recordRollbackGuard(token, candidate);
       pendingCandidates.delete(Number(token.id));
       addLog(
@@ -2981,7 +3030,7 @@
     if (verified.group !== candidate.group) {
       throw new Error(`切换校验失败，服务端当前分组为 ${verified.group || "空"}`);
     }
-    recordSwitch(token.id, candidate);
+    recordSwitchHoldStart(token.id, candidate);
     if (switchOptions.trackRollback !== false) recordRollbackGuard(token, candidate);
     pendingCandidates.delete(Number(token.id));
     addLog(
@@ -3091,6 +3140,14 @@
       allowUnavailable: Boolean(targetGroup),
     });
     const current = candidates.find((candidate) => candidate.group === token.group);
+    const holdState = switchHoldState(
+      getSwitchHistory(),
+      tokenId,
+      targetModelIdentity(config),
+      token.group,
+      config.switchHoldMinutes,
+      Date.now(),
+    );
 
     if (!selected) {
       const reasonSummary = summarizeFailures(candidates);
@@ -3098,6 +3155,15 @@
     }
     if (!shouldSwitchCandidate(selected, token.group)) {
       pendingCandidates.delete(tokenId);
+      if (config.enabled && !forceSwitch && !targetGroup && holdState.expired) {
+        recordSwitchHoldStart(tokenId, selected);
+        return {
+          outcome: "holding",
+          group: token.group || "未设置",
+          tone: "success",
+          message: "当前仍是策略推荐，已开始下一保持周期",
+        };
+      }
       return {
         outcome: "current",
         group: token.group || "未设置",
@@ -3147,13 +3213,12 @@
       };
     }
 
-    const remaining = cooldownRemainingMs(tokenId, Date.now());
-    if (remaining > 0) {
+    if (shouldKeepCurrentDuringHold(current, holdState)) {
       return {
-        outcome: "cooldown",
+        outcome: "holding",
         group: token.group || "未设置",
-        tone: "warning",
-        message: `冷却中，${Math.ceil(remaining / 60000)} 分钟后可切换`,
+        tone: "success",
+        message: `保持中，仍会检测；${Math.ceil(holdState.remainingMs / 60000)} 分钟后重新择优`,
       };
     }
 
@@ -4015,6 +4080,7 @@
     }
     if (refs.monitorMode) refs.monitorMode.textContent = selectionModeLabel(config.selectionMode);
     if (refs.spendProtectionEnabled) refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
+    if (refs.requireModelDetection) refs.requireModelDetection.checked = config.requireModelDetection;
     if (refs.resetSpendProtection) refs.resetSpendProtection.disabled = running || !state.todayUsage.available;
     if (refs.check) refs.check.disabled = running;
     if (refs.switchNow) refs.switchNow.disabled = running;
@@ -4095,6 +4161,7 @@
       groupFilterMode: config.groupFilterMode,
       groupWhitelist: config.groupWhitelist,
       groupBlacklist: config.groupBlacklist,
+      requireModelDetection: IS_AIHUB && refs.requireModelDetection.checked,
       spendProtectionEnabled: refs.spendProtectionEnabled.checked,
       dailySpendLimit: refs.dailySpendLimit.value,
       pollSeconds: refs.pollSeconds.value,
@@ -4106,7 +4173,7 @@
       maxOutputDurationSeconds: refs.maxOutputDurationSeconds.value,
       maxGroupRatio: refs.maxGroupRatio.value,
       confirmPolls: refs.confirmPolls.value,
-      cooldownMinutes: refs.cooldownMinutes.value,
+      switchHoldMinutes: refs.switchHoldMinutes.value,
       rollbackChecks: refs.rollbackChecks.value,
       blacklistMinutes: refs.blacklistMinutes.value,
     });
@@ -4118,6 +4185,7 @@
     if (refs.glassTransparencyValue) refs.glassTransparencyValue.textContent = `${config.glassTransparency}%`;
     refs.enabled.checked = config.enabled;
     refs.selectionMode.value = config.selectionMode;
+    refs.requireModelDetection.checked = config.requireModelDetection;
     refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
     refs.dailySpendLimit.value = String(config.dailySpendLimit);
     renderGroupFilterOptions();
@@ -4130,7 +4198,7 @@
     refs.maxOutputDurationSeconds.value = String(config.maxOutputDurationSeconds);
     refs.maxGroupRatio.value = String(config.maxGroupRatio);
     refs.confirmPolls.value = String(config.confirmPolls);
-    refs.cooldownMinutes.value = String(config.cooldownMinutes);
+    refs.switchHoldMinutes.value = String(config.switchHoldMinutes);
     refs.rollbackChecks.value = String(config.rollbackChecks);
     refs.blacklistMinutes.value = String(config.blacklistMinutes);
   }
@@ -5031,6 +5099,7 @@
         .settings-appearance-copy small { color: var(--muted); font-size: 9px; }
         .settings-appearance .theme-select { width: 104px; border-color: var(--line); background: var(--control); }
         .settings-appearance + .settings-appearance { margin-top: 0; }
+        .model-detection-setting[hidden] { display: none; }
         .glass-transparency-control {
           display: grid;
           grid-template-columns: minmax(0, 1fr) 36px;
@@ -5463,8 +5532,18 @@
               </span>
             </div>
             <div class="isolation-list" data-ref="isolationRows"></div>
-          </section>
+        </section>
         <section class="section settings-secondary">
+          <div class="settings-appearance model-detection-setting"${IS_AIHUB ? "" : " hidden"}>
+            <span class="settings-appearance-copy">
+              <strong id="kf-model-detection-label">模型检测参与切换</strong>
+              <small id="kf-model-detection-help">开启后，匹配目标模型的检测未通过会立即切换</small>
+            </span>
+            <label class="toggle" for="kf-require-model-detection" title="将匹配目标模型的 AIHub 检测结果作为切换条件">
+              <input id="kf-require-model-detection" data-ref="requireModelDetection" type="checkbox" aria-labelledby="kf-model-detection-label" aria-describedby="kf-model-detection-help">
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
           <details class="route-settings-advanced">
             <summary>判定与保护参数</summary>
             <div class="grid advanced">
@@ -5477,7 +5556,7 @@
               <div class="field"><label>最大输出耗时（秒）</label><input data-ref="maxOutputDurationSeconds" type="number" min="0" step="0.1"></div>
               <div class="field"><label>最大倍率（0 不限制）</label><input data-ref="maxGroupRatio" type="number" min="0" step="0.01"></div>
               <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
-              <div class="field"><label>切换冷却（分钟）</label><input data-ref="cooldownMinutes" type="number" min="0"></div>
+              <div class="field"><label title="保持期间继续检测；当前渠道不可用时立即切换，到期后恢复策略择优">切换后保持（分钟）</label><input data-ref="switchHoldMinutes" type="number" min="0"></div>
               <div class="field"><label>回滚观察次数（0 关闭）</label><input data-ref="rollbackChecks" type="number" min="0" max="10"></div>
               <div class="field"><label>故障拉黑（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
             </div>
@@ -5551,11 +5630,11 @@
 
     const refNames = [
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
-      "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
+      "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
       "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "modelSelect", "modelSelectToggle", "modelSelectLabel", "modelCount", "modelMenu", "modelList", "selectAllModels", "clearModels", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
-      "confirmPolls", "cooldownMinutes", "rollbackChecks", "blacklistMinutes",
+      "confirmPolls", "switchHoldMinutes", "rollbackChecks", "blacklistMinutes",
       "check", "switchNow", "checkUpdate", "updateLabel", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel", "isolationCount", "isolationRows", "clearAllIsolations", "isolationToast", "isolationToastMessage", "isolationToastUndo",
       "tokenResultRows", "candidateRows", "logs",
     ];
