@@ -63,7 +63,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.4";
+  const SCRIPT_VERSION = "0.15.5";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({

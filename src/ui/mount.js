@@ -857,8 +857,9 @@
         .statistics-overview strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
         .statistics-overview strong[data-tone="error"] { color: var(--danger); }
         .statistics-overview strong[data-tone="partial"] { color: var(--warning); }
-        .statistics-chart { min-height: 188px; padding: 4px 12px 10px; }
+        .statistics-chart { min-height: 188px; padding: 4px 12px 10px; overflow-x: auto; scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
         .statistics-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+        .statistics-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
         .statistics-chart svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .statistics-chart-baseline { stroke: var(--line-strong); stroke-width: 1; }
         .statistics-chart-area { fill: var(--accent-soft); }

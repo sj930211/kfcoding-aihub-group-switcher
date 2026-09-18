@@ -24,6 +24,14 @@
   mountUi();
   window.addEventListener("resize", () => {
     positionElement(state.collapsed ? refs.launcher : refs.panel, state.collapsed ? "launcher" : "panel", true);
+    if (state.activeView === "statistics" && state.statistics.loaded && !state.statistics.loading) {
+      const redraw = () => renderStatisticsTrend(
+        state.statistics.accountSeries,
+        normalizeAihubStatisticsMetric(state.statistics.metric),
+      );
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(redraw);
+      else setTimeout(redraw, 0);
+    }
   });
   registerMenus();
   scheduleUpdateCheck(0);

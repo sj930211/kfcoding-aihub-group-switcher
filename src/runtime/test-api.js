@@ -90,6 +90,8 @@
     shouldSwitchCandidate,
     storagePrefixForSite,
     statisticsTrendPointLabel,
+    statisticsTrendChartLayout,
+    statisticsTrendScrollLeft,
     sumAihubUsageMetric,
     summarizeTokenGroups,
     switchHoldState,

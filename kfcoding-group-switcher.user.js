@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.15.4
+// @version      0.15.5
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -91,7 +91,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.4";
+  const SCRIPT_VERSION = "0.15.5";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -2632,6 +2632,8 @@
     shouldSwitchCandidate,
     storagePrefixForSite,
     statisticsTrendPointLabel,
+    statisticsTrendChartLayout,
+    statisticsTrendScrollLeft,
     sumAihubUsageMetric,
     summarizeTokenGroups,
     switchHoldState,
@@ -4455,8 +4457,30 @@
     return `${pointDate} · 实际消费 ${formatStatisticsValue(point.spend, "spend", true)} · 请求 ${formatStatisticsValue(point.requests, "requests", true)} · Token ${formatStatisticsValue(point.tokens, "tokens", true)}`;
   }
 
+  function statisticsTrendChartLayout(pointCount, viewportWidth, granularity) {
+    const hourly = granularity === "hour";
+    const visibleWidth = Math.max(1, Number(viewportWidth) || 432);
+    const horizontalPadding = hourly ? 26 : 12;
+    const step = Math.max(54, visibleWidth / 5.4);
+    return {
+      width: hourly ? Math.max(visibleWidth, horizontalPadding * 2 + Math.max(0, pointCount - 1) * step) : 432,
+      height: 168,
+      padding: { top: 18, right: horizontalPadding, bottom: 30, left: horizontalPadding },
+    };
+  }
+
+  function statisticsTrendScrollLeft(previousLeft, previousWidth, previousViewport, sameRange, nextWidth, nextViewport) {
+    const latest = Math.max(0, nextWidth - nextViewport);
+    if (!sameRange || previousWidth - previousViewport - previousLeft <= 8) return latest;
+    return Math.min(Math.max(0, previousLeft), latest);
+  }
+
   function renderStatisticsTrend(series, metric) {
     if (!refs.statisticsTrend) return;
+    const chart = refs.statisticsTrend;
+    const previousLeft = chart.scrollLeft;
+    const previousWidth = chart.scrollWidth;
+    const previousViewport = chart.clientWidth;
     refs.statisticsTrend.replaceChildren();
     if (!series.length) {
       appendStatisticsState(refs.statisticsTrend, "暂无趋势数据", "当前还没有已完成的小时区间，请稍后刷新。", "idle");
@@ -4474,18 +4498,22 @@
     }
     const values = series.map((point) => Math.max(0, Number(point[metric]) || 0));
     const maximum = Math.max(...values, 0);
-    const width = 432;
-    const height = 168;
-    const padding = { top: 18, right: 12, bottom: 30, left: 12 };
+    const granularity = state.statistics.granularity === "hour" ? "hour" : "day";
+    const range = `${state.statistics.days}:${series[0].date.slice(0, 10)}`;
+    const sameRange = chart.dataset.range === range && chart.dataset.granularity === granularity;
+    const { width, height, padding } = statisticsTrendChartLayout(series.length, chart.clientWidth - 24, granularity);
     const plotWidth = width - padding.left - padding.right;
     const plotHeight = height - padding.top - padding.bottom;
     const x = (index) => padding.left + (series.length === 1 ? plotWidth / 2 : plotWidth * index / (series.length - 1));
     const y = (value) => padding.top + plotHeight - (maximum > 0 ? value / maximum * plotHeight : 0);
     const points = values.map((value, index) => `${x(index)},${y(value)}`).join(" ");
-    const granularity = state.statistics.granularity === "hour" ? "hour" : "day";
     const namespace = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(namespace, "svg");
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    if (granularity === "hour") {
+      svg.style.width = `${width}px`;
+      svg.style.height = `${height}px`;
+    }
     svg.setAttribute("role", "img");
     svg.setAttribute("tabindex", "0");
     svg.setAttribute(
@@ -4522,18 +4550,33 @@
       circle.appendChild(title);
       svg.appendChild(circle);
     });
-    [0, Math.floor((series.length - 1) / 2), series.length - 1]
+    (granularity === "hour"
+      ? series.map((_, index) => index)
+      : [0, Math.floor((series.length - 1) / 2), series.length - 1])
       .filter((index, position, source) => source.indexOf(index) === position)
       .forEach((index) => {
         const label = document.createElementNS(namespace, "text");
         label.setAttribute("class", "statistics-chart-label");
         label.setAttribute("x", String(x(index)));
         label.setAttribute("y", String(height - 8));
-        label.setAttribute("text-anchor", index === 0 ? "start" : index === series.length - 1 ? "end" : "middle");
+        label.setAttribute("text-anchor", granularity === "hour" ? "middle" : index === 0 ? "start" : index === series.length - 1 ? "end" : "middle");
         label.textContent = statisticsTrendPointLabel(series[index].date, granularity);
         svg.appendChild(label);
       });
     refs.statisticsTrend.appendChild(svg);
+    chart.dataset.range = range;
+    chart.dataset.granularity = granularity;
+    if (granularity === "hour") {
+      chart.tabIndex = 0;
+      chart.setAttribute("role", "region");
+      chart.setAttribute("aria-label", "今天按小时趋势，横向滚动可查看较早时段");
+      chart.scrollLeft = statisticsTrendScrollLeft(previousLeft, previousWidth, previousViewport, sameRange, chart.scrollWidth, chart.clientWidth);
+    } else {
+      chart.removeAttribute("tabindex");
+      chart.removeAttribute("role");
+      chart.removeAttribute("aria-label");
+      chart.scrollLeft = 0;
+    }
   }
 
   function renderStatisticsKeyRows(reconciliation, metric, exactCoverage) {
@@ -6080,8 +6123,9 @@
         .statistics-overview strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
         .statistics-overview strong[data-tone="error"] { color: var(--danger); }
         .statistics-overview strong[data-tone="partial"] { color: var(--warning); }
-        .statistics-chart { min-height: 188px; padding: 4px 12px 10px; }
+        .statistics-chart { min-height: 188px; padding: 4px 12px 10px; overflow-x: auto; scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
         .statistics-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+        .statistics-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
         .statistics-chart svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .statistics-chart-baseline { stroke: var(--line-strong); stroke-width: 1; }
         .statistics-chart-area { fill: var(--accent-soft); }
@@ -6538,6 +6582,14 @@
   mountUi();
   window.addEventListener("resize", () => {
     positionElement(state.collapsed ? refs.launcher : refs.panel, state.collapsed ? "launcher" : "panel", true);
+    if (state.activeView === "statistics" && state.statistics.loaded && !state.statistics.loading) {
+      const redraw = () => renderStatisticsTrend(
+        state.statistics.accountSeries,
+        normalizeAihubStatisticsMetric(state.statistics.metric),
+      );
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(redraw);
+      else setTimeout(redraw, 0);
+    }
   });
   registerMenus();
   scheduleUpdateCheck(0);

@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.4", "the userscript metadata should expose switch-hold and strict model-detection controls");
+assert.equal(metadataVersion, "0.15.5", "the userscript metadata should expose the responsive hourly trend");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -232,7 +232,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.4");
+assert.equal(api.extractUserscriptVersion(source), "0.15.5");
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(
@@ -252,6 +252,14 @@ assert.equal(api.aihubUsageHourDomain(todayUsageNow)[0], "2026-09-17T00:00");
 assert.equal(api.aihubUsageHourDomain(todayUsageNow)[10], "2026-09-17T10:00");
 assert.equal(api.statisticsTrendPointLabel("2026-09-17T00:00", "hour"), "01:00");
 assert.equal(api.statisticsTrendPointLabel("2026-09-17T10:00", "hour"), "11:00");
+const chartWidth = api.statisticsTrendChartLayout(24, 432, "hour").width;
+assert.equal(chartWidth > 432, true, "all 24 hourly points should use a scrollable plot instead of shrinking into one viewport");
+assert.equal(chartWidth < 2000, true, "the hourly plot should initially show roughly five or six hours");
+assert.equal(api.statisticsTrendChartLayout(4, 300, "hour").width, 300, "a short series should fit the narrow viewport");
+assert.equal(api.statisticsTrendChartLayout(30, 300, "day").width, 432, "multi-day trends should retain their existing plot layout");
+assert.equal(api.statisticsTrendScrollLeft(0, 432, 432, false, chartWidth, 432), chartWidth - 432, "the initial hourly plot should open at the latest hours");
+assert.equal(api.statisticsTrendScrollLeft(80, 1600, 432, true, 1700, 432), 80, "a refresh should preserve an earlier scroll position");
+assert.equal(api.statisticsTrendScrollLeft(1168, 1600, 432, true, 1700, 432), 1268, "a refresh should follow the latest point when already at the right edge");
 assert.deepEqual(Array.from(api.aihubUsageHourDomain(new Date(2026, 8, 17, 0, 20, 0))), ["2026-09-17T00:00"]);
 assert.equal(api.normalizeAihubStatisticsDays(5), 1);
 assert.equal(api.normalizeAihubStatisticsDays(7), 7);
