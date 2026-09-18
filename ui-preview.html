@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>Group switcher UI preview</title>
   <style>
     :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
@@ -39,10 +40,21 @@
   <script>
     const updateNoticeKey = "kfcoding-aihub-group-switcher:update-notice:v1";
     const previewParams = new URLSearchParams(location.search);
+    window.__KFCODING_GROUP_SWITCHER_PREVIEW__ = true;
+    window.__KFCODING_GROUP_SWITCHER_PREVIEW_SITE_ID__ = previewParams.get("site") || "kfcoding";
+    const previewProviderLabel = { aihub: "AIHub", ooioo: "ooioo", fluxionai: "FluxionAI" }[
+      window.__KFCODING_GROUP_SWITCHER_PREVIEW_SITE_ID__
+    ] || "KFCoding";
+    document.querySelector(".provider-brand").textContent = previewProviderLabel;
     if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
     values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, models: ["gpt-4.1"], model: "gpt-4.1", selectionMode: "balanced" });
-    values.set("aihub-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, models: ["gpt-5.6-sol", "gpt-5.6-terra"], model: "gpt-5.6-sol", selectionMode: "balanced" });
+    values.set("aihub-group-switcher:config:v1", { theme: previewParams.get("theme") || "dark", glassTransparency: 0, enabled: false, models: ["gpt-5.6-sol", "gpt-5.6-terra"], model: "gpt-5.6-sol", selectionMode: "balanced" });
+    values.set("aihub-group-switcher:ui:v1", {
+      activeView: previewParams.has("statistics") ? "statistics" : "monitor",
+      statisticsMetric: previewParams.get("metric") || "spend",
+      statisticsDays: Number(previewParams.get("days")) || 1,
+    });
     values.set("kfcoding-group-switcher:switch-guard:v1", {
       blacklist: [{ model: "gpt-4.1", group: "promo-night", until: Date.now() + 42 * 60 * 1000 }],
     });
@@ -62,13 +74,136 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.14.1" : "0.14.0";
+    const previewVersion = previewParams.has("update") ? "0.15.5" : "0.15.4";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
-    window.fetch = async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ success: true, data: [], groups: [], models: [], tokens: [] }),
+    const previewKeys = Array.from({ length: 12 }, (_, index) => ({
+      id: index + 1,
+      name: index === 0 ? "生产主密钥" : index === 1 ? "批处理密钥" : `业务密钥 ${String(index + 1).padStart(2, "0")}`,
+      status: "active",
+      group_id: 1,
+      group: { id: 1, name: "A001-SOL" },
+    }));
+    const previewMode = previewParams.get("state") || "complete";
+    const dateDomain = (start, end) => {
+      const dates = [];
+      const current = new Date(`${start}T12:00:00`);
+      const last = new Date(`${end}T12:00:00`);
+      while (current <= last) {
+        const year = current.getFullYear();
+        const month = String(current.getMonth() + 1).padStart(2, "0");
+        const day = String(current.getDate()).padStart(2, "0");
+        dates.push(`${year}-${month}-${day}`);
+        current.setDate(current.getDate() + 1);
+      }
+      return dates;
+    };
+    const jsonResponse = (payload, status = 200) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => payload,
     });
+    window.fetch = async (input, options = {}) => {
+      const url = new URL(String(input), location.origin);
+      const method = String(options.method || "GET").toUpperCase();
+      document.documentElement.dataset.previewRequestCount = String(
+        Number(document.documentElement.dataset.previewRequestCount || 0) + 1,
+      );
+      if (method !== "GET") {
+        document.documentElement.dataset.previewMutationCount = String(
+          Number(document.documentElement.dataset.previewMutationCount || 0) + 1,
+        );
+        return jsonResponse({ message: "preview blocks mutations" }, 405);
+      }
+      if (previewMode === "loading" && (
+        url.pathname === "/api/v1/usage/dashboard/trend"
+        || url.pathname.includes("/usage/daily")
+      )) {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      }
+      if (url.pathname === "/api/v1/keys") {
+        const page = Number(url.searchParams.get("page")) || 1;
+        const size = Number(url.searchParams.get("page_size")) || 100;
+        const start = (page - 1) * size;
+        return jsonResponse({ items: previewKeys.slice(start, start + size), total: previewKeys.length, page, page_size: size });
+      }
+      if (url.pathname === "/api/v1/groups/available") {
+        return jsonResponse([{ id: 1, name: "A001-SOL", rate_multiplier: 0.08 }]);
+      }
+      if (url.pathname === "/api/v1/groups/rates") return jsonResponse({ "A001-SOL": 0.08 });
+      if (/^\/api\/v[12]\/public\/providers$/.test(url.pathname)) {
+        return jsonResponse({
+          version: 2,
+          generated_at: new Date().toISOString(),
+          items: [{
+            group_id: 1,
+            code: "A001-SOL",
+            rate_multiplier: 0.08,
+            last_probed_at: new Date().toISOString(),
+            probe_e2e_ttft_ms: 880,
+            output_tokens: 32,
+            output_tps: 48,
+            cache_hit_rate: 92.4,
+            model_health: { sol: "healthy", terra: "healthy", luna: "healthy", astra: "healthy" },
+            success_rates: { "1h": 0.998, "24h": 0.997 },
+            enabled: true,
+          }],
+        });
+      }
+      if (/^\/api\/v[12]\/public\/providers\/series$/.test(url.pathname)) return jsonResponse({ items: [] });
+      if (url.pathname === "/api/v1/usage/stats") {
+        return jsonResponse({ actual_cost: 2.48, requests: 286, total_tokens: 1842000 });
+      }
+      if (url.pathname === "/api/v1/auth/me") return jsonResponse({ balance: 128.42 });
+      if (url.pathname === "/api/v1/usage/dashboard/trend") {
+        if (previewMode === "error") return jsonResponse({ message: "Authorization header is required" }, 401);
+        const granularity = url.searchParams.get("granularity") || "day";
+        const dates = granularity === "hour"
+          ? Array.from({ length: Math.max(1, new Date().getHours()) }, (_, hour) => `${url.searchParams.get("start_date")}T${String(hour).padStart(2, "0")}:00:00`)
+          : dateDomain(url.searchParams.get("start_date"), url.searchParams.get("end_date"));
+        document.documentElement.dataset.previewTrendGranularity = granularity;
+        document.documentElement.dataset.previewTrendPointCount = String(dates.length);
+        return jsonResponse({ items: dates.map((date, index) => ({
+          date,
+          hour: granularity === "hour" ? index : undefined,
+          requests: previewMode === "empty" ? 0 : 180 + index * 12,
+          input_tokens: previewMode === "empty" ? 0 : 900000 + index * 40000,
+          output_tokens: previewMode === "empty" ? 0 : 420000 + index * 18000,
+          cache_creation_tokens: 0,
+          cache_read_tokens: previewMode === "empty" ? 0 : 520000 + index * 22000,
+          total_tokens: previewMode === "empty" ? 0 : 1840000 + index * 80000,
+          cost: previewMode === "empty" ? 0 : 6 + index * .15,
+          actual_cost: previewMode === "drift" && index === 2
+            ? undefined
+            : previewMode === "empty" ? 0 : 1.7 + index * .09,
+        })) });
+      }
+      const keyUsageMatch = url.pathname.match(/^\/api\/v1\/user\/api-keys\/(\d+)\/usage\/daily$/);
+      if (keyUsageMatch) {
+        const id = Number(keyUsageMatch[1]);
+        if (previewMode === "partial" && id === 4) return jsonResponse({ message: "该密钥统计暂时不可用" }, 400);
+        if (previewMode === "ratelimit" && id === 4) return jsonResponse({ message: "请求过于频繁" }, 429);
+        const days = Number(url.searchParams.get("days")) || 7;
+        const dates = Array.from({ length: days }, (_, index) => {
+          const date = new Date();
+          date.setHours(12, 0, 0, 0);
+          date.setDate(date.getDate() - (days - index - 1));
+          return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+        });
+        const multiplier = previewMode === "anomaly" ? 3 : 1;
+        return jsonResponse({ items: dates.filter((_, index) => index !== 1 || id % 3 !== 0).map((date, index) => ({
+          date,
+          requests: previewMode === "empty" ? 0 : id * 2 * multiplier + index,
+          input_tokens: previewMode === "empty" ? 0 : id * 9000 * multiplier,
+          output_tokens: previewMode === "empty" ? 0 : id * 2500 * multiplier,
+          cache_read_tokens: previewMode === "empty" ? 0 : id * 3500 * multiplier,
+          cache_write_tokens: 0,
+          total_tokens: previewMode === "empty" ? 0 : id * 15000 * multiplier,
+          cost: previewMode === "empty" ? 0 : id * .08 * multiplier,
+          actual_cost: previewMode === "empty" ? 0 : id * .02 * multiplier,
+        })) });
+      }
+      return jsonResponse({ message: `Unhandled preview request: ${url.pathname}` }, 404);
+    };
     setTimeout(() => {
       const host = document.getElementById("kfcoding-group-switcher-host")
         || document.getElementById("aihub-group-switcher-host")

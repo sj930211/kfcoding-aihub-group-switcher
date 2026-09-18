@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.3", "the userscript metadata should expose switch-hold and strict model-detection controls");
+assert.equal(metadataVersion, "0.15.4", "the userscript metadata should expose switch-hold and strict model-detection controls");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -65,7 +65,19 @@ assert.equal(source.includes('data-layout-mode'), false, "legacy wide layout sel
 assert.equal(source.includes('class="monitor-command-row"'), false, "wide monitoring wrappers should be removed");
 assert.equal(source.includes('class="route-settings-layout"'), false, "wide settings wrappers should be removed");
 assert.equal(source.includes('width: min(480px, calc(100vw - 24px));'), true, "the panel should use the compact desktop width");
-assert.equal(source.includes('grid-template-columns: repeat(3, minmax(0, 1fr));'), true, "monitoring, diagnostics, and settings should share one navigation bar");
+assert.equal(source.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'), true, "monitoring, statistics, diagnostics, and settings should share one navigation bar");
+assert.equal(source.includes('data-view="statistics" role="tabpanel"'), true, "usage statistics should live in an independent workspace");
+assert.equal(source.includes('aria-controls="kf-view-statistics"'), true, "the statistics tab should expose its controlled panel");
+assert.equal(source.includes('data-ref="statisticsMetric"'), true, "statistics should expose spend, request, and token metrics");
+assert.equal(source.includes('data-ref="statisticsDays"'), true, "statistics should expose today, 7, 14, and 30 day ranges");
+assert.equal(source.includes('<option value="1">今天</option>'), true, "statistics should expose a today range");
+assert.equal(source.includes('granularity=${hourly ? "hour" : "day"}'), true, "today statistics should request hourly account points");
+assert.equal(source.includes("STATISTICS_REFRESH_INTERVAL_MS = 5 * 60 * 1000"), true, "today statistics should refresh every five minutes");
+assert.equal(source.includes('state.activeView !== "statistics"'), true, "statistics refresh scheduling should stop outside the statistics workspace");
+assert.equal(source.includes('state.statistics.days !== 1'), true, "statistics refresh scheduling should stop outside today range");
+assert.equal(source.includes('data-ref="statisticsLoading"'), true, "statistics should expose a visible loading progress state");
+assert.equal(source.includes('statisticsTrendPointDetail'), true, "statistics trend points should expose hover and keyboard details");
+assert.equal(source.includes('data-ref="statisticsKeyRows"'), true, "statistics should render the complete per-key distribution");
 assert.equal(source.includes('.diagnostics-grid { display: grid; grid-template-columns: 1fr; }'), true, "diagnostics should stay in one column");
 assert.equal(
   source.includes('theme: refs.theme.value,'),
@@ -187,8 +199,8 @@ assert.equal(source.includes('refs.modelSelectToggle.disabled = running'), true,
 assert.equal(source.includes('<div class="summary">'), false, "the old equal-weight summary grid should be removed");
 assert.equal(
   (source.match(/<section class="work-view/g) || []).length,
-  3,
-  "the primary navigation should contain monitoring, diagnostics, and settings workspaces",
+  4,
+  "the primary navigation should contain monitoring, statistics, diagnostics, and settings workspaces",
 );
 assert.equal(source.includes('role="tabpanel" aria-labelledby="kf-tab-monitor"'), true, "tabs should identify their monitor panel");
 assert.equal(source.includes('aria-controls="kf-view-diagnostics"'), true, "workspace tabs should expose their controlled panels");
@@ -220,7 +232,218 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.3");
+assert.equal(api.extractUserscriptVersion(source), "0.15.4");
+const usageNow = new Date(2026, 8, 17, 12, 0, 0);
+const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.aihubUsageDateDomain(7, usageNow))),
+  ["2026-09-11", "2026-09-12", "2026-09-13", "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17"],
+  "AIHub statistics should use a continuous browser-local natural-day domain",
+);
+assert.equal(api.normalizeAihubStatisticsDays(1), 1);
+assert.equal(api.normalizeAihubStatisticsDays(undefined), 1, "missing saved range should default to today");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.aihubUsageDateDomain(1, usageNow))),
+  ["2026-09-17"],
+  "today key statistics should use one browser-local natural day",
+);
+assert.equal(api.aihubUsageHourDomain(todayUsageNow).length, 11);
+assert.equal(api.aihubUsageHourDomain(todayUsageNow)[0], "2026-09-17T00:00");
+assert.equal(api.aihubUsageHourDomain(todayUsageNow)[10], "2026-09-17T10:00");
+assert.equal(api.statisticsTrendPointLabel("2026-09-17T00:00", "hour"), "01:00");
+assert.equal(api.statisticsTrendPointLabel("2026-09-17T10:00", "hour"), "11:00");
+assert.deepEqual(Array.from(api.aihubUsageHourDomain(new Date(2026, 8, 17, 0, 20, 0))), ["2026-09-17T00:00"]);
+assert.equal(api.normalizeAihubStatisticsDays(5), 1);
+assert.equal(api.normalizeAihubStatisticsDays(7), 7);
+assert.equal(api.normalizeAihubStatisticsDays(14), 14);
+assert.equal(api.normalizeAihubStatisticsDays(30), 30);
+assert.equal(api.normalizeAihubStatisticsMetric("requests"), "requests");
+assert.equal(api.normalizeAihubStatisticsMetric("tokens"), "tokens");
+assert.equal(api.normalizeAihubStatisticsMetric("cost"), "spend");
+
+const usageDomain = api.aihubUsageDateDomain(7, usageNow);
+const accountUsageSeries = api.normalizeAihubUsageSeries({
+  items: [
+    { date: "2026-09-11", requests: 2, total_tokens: 200, cost: 9, actual_cost: 1.2 },
+    { date: "2026-09-13", requests: 3, total_tokens: 300, cost: 8, actual_cost: 0.8 },
+  ],
+}, usageDomain);
+assert.equal(accountUsageSeries.length, 7, "missing AIHub usage dates should be zero-filled");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(accountUsageSeries[1])),
+  { date: "2026-09-12", present: false, spend: 0, requests: 0, tokens: 0 },
+  "a genuinely absent natural day should become a zero point",
+);
+assert.equal(accountUsageSeries[0].spend, 1.2, "actual_cost must be used instead of the standard cost field");
+assert.equal(api.sumAihubUsageMetric(accountUsageSeries, "spend").value, 2);
+assert.equal(api.sumAihubUsageMetric(accountUsageSeries, "requests").value, 5);
+assert.equal(api.sumAihubUsageMetric(accountUsageSeries, "tokens").value, 500);
+assert.equal(api.sumAihubUsageMetric([], "spend").available, false, "a failed account request with no normalized date domain is unavailable, not zero usage");
+const driftedUsageSeries = api.normalizeAihubUsageSeries({
+  items: [{ date: "2026-09-11", requests: 1, total_tokens: 10, cost: 3 }],
+}, usageDomain);
+assert.equal(api.sumAihubUsageMetric(driftedUsageSeries, "spend").available, false, "a present row without actual_cost is contract drift, not zero spend");
+assert.equal(
+  api.sumAihubUsageMetric(api.normalizeAihubUsageSeries({}, usageDomain), "spend").available,
+  false,
+  "an unrecognized response envelope should be contract drift rather than an empty billing period",
+);
+
+const completeKeyUsage = [
+  {
+    id: 2,
+    name: "secondary",
+    status: "success",
+    series: api.normalizeAihubUsageSeries({ items: [{ date: "2026-09-11", requests: 1, total_tokens: 80, actual_cost: 0.5 }] }, usageDomain),
+  },
+  {
+    id: 1,
+    name: "primary",
+    status: "success",
+    series: api.normalizeAihubUsageSeries({ items: [{ date: "2026-09-11", requests: 1, total_tokens: 120, actual_cost: 1 }] }, usageDomain),
+  },
+];
+const spendReconciliation = api.reconcileAihubUsage(accountUsageSeries, completeKeyUsage, "spend");
+assert.equal(spendReconciliation.accountTotal, 2);
+assert.equal(spendReconciliation.assignedTotal, 1.5);
+assert.equal(spendReconciliation.remainder, 0.5);
+assert.equal(spendReconciliation.coverage, 0.75);
+assert.equal(spendReconciliation.complete, true);
+assert.equal(spendReconciliation.anomaly, false);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(spendReconciliation.keys.map(({ id, value }) => ({ id, value })))),
+  [{ id: 1, value: 1 }, { id: 2, value: 0.5 }],
+  "all current keys should be sorted by the active metric without truncation",
+);
+const partialReconciliation = api.reconcileAihubUsage(accountUsageSeries, [
+  completeKeyUsage[0],
+  { id: 3, name: "failed", status: "error", error: "429" },
+], "spend");
+assert.equal(partialReconciliation.complete, false);
+assert.equal(partialReconciliation.failedCount, 1);
+assert.equal(partialReconciliation.coverage, null, "partial key data must not claim exact coverage");
+assert.equal(partialReconciliation.remainder, null, "partial key data must not claim exact unallocated usage");
+const anomalyReconciliation = api.reconcileAihubUsage(
+  api.normalizeAihubUsageSeries({ items: [{ date: "2026-09-11", requests: 1, total_tokens: 10, actual_cost: 0.5 }] }, usageDomain),
+  completeKeyUsage,
+  "spend",
+);
+assert.equal(anomalyReconciliation.anomaly, true, "key totals above the account total should be reported as a reconciliation anomaly");
+assert.equal(anomalyReconciliation.coverage > 1, true, "anomalies must not be silently capped at 100 percent");
+const emptyReconciliation = api.reconcileAihubUsage(
+  api.normalizeAihubUsageSeries({ items: [] }, usageDomain),
+  [],
+  "spend",
+);
+assert.equal(emptyReconciliation.empty, true, "zero account and zero key usage should render as an empty state");
+
+const paginationCalls = [];
+const allUsageKeys = await api.loadAllAihubKeys(async (path) => {
+  paginationCalls.push(path);
+  return path.includes("page=1")
+    ? { items: [{ id: 1, name: "first" }, { id: 2, name: "second" }], total: 3, page: 1, page_size: 2 }
+    : { items: [{ id: 3, name: "third" }], total: 3, page: 2, page_size: 2 };
+}, 2);
+assert.deepEqual(JSON.parse(JSON.stringify(allUsageKeys.map(({ id, name }) => ({ id, name })))), [
+  { id: 1, name: "first" },
+  { id: 2, name: "second" },
+  { id: 3, name: "third" },
+]);
+assert.equal(paginationCalls.length, 2, "statistics should load every owned-key page");
+
+let activeUsageLoads = 0;
+let maximumUsageLoads = 0;
+const boundedResults = await api.mapWithConcurrency([1, 2, 3, 4, 5], 2, async (value) => {
+  activeUsageLoads += 1;
+  maximumUsageLoads = Math.max(maximumUsageLoads, activeUsageLoads);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  activeUsageLoads -= 1;
+  return value * 2;
+});
+assert.deepEqual(JSON.parse(JSON.stringify(boundedResults)), [2, 4, 6, 8, 10]);
+assert.equal(maximumUsageLoads <= 2, true, "per-key daily usage requests should use bounded concurrency");
+const statisticsPaths = [];
+const loadedStatistics = await api.loadAihubUsageStatistics(async (path) => {
+  statisticsPaths.push(path);
+  if (path.startsWith("/api/v1/usage/dashboard/trend?")) {
+    return { items: [{ date: "2026-09-17", requests: 5, total_tokens: 500, actual_cost: 1.25 }] };
+  }
+  if (path === "/api/v1/keys?page=1&page_size=100") {
+    return { items: [{ id: 9, name: "usage-key" }], total: 1 };
+  }
+  if (path === "/api/v1/user/api-keys/9/usage/daily?days=7&timezone=Asia%2FShanghai") {
+    return { items: [{ date: "2026-09-17", requests: 3, total_tokens: 300, actual_cost: 0.75 }] };
+  }
+  throw new Error(`unexpected path ${path}`);
+}, { days: 7, timezone: "Asia/Shanghai", now: usageNow, concurrency: 3 });
+assert.equal(loadedStatistics.accountError, "");
+assert.equal(loadedStatistics.keysError, "");
+assert.equal(loadedStatistics.accountSeries.length, 7);
+assert.equal(loadedStatistics.keyResults[0].status, "success");
+assert.equal(
+  statisticsPaths[0],
+  "/api/v1/usage/dashboard/trend?start_date=2026-09-11&end_date=2026-09-17&granularity=day&timezone=Asia%2FShanghai",
+  "account and per-key statistics should share one explicit browser timezone and natural-day window",
+);
+assert.equal(statisticsPaths.some((path) => path.includes("api-keys-usage")), false, "the rolling batch endpoint should not be requested");
+const failedKeyStatistics = await api.loadAihubUsageStatistics(async (path) => {
+  if (path.startsWith("/api/v1/usage/dashboard/trend?")) {
+    return { items: [{ date: "2026-09-17", requests: 1, total_tokens: 10, actual_cost: 0.1 }] };
+  }
+  if (path === "/api/v1/keys?page=1&page_size=100") return { items: [{ id: 10, name: "failed-key" }], total: 1 };
+  throw new Error("429 rate limited");
+}, { days: 7, timezone: "Asia/Shanghai", now: usageNow });
+assert.equal(failedKeyStatistics.accountError, "", "a key failure must not discard a valid account trend");
+assert.equal(failedKeyStatistics.keyResults[0].status, "error");
+const cachedKeyPaths = [];
+await api.loadAihubUsageStatistics(async (path) => {
+  cachedKeyPaths.push(path);
+  if (path.startsWith("/api/v1/usage/dashboard/trend?")) {
+    return { items: [{ date: "2026-09-17", requests: 1, total_tokens: 10, actual_cost: 0.1 }] };
+  }
+  if (path === "/api/v1/user/api-keys/12/usage/daily?days=7&timezone=Asia%2FShanghai") {
+    return { items: [{ date: "2026-09-17", requests: 1, total_tokens: 10, actual_cost: 0.1 }] };
+  }
+  throw new Error(`unexpected cached-key path ${path}`);
+}, { days: 7, timezone: "Asia/Shanghai", now: usageNow, keys: [{ id: 12, name: "cached-key" }] });
+assert.equal(cachedKeyPaths.some((path) => path === "/api/v1/keys?page=1&page_size=100"), false, "statistics should reuse the loaded key catalog");
+const todayStatisticsPaths = [];
+const todayStatistics = await api.loadAihubUsageStatistics(async (path) => {
+  todayStatisticsPaths.push(path);
+  if (path.startsWith("/api/v1/usage/dashboard/trend?")) {
+    if (path.includes("granularity=day")) {
+      return { items: [{ date: "2026-09-17", requests: 4, total_tokens: 40, actual_cost: 0.6 }] };
+    }
+    return { items: [
+      { date: "2026-09-17T00:00:00", requests: 1, total_tokens: 10, actual_cost: 0.1 },
+      { date: "2026-09-17T10:00:00", requests: 3, total_tokens: 30, actual_cost: 0.3 },
+    ] };
+  }
+  if (path === "/api/v1/keys?page=1&page_size=100") return { items: [{ id: 11, name: "today-key" }], total: 1 };
+  if (path === "/api/v1/user/api-keys/11/usage/daily?days=1&timezone=Asia%2FShanghai") {
+    return { items: [{ date: "2026-09-17", requests: 4, total_tokens: 40, actual_cost: 0.4 }] };
+  }
+  throw new Error(`unexpected today path ${path}`);
+}, { days: 1, timezone: "Asia/Shanghai", now: todayUsageNow, concurrency: 3 });
+assert.equal(todayStatistics.granularity, "hour");
+assert.equal(todayStatistics.accountSeries.length, 11);
+assert.equal(todayStatistics.accountSeries[10].requests, 3);
+assert.equal(todayStatistics.accountSeries[1].requests, 0);
+assert.equal(todayStatistics.accountReconciliationSeries.length, 1);
+assert.equal(todayStatistics.accountReconciliationAggregate.value, 0.6);
+assert.equal(todayStatisticsPaths.filter((path) => path.startsWith("/api/v1/usage/dashboard/trend?")).length, 2);
+assert.equal(
+  api.reconcileAihubUsage(todayStatistics.accountReconciliationSeries, todayStatistics.keyResults, "spend").anomaly,
+  false,
+  "today reconciliation must use the complete daily account aggregate instead of the partial hourly chart",
+);
+assert.equal(
+  todayStatisticsPaths[0],
+  "/api/v1/usage/dashboard/trend?start_date=2026-09-17&end_date=2026-09-17&granularity=hour&timezone=Asia%2FShanghai",
+  "today account statistics should use one date boundary with hourly granularity",
+);
+assert.equal(source.includes("/api/v1/usage/dashboard/api-keys-usage"), false, "the limited batch endpoint must not become the statistics data source");
+assert.equal(source.includes("Authorization:"), false, "statistics diagnostics must not persist or print authorization credentials");
 assert.equal(source.includes(".slice(0, 8)"), false, "the channel status table must not truncate the evaluated groups");
 assert.equal(source.includes('IS_AIHUB ? "倍率/价/预" : "标/预"'), true, "the multiplier column should expose route ratio, real price, and predicted values");
 assert.equal(source.includes("formatAihubLatency(candidate.firstTokenLatencyMs)"), true, "AIHub latency should use the provider page's millisecond display");

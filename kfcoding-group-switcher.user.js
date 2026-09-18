@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.15.3
+// @version      0.15.4
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -72,7 +72,10 @@
   }
 
   const hostname = String((globalThis.location && globalThis.location.hostname) || "").toLowerCase();
-  const SITE_ID = detectSiteId(hostname);
+  const previewSiteId = globalThis.__KFCODING_GROUP_SWITCHER_PREVIEW__ === true
+    ? String(globalThis.__KFCODING_GROUP_SWITCHER_PREVIEW_SITE_ID__ || "")
+    : "";
+  const SITE_ID = SITE_METADATA[previewSiteId] ? previewSiteId : detectSiteId(hostname);
   const SITE = SITE_METADATA[SITE_ID];
   const IS_AIHUB = SITE_ID === "aihub";
   const IS_FLUXION = SITE_ID === "fluxionai";
@@ -88,7 +91,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.3";
+  const SCRIPT_VERSION = "0.15.4";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -142,6 +145,7 @@
   const MUTATION_REQUEST_TIMEOUT_MS = 30000;
   const GET_MAX_ATTEMPTS = 3;
   const AUTO_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+  const STATISTICS_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
   const SPEND_WARNING_RATIO = 0.8;
   const NEW_API_PUBLIC_API_PATHS = new Set([
     "/api/pricing",
@@ -178,7 +182,7 @@
   }
 
   function normalizeActiveView(value) {
-    return ["monitor", "diagnostics", "settings"].includes(value) ? value : "monitor";
+    return ["monitor", "statistics", "diagnostics", "settings"].includes(value) ? value : "monitor";
   }
 
   function normalizeSelectionMode(value) {
@@ -1904,6 +1908,7 @@
   }
 
   function requestError(message, retryable, status) {
+
     const error = new Error(message);
     error.kfcodingRequestError = true;
     error.retryable = Boolean(retryable);
@@ -2148,6 +2153,295 @@
     };
   }
 
+  function normalizeAihubStatisticsDays(value) {
+    const days = Number(value);
+    if (days === 1) return 1;
+    if (days === 7) return 7;
+    if (days === 14) return 14;
+    if (days === 30) return 30;
+    return 1;
+  }
+
+  function normalizeAihubStatisticsMetric(value) {
+    return ["spend", "requests", "tokens"].includes(value) ? value : "spend";
+  }
+
+  function aihubUsageDateDomain(days, now) {
+    const length = normalizeAihubStatisticsDays(days);
+    const end = now instanceof Date ? new Date(now.getTime()) : new Date(now == null ? Date.now() : now);
+    if (!Number.isFinite(end.getTime())) return [];
+    end.setHours(12, 0, 0, 0);
+    return Array.from({ length }, (_, index) => {
+      const date = new Date(end.getTime());
+      date.setDate(end.getDate() - (length - index - 1));
+      return localDateKey(date);
+    });
+  }
+
+  function aihubUsageHourDomain(now) {
+    const end = now instanceof Date ? new Date(now.getTime()) : new Date(now == null ? Date.now() : now);
+    if (!Number.isFinite(end.getTime())) return [];
+    const currentHour = end.getHours();
+    const length = currentHour === 0 ? 1 : currentHour;
+    end.setHours(0, 0, 0, 0);
+    return Array.from({ length }, (_, index) => {
+      const hour = new Date(end.getTime());
+      hour.setHours(index, 0, 0, 0);
+      return `${localDateKey(hour)}T${String(index).padStart(2, "0")}:00`;
+    });
+  }
+
+  function aihubUsageRows(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== "object") return [];
+    if (Array.isArray(payload.items)) return payload.items;
+    if (Array.isArray(payload.trend)) return payload.trend;
+    if (Array.isArray(payload.data)) return payload.data;
+    if (payload.data && typeof payload.data === "object") {
+      if (Array.isArray(payload.data.items)) return payload.data.items;
+      if (Array.isArray(payload.data.trend)) return payload.data.trend;
+    }
+    return [];
+  }
+
+  function hasAihubUsageRows(payload) {
+    return Array.isArray(payload)
+      || Boolean(payload && typeof payload === "object" && (
+        Array.isArray(payload.items)
+        || Array.isArray(payload.trend)
+        || Array.isArray(payload.data)
+        || (payload.data && typeof payload.data === "object" && (
+          Array.isArray(payload.data.items)
+          || Array.isArray(payload.data.trend)
+        ))
+      ));
+  }
+
+  function aihubUsageNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+
+  function aihubUsagePointKey(row, granularity) {
+    if (!row || typeof row !== "object") return "";
+    const raw = String(row.date ?? row.datetime ?? row.hour ?? row.timestamp ?? "");
+    const dateMatch = raw.match(/\d{4}-\d{2}-\d{2}/);
+    if (!dateMatch) return "";
+    if (granularity !== "hour") return dateMatch[0];
+    const hourValue = row.hour ?? row.hour_of_day ?? row.hourOfDay;
+    const rawHour = hourValue !== undefined && hourValue !== null && /^\d{1,2}(?::\d{2})?$/.test(String(hourValue))
+      ? Number.parseInt(String(hourValue), 10)
+      : Number((raw.match(/[T\s](\d{1,2})(?::\d{2})?/) || [])[1]);
+    if (!Number.isInteger(rawHour) || rawHour < 0 || rawHour > 23) return "";
+    return `${dateMatch[0]}T${String(rawHour).padStart(2, "0")}:00`;
+  }
+
+  function normalizeAihubUsageSeries(payload, domain, granularity) {
+    const dates = Array.isArray(domain) ? domain.map(String) : [];
+    const pointGranularity = granularity === "hour" ? "hour" : "day";
+    if (!hasAihubUsageRows(payload)) {
+      return dates.map((date) => ({ date, present: true, spend: null, requests: null, tokens: null }));
+    }
+    const requestedDates = new Set(dates);
+    const rowsByDate = new Map();
+    aihubUsageRows(payload).forEach((row) => {
+      if (!row || typeof row !== "object") return;
+      const date = aihubUsagePointKey(row, pointGranularity);
+      if (!date || !requestedDates.has(date)) return;
+      rowsByDate.set(date, row);
+    });
+    return dates.map((date) => {
+      const row = rowsByDate.get(date);
+      if (!row) return { date, present: false, spend: 0, requests: 0, tokens: 0 };
+      return {
+        date,
+        present: true,
+        spend: aihubUsageNumber(row.actual_cost),
+        requests: aihubUsageNumber(row.requests),
+        tokens: aihubUsageNumber(row.total_tokens),
+      };
+    });
+  }
+
+  function sumAihubUsageMetric(series, metric) {
+    const key = normalizeAihubStatisticsMetric(metric);
+    const points = Array.isArray(series) ? series : [];
+    if (!points.length) return { available: false, value: 0, invalidDates: [] };
+    const invalidDates = points
+      .filter((point) => !Number.isFinite(point && point[key]))
+      .map((point) => String((point && point.date) || ""))
+      .filter(Boolean);
+    if (invalidDates.length) return { available: false, value: 0, invalidDates };
+    return {
+      available: true,
+      value: points.reduce((total, point) => total + Math.max(0, Number(point && point[key]) || 0), 0),
+      invalidDates: [],
+    };
+  }
+
+  function reconcileAihubUsage(accountSeries, keyResults, metric) {
+    const key = normalizeAihubStatisticsMetric(metric);
+    const account = sumAihubUsageMetric(accountSeries, key);
+    let failedCount = 0;
+    const keys = (Array.isArray(keyResults) ? keyResults : []).map((entry) => {
+      const source = entry && typeof entry === "object" ? entry : {};
+      const aggregate = source.status === "success"
+        ? sumAihubUsageMetric(source.series, key)
+        : { available: false, value: 0 };
+      const available = source.status === "success" && aggregate.available;
+      if (!available) failedCount += 1;
+      return {
+        id: Number(source.id) || 0,
+        name: String(source.name || `密钥 ${source.id || "-"}`),
+        status: available ? "success" : "error",
+        value: available ? aggregate.value : null,
+        error: available ? "" : String(source.error || (source.status === "success" ? "统计字段不完整" : "读取失败")),
+      };
+    }).sort((left, right) => {
+      if (left.status !== right.status) return left.status === "success" ? -1 : 1;
+      if (left.status === "success" && right.value !== left.value) return right.value - left.value;
+      return left.name.localeCompare(right.name, "zh-CN");
+    });
+    const assignedTotal = keys.reduce(
+      (total, entry) => total + (entry.status === "success" ? Math.max(0, Number(entry.value) || 0) : 0),
+      0,
+    );
+    const complete = account.available && failedCount === 0;
+    const accountTotal = account.available ? account.value : null;
+    const coverage = complete && accountTotal > 0 ? assignedTotal / accountTotal : complete && assignedTotal === 0 ? 0 : null;
+    const remainder = complete ? accountTotal - assignedTotal : null;
+    const tolerance = complete ? Math.max(1e-9, accountTotal * 1e-9) : 0;
+    const anomaly = complete && assignedTotal - accountTotal > tolerance;
+    return {
+      metric: key,
+      accountAvailable: account.available,
+      accountTotal,
+      assignedTotal,
+      remainder,
+      coverage,
+      complete,
+      failedCount,
+      anomaly,
+      empty: complete && accountTotal === 0 && assignedTotal === 0,
+      keys,
+    };
+  }
+
+  async function loadAllAihubKeys(fetcher, pageSize) {
+    const size = Math.max(1, Math.min(100, Math.trunc(Number(pageSize) || 100)));
+    const keys = [];
+    const seenIds = new Set();
+    for (let page = 1; page <= 100; page += 1) {
+      const payload = await fetcher(`/api/v1/keys?page=${page}&page_size=${size}`);
+      const items = payload && Array.isArray(payload.items) ? payload.items : [];
+      items.forEach((item) => {
+        const token = normalizeAihubToken(item);
+        if (!token.id || seenIds.has(token.id)) return;
+        seenIds.add(token.id);
+        keys.push(token);
+      });
+      const total = Number(payload && (payload.total ?? payload.total_count));
+      const hasMore = payload && typeof payload.has_more === "boolean" ? payload.has_more : null;
+      if (hasMore === false || items.length === 0 || (Number.isFinite(total) && keys.length >= total)) break;
+      if (items.length < size && hasMore !== true) break;
+    }
+    return keys;
+  }
+
+  async function mapWithConcurrency(items, limit, mapper) {
+    const source = Array.isArray(items) ? items : [];
+    const results = new Array(source.length);
+    const workerCount = Math.min(source.length, Math.max(1, Math.trunc(Number(limit) || 1)));
+    let nextIndex = 0;
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < source.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapper(source[index], index);
+      }
+    }));
+    return results;
+  }
+
+  async function loadAihubUsageStatistics(fetcher, options) {
+    const request = options && typeof options === "object" ? options : {};
+    const reportProgress = (phase, progress) => {
+      if (typeof request.onProgress !== "function") return;
+      request.onProgress({ phase, progress: Math.max(0, Math.min(1, Number(progress) || 0)) });
+    };
+    const days = normalizeAihubStatisticsDays(request.days);
+    const timezone = String(request.timezone || aihubTimezone());
+    const hourly = days === 1;
+    const domain = hourly ? aihubUsageHourDomain(request.now) : aihubUsageDateDomain(days, request.now);
+    const keyDomain = aihubUsageDateDomain(days, request.now);
+    const startDate = keyDomain[0] || "";
+    const endDate = keyDomain[keyDomain.length - 1] || "";
+    const trendPath = `/api/v1/usage/dashboard/trend?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&granularity=${hourly ? "hour" : "day"}&timezone=${encodeURIComponent(timezone)}`;
+    const reconciliationTrendPath = `/api/v1/usage/dashboard/trend?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&granularity=day&timezone=${encodeURIComponent(timezone)}`;
+    const cachedKeys = Array.isArray(request.keys) ? request.keys : null;
+    reportProgress("trend", 0.12);
+    const [accountResult, reconciliationAccountResult, keysResult] = await Promise.allSettled([
+      fetcher(trendPath),
+      hourly && reconciliationTrendPath !== trendPath ? fetcher(reconciliationTrendPath) : Promise.resolve(null),
+      cachedKeys ? Promise.resolve(cachedKeys) : loadAllAihubKeys(fetcher, 100),
+    ]);
+    reportProgress("keys", 0.28);
+    const accountSeries = accountResult.status === "fulfilled"
+      ? normalizeAihubUsageSeries(accountResult.value, domain, hourly ? "hour" : "day")
+      : [];
+    const accountReconciliationSeries = !hourly
+      ? accountSeries
+      : reconciliationAccountResult.status === "fulfilled"
+        ? normalizeAihubUsageSeries(reconciliationAccountResult.value, keyDomain, "day")
+        : [];
+    const keys = keysResult.status === "fulfilled" ? keysResult.value : [];
+    const completedKeys = { count: 0 };
+    const keyResults = await mapWithConcurrency(keys, request.concurrency || 3, async (token) => {
+      try {
+        const payload = await fetcher(`/api/v1/user/api-keys/${encodeURIComponent(token.id)}/usage/daily?days=${days}&timezone=${encodeURIComponent(timezone)}`);
+        return {
+          id: token.id,
+          name: String(token.name || `密钥 ${token.id}`),
+          status: "success",
+          series: normalizeAihubUsageSeries(payload, keyDomain, "day"),
+        };
+      } catch (error) {
+        return {
+          id: token.id,
+          name: String(token.name || `密钥 ${token.id}`),
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      } finally {
+        completedKeys.count += 1;
+        reportProgress("keys", 0.28 + (keys.length ? completedKeys.count / keys.length * 0.67 : 0.67));
+      }
+    });
+    reportProgress("complete", 1);
+    return {
+      days,
+      granularity: hourly ? "hour" : "day",
+      timezone,
+      domain,
+      keyDomain,
+      accountSeries,
+      accountReconciliationSeries,
+      accountReconciliationAggregate: sumAihubUsageMetric(accountReconciliationSeries, "spend"),
+      accountError: accountResult.status === "rejected"
+        ? (accountResult.reason instanceof Error ? accountResult.reason.message : String(accountResult.reason))
+        : "",
+      accountReconciliationError: hourly && reconciliationAccountResult.status === "rejected"
+        ? (reconciliationAccountResult.reason instanceof Error ? reconciliationAccountResult.reason.message : String(reconciliationAccountResult.reason))
+        : "",
+      keyResults,
+      keysError: keysResult.status === "rejected"
+        ? (keysResult.reason instanceof Error ? keysResult.reason.message : String(keysResult.reason))
+        : "",
+      loadedAt: Date.now(),
+    };
+  }
+
   function normalizeNewApiTodayUsage(payload, statusPayload, accountPayload) {
     const rows = payload && Array.isArray(payload.data)
       ? payload.data
@@ -2215,6 +2509,7 @@
   }
 
   function formatTokenCount(value, available) {
+
     if (!available) return "-";
     const count = Math.max(0, Number(value) || 0);
     if (count >= 100_000_000) {
@@ -2250,6 +2545,8 @@
     SITE_METADATA,
     activeGroupFilter,
     aihubMonitorRange,
+    aihubUsageDateDomain,
+    aihubUsageHourDomain,
     buildTokenUpdatePayload,
     buildFluxionModelCatalog,
     clampPosition,
@@ -2287,10 +2584,16 @@
     evaluateSpendProtection,
     effectiveRatioReasonLabel,
     localDateKey,
+    loadAllAihubKeys,
     loadAihubMonitorData,
+    loadAihubUsageStatistics,
+    mapWithConcurrency,
     normalizeLogs,
     normalizeActiveView,
+    normalizeAihubStatisticsDays,
+    normalizeAihubStatisticsMetric,
     normalizeAihubTodayUsage,
+    normalizeAihubUsageSeries,
     normalizeAihubProviderData,
     normalizeAihubToken,
     normalizeFluxionMonitors,
@@ -2315,6 +2618,7 @@
     restoreIsolations,
     requestJsonWithRetry,
     requestWithNewApiAuth,
+    reconcileAihubUsage,
     requiresNewApiAccessToken,
     normalizeNewApiAuthBundle,
     requiresTokenSelection,
@@ -2327,6 +2631,8 @@
     selectionModeLabel,
     shouldSwitchCandidate,
     storagePrefixForSite,
+    statisticsTrendPointLabel,
+    sumAihubUsageMetric,
     summarizeTokenGroups,
     switchHoldState,
     shouldKeepCurrentDuringHold,
@@ -2361,6 +2667,7 @@
   const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let scheduler = null;
   let updateScheduler = null;
+  let statisticsScheduler = null;
   let isolationUndoScheduler = null;
   let root = null;
   let refs = {};
@@ -2401,6 +2708,25 @@
       available: false,
       loading: true,
       error: "",
+    },
+    statistics: {
+      metric: normalizeAihubStatisticsMetric(storedUi.statisticsMetric),
+      days: normalizeAihubStatisticsDays(storedUi.statisticsDays),
+      dataDays: 0,
+      granularity: "day",
+      timezone: "",
+      loading: false,
+      loadingPhase: "idle",
+      loadingProgress: 0,
+      loaded: false,
+      accountSeries: [],
+      accountReconciliationSeries: [],
+      accountReconciliationAggregate: null,
+      keyResults: [],
+      accountError: "",
+      accountReconciliationError: "",
+      keysError: "",
+      loadedAt: 0,
     },
     spendProtection: {
       active: false,
@@ -2724,7 +3050,11 @@
 
   function normalizeTokenList(payload) {
     if (IS_AIHUB_API) {
-      const items = payload && Array.isArray(payload.items) ? payload.items : [];
+      const items = Array.isArray(payload)
+        ? payload
+        : payload && Array.isArray(payload.items)
+          ? payload.items
+          : [];
       return items.map(normalizeAihubToken);
     }
     return normalizeNewApiTokenList(payload);
@@ -2789,10 +3119,88 @@
     }
   }
 
+  async function refreshStatistics(options) {
+    if (!IS_AIHUB || state.statistics.loading) return false;
+    const request = options && typeof options === "object" ? options : {};
+    const requestedDays = normalizeAihubStatisticsDays(state.statistics.days);
+    const previousMatchesRange = state.statistics.loaded && state.statistics.dataDays === requestedDays;
+    state.statistics.loading = true;
+    state.statistics.loadingPhase = "trend";
+    state.statistics.loadingProgress = 0.1;
+    state.statistics.accountError = "";
+    state.statistics.keysError = "";
+    render();
+    try {
+      const result = await loadAihubUsageStatistics(fetchJson, {
+        days: requestedDays,
+        timezone: aihubTimezone(),
+        concurrency: 3,
+        keys: tokensCache.length ? tokensCache : undefined,
+        onProgress: ({ phase, progress }) => {
+          state.statistics.loadingPhase = phase;
+          state.statistics.loadingProgress = progress;
+          render();
+        },
+      });
+      const individualFailures = result.keyResults.filter((entry) => entry.status !== "success").length;
+      const accountSeries = result.accountError && previousMatchesRange
+        ? state.statistics.accountSeries
+        : result.accountSeries;
+      const accountReconciliationSeries = result.accountReconciliationError && previousMatchesRange
+        ? state.statistics.accountReconciliationSeries
+        : result.accountReconciliationSeries;
+      const keyResults = result.keysError && previousMatchesRange
+        ? state.statistics.keyResults
+        : result.keyResults;
+      state.statistics = {
+        ...state.statistics,
+        dataDays: requestedDays,
+        granularity: result.granularity,
+        timezone: result.timezone,
+        loading: false,
+        loadingPhase: "idle",
+        loadingProgress: 1,
+        loaded: accountSeries.length > 0 || keyResults.length > 0,
+        accountSeries,
+        accountReconciliationSeries,
+        accountReconciliationAggregate: result.accountReconciliationError && previousMatchesRange
+          ? state.statistics.accountReconciliationAggregate
+          : result.accountReconciliationAggregate,
+        keyResults,
+        accountError: result.accountError,
+        accountReconciliationError: result.accountReconciliationError,
+        keysError: result.keysError,
+        loadedAt: result.accountError && previousMatchesRange ? state.statistics.loadedAt : result.loadedAt,
+      };
+      if (!request.silent) {
+        if (result.accountError) {
+          addLog(`AIHub 统计趋势读取失败：${result.accountError}`, "error");
+        } else if (result.keysError) {
+          addLog(`AIHub 密钥统计列表读取失败：${result.keysError}`, "warning");
+        } else if (individualFailures > 0) {
+          addLog(`AIHub 统计已刷新，${individualFailures} 个密钥读取失败`, "warning");
+        } else {
+          addLog(`AIHub 最近 ${requestedDays} 天统计已刷新`, "success");
+        }
+      }
+      render();
+      return !result.accountError;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      state.statistics.loading = false;
+      state.statistics.loadingPhase = "idle";
+      state.statistics.loadingProgress = 0;
+      state.statistics.accountError = message;
+      if (!request.silent) addLog(`AIHub 统计读取失败：${message}`, "error");
+      render();
+      return false;
+    }
+  }
+
   async function refreshCatalogs() {
     if (IS_AIHUB_API) {
       const requests = [
-        fetchJson("/api/v1/keys?page=1&page_size=100"),
+        IS_AIHUB ? loadAllAihubKeys(fetchJson, 100) : fetchJson("/api/v1/keys?page=1&page_size=100"),
         fetchJson("/api/v1/groups/available"),
         fetchJson("/api/v1/groups/rates"),
       ];
@@ -2828,7 +3236,7 @@
 
   async function refreshTokenCatalog() {
     const payload = IS_AIHUB_API
-      ? await fetchJson("/api/v1/keys?page=1&page_size=100")
+      ? (IS_AIHUB ? await loadAllAihubKeys(fetchJson, 100) : await fetchJson("/api/v1/keys?page=1&page_size=100"))
       : await fetchJson("/api/token/?p=1&size=100");
     tokensCache = normalizeTokenList(payload);
     renderOptions(true);
@@ -3484,6 +3892,21 @@
     }, delayMs == null ? AUTO_UPDATE_CHECK_INTERVAL_MS : delayMs);
   }
 
+  function scheduleStatisticsRefresh(delayMs) {
+    if (statisticsScheduler) window.clearTimeout(statisticsScheduler);
+    statisticsScheduler = null;
+    if (!IS_AIHUB
+      || state.activeView !== "statistics"
+      || state.statistics.days !== 1
+      || document.visibilityState !== "visible") return;
+    statisticsScheduler = window.setTimeout(async () => {
+      statisticsScheduler = null;
+      if (state.activeView !== "statistics" || state.statistics.days !== 1 || document.visibilityState !== "visible") return;
+      await refreshStatistics({ silent: true });
+      scheduleStatisticsRefresh(STATISTICS_REFRESH_INTERVAL_MS);
+    }, delayMs == null ? STATISTICS_REFRESH_INTERVAL_MS : delayMs);
+  }
+
   function formatRatio(value) {
     return Number.isFinite(value) ? `${Number(value.toFixed(4))}x` : "-";
   }
@@ -3975,6 +4398,332 @@
     });
   }
 
+  function statisticsMetricLabel(metric) {
+    return {
+      spend: "实际消费",
+      requests: "请求数",
+      tokens: "Token",
+    }[normalizeAihubStatisticsMetric(metric)];
+  }
+
+  function formatStatisticsValue(value, metric, compact) {
+    if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value))) return "-";
+    const number = Math.max(0, Number(value));
+    const key = normalizeAihubStatisticsMetric(metric);
+    if (key === "spend") {
+      const maximumFractionDigits = number > 0 && number < 0.01 ? 4 : 2;
+      return `$${number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits })}`;
+    }
+    if (key === "tokens" && compact) return formatTokenCount(number, true);
+    return number.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+  }
+
+  function clearStatisticsVisuals() {
+    if (refs.statisticsTrend) refs.statisticsTrend.replaceChildren();
+    if (refs.statisticsKeyRows) refs.statisticsKeyRows.replaceChildren();
+  }
+
+  function appendStatisticsState(container, title, detail, tone) {
+    if (!container) return;
+    const box = document.createElement("div");
+    box.className = `statistics-state statistics-state-${tone || "idle"}`;
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    const copy = document.createElement("span");
+    copy.textContent = detail;
+    box.append(strong, copy);
+    container.appendChild(box);
+  }
+
+  function statisticsTrendPointLabel(date, granularity) {
+    const value = String(date || "");
+    if (granularity === "hour" || value.includes("T")) {
+      const match = value.match(/T(\d{2}):?(\d{2})?/);
+      if (!match) return value;
+      const hour = Number.parseInt(match[1], 10);
+      if (!Number.isInteger(hour)) return value;
+      return `${String((hour + 1) % 24).padStart(2, "0")}:${match[2] || "00"}`;
+    }
+    return value.slice(5) || value;
+  }
+
+  function statisticsTrendPointDetail(point, granularity) {
+    const rawDate = String((point && point.date) || "");
+    const pointDate = granularity === "hour"
+      ? `${rawDate.slice(0, 10)} ${statisticsTrendPointLabel(rawDate, "hour")}`
+      : rawDate;
+    return `${pointDate} · 实际消费 ${formatStatisticsValue(point.spend, "spend", true)} · 请求 ${formatStatisticsValue(point.requests, "requests", true)} · Token ${formatStatisticsValue(point.tokens, "tokens", true)}`;
+  }
+
+  function renderStatisticsTrend(series, metric) {
+    if (!refs.statisticsTrend) return;
+    refs.statisticsTrend.replaceChildren();
+    if (!series.length) {
+      appendStatisticsState(refs.statisticsTrend, "暂无趋势数据", "当前还没有已完成的小时区间，请稍后刷新。", "idle");
+      return;
+    }
+    const aggregate = sumAihubUsageMetric(series, metric);
+    if (!aggregate.available) {
+      appendStatisticsState(
+        refs.statisticsTrend,
+        `${statisticsMetricLabel(metric)}字段不可用`,
+        "AIHub 返回了日期行，但缺少当前指标所需字段；未将其按 0 处理。",
+        "error",
+      );
+      return;
+    }
+    const values = series.map((point) => Math.max(0, Number(point[metric]) || 0));
+    const maximum = Math.max(...values, 0);
+    const width = 432;
+    const height = 168;
+    const padding = { top: 18, right: 12, bottom: 30, left: 12 };
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const x = (index) => padding.left + (series.length === 1 ? plotWidth / 2 : plotWidth * index / (series.length - 1));
+    const y = (value) => padding.top + plotHeight - (maximum > 0 ? value / maximum * plotHeight : 0);
+    const points = values.map((value, index) => `${x(index)},${y(value)}`).join(" ");
+    const granularity = state.statistics.granularity === "hour" ? "hour" : "day";
+    const namespace = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(namespace, "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("tabindex", "0");
+    svg.setAttribute(
+      "aria-label",
+      `AIHub ${granularity === "hour" ? "今天按小时" : `最近 ${series.length} 天按日期`}${statisticsMetricLabel(metric)}趋势，总计 ${formatStatisticsValue(aggregate.value, metric, true)}`,
+    );
+    const baseline = document.createElementNS(namespace, "line");
+    baseline.setAttribute("class", "statistics-chart-baseline");
+    baseline.setAttribute("x1", String(padding.left));
+    baseline.setAttribute("x2", String(width - padding.right));
+    baseline.setAttribute("y1", String(padding.top + plotHeight));
+    baseline.setAttribute("y2", String(padding.top + plotHeight));
+    const area = document.createElementNS(namespace, "path");
+    area.setAttribute("class", "statistics-chart-area");
+    const areaPoints = values.map((value, index) => `L ${x(index)} ${y(value)}`).join(" ");
+    area.setAttribute(
+      "d",
+      `M ${x(0)} ${padding.top + plotHeight} ${areaPoints} L ${x(series.length - 1)} ${padding.top + plotHeight} Z`,
+    );
+    const line = document.createElementNS(namespace, "polyline");
+    line.setAttribute("class", "statistics-chart-line");
+    line.setAttribute("points", points);
+    svg.append(baseline, area, line);
+    series.forEach((point, index) => {
+      const circle = document.createElementNS(namespace, "circle");
+      circle.setAttribute("class", "statistics-chart-point");
+      circle.setAttribute("cx", String(x(index)));
+      circle.setAttribute("cy", String(y(values[index])));
+      circle.setAttribute("r", "3");
+      circle.setAttribute("tabindex", "0");
+      circle.setAttribute("aria-label", statisticsTrendPointDetail(point, granularity));
+      const title = document.createElementNS(namespace, "title");
+      title.textContent = statisticsTrendPointDetail(point, granularity);
+      circle.appendChild(title);
+      svg.appendChild(circle);
+    });
+    [0, Math.floor((series.length - 1) / 2), series.length - 1]
+      .filter((index, position, source) => source.indexOf(index) === position)
+      .forEach((index) => {
+        const label = document.createElementNS(namespace, "text");
+        label.setAttribute("class", "statistics-chart-label");
+        label.setAttribute("x", String(x(index)));
+        label.setAttribute("y", String(height - 8));
+        label.setAttribute("text-anchor", index === 0 ? "start" : index === series.length - 1 ? "end" : "middle");
+        label.textContent = statisticsTrendPointLabel(series[index].date, granularity);
+        svg.appendChild(label);
+      });
+    refs.statisticsTrend.appendChild(svg);
+  }
+
+  function renderStatisticsKeyRows(reconciliation, metric, exactCoverage) {
+    if (!refs.statisticsKeyRows) return;
+    refs.statisticsKeyRows.replaceChildren();
+    const rows = reconciliation.keys.slice();
+    if (exactCoverage && Number(reconciliation.remainder) > 1e-9) {
+      rows.push({
+        id: 0,
+        name: "其他/已删除密钥",
+        status: "success",
+        value: reconciliation.remainder,
+        derived: true,
+      });
+    }
+    if (!rows.length) {
+      appendStatisticsState(
+        refs.statisticsKeyRows,
+        reconciliation.empty ? "所选范围内没有用量" : "暂无当前密钥",
+        reconciliation.empty ? "账户和当前密钥合计均为 0。" : "AIHub 未返回当前账户的 API 密钥。",
+        "idle",
+      );
+      return;
+    }
+    const maximum = Math.max(...rows.map((row) => Number(row.value) || 0), 0);
+    rows.forEach((entry) => {
+      const row = document.createElement("div");
+      row.className = `statistics-key-row${entry.status === "error" ? " statistics-key-row-error" : ""}${entry.derived ? " statistics-key-row-derived" : ""}`;
+      const heading = document.createElement("div");
+      heading.className = "statistics-key-heading";
+      const name = document.createElement("strong");
+      name.textContent = entry.name;
+      name.title = entry.name;
+      const value = document.createElement("span");
+      value.className = "mono";
+      value.textContent = entry.status === "success" ? formatStatisticsValue(entry.value, metric, true) : "读取失败";
+      heading.append(name, value);
+      const track = document.createElement("div");
+      track.className = "statistics-key-track";
+      track.setAttribute("role", "meter");
+      track.setAttribute("aria-label", `${entry.name} ${statisticsMetricLabel(metric)}`);
+      track.setAttribute("aria-valuemin", "0");
+      track.setAttribute("aria-valuemax", String(maximum || 1));
+      track.setAttribute("aria-valuenow", String(entry.status === "success" ? entry.value : 0));
+      const bar = document.createElement("span");
+      const ratio = entry.status === "success" && maximum > 0 ? Math.max(0, Number(entry.value) || 0) / maximum : 0;
+      bar.style.width = `${Math.max(entry.status === "success" && entry.value > 0 ? 2 : 0, ratio * 100)}%`;
+      track.appendChild(bar);
+      row.append(heading, track);
+      if (entry.status === "error") {
+        const error = document.createElement("small");
+        error.textContent = entry.error || "接口请求失败";
+        row.appendChild(error);
+      }
+      refs.statisticsKeyRows.appendChild(row);
+    });
+  }
+
+  function renderStatistics() {
+    if (!refs.statisticsMetric || !refs.statisticsDays) return;
+    refs.statisticsMetric.value = state.statistics.metric;
+    refs.statisticsDays.value = String(state.statistics.days);
+    if (refs.statisticsRefresh) refs.statisticsRefresh.disabled = state.statistics.loading || !IS_AIHUB;
+    if (refs.statisticsSource) {
+      refs.statisticsSource.textContent = IS_AIHUB
+        ? `AIHub 账单 · USD · ${state.statistics.timezone || aihubTimezone()}`
+        : `${SITE_LABEL} 暂无已验证统计接口`;
+    }
+    if (refs.statisticsUpdated) {
+      refs.statisticsUpdated.textContent = state.statistics.loadedAt
+        ? `更新 ${new Date(state.statistics.loadedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}`
+        : "尚未读取";
+    }
+    if (!IS_AIHUB) {
+      clearStatisticsVisuals();
+      if (refs.statisticsSummary) {
+        refs.statisticsSummary.textContent = "当前站点尚未完成历史日用量与按密钥明细接口核验。";
+        refs.statisticsSummary.dataset.tone = "unavailable";
+      }
+      appendStatisticsState(refs.statisticsTrend, "统计暂不可用", "不会套用 AIHub 的字段或估算当前站点数据。", "idle");
+      appendStatisticsState(refs.statisticsKeyRows, "按密钥统计暂不可用", "供应商真实明细能力待单独核实。", "idle");
+      if (refs.statisticsTotal) refs.statisticsTotal.textContent = "-";
+      if (refs.statisticsCoverage) refs.statisticsCoverage.textContent = "-";
+      if (refs.statisticsAssigned) refs.statisticsAssigned.textContent = "-";
+      return;
+    }
+    if (state.statistics.loading) {
+      if (!state.statistics.loaded) clearStatisticsVisuals();
+      if (refs.statisticsSummary) {
+        const phaseLabel = state.statistics.loadingPhase === "trend" ? "账户趋势" : "当前密钥日明细";
+        const percentage = Math.round(Math.max(0, Math.min(1, state.statistics.loadingProgress || 0)) * 100);
+        refs.statisticsSummary.textContent = state.statistics.loaded
+          ? `正在刷新${phaseLabel}… ${percentage}%（保留上次数据）`
+          : `正在读取${phaseLabel}… ${percentage}%`;
+        refs.statisticsSummary.dataset.tone = "loading";
+      }
+      if (refs.statisticsLoading) {
+        refs.statisticsLoading.hidden = false;
+        refs.statisticsLoading.style.setProperty("--statistics-loading-progress", `${Math.round((state.statistics.loadingProgress || 0) * 100)}%`);
+      }
+      if (!state.statistics.loaded) {
+        appendStatisticsState(refs.statisticsTrend, "正在加载趋势", "保持当前布局，数据返回后自动绘制。", "loading");
+        appendStatisticsState(refs.statisticsKeyRows, "正在加载密钥分布", "按 3 个请求并发读取，避免冲击供应商限流。", "loading");
+      }
+      if (state.statistics.loaded) return;
+      return;
+    }
+    if (refs.statisticsLoading) refs.statisticsLoading.hidden = true;
+    if (!state.statistics.loaded) {
+      clearStatisticsVisuals();
+      const detail = state.statistics.accountError || "点击刷新读取 AIHub 真实账单统计。";
+      if (refs.statisticsSummary) {
+        refs.statisticsSummary.textContent = detail;
+        refs.statisticsSummary.dataset.tone = state.statistics.accountError ? "error" : "idle";
+      }
+      appendStatisticsState(refs.statisticsTrend, state.statistics.accountError ? "趋势读取失败" : "等待读取", detail, state.statistics.accountError ? "error" : "idle");
+      appendStatisticsState(refs.statisticsKeyRows, "等待密钥明细", "读取时不会发起模型请求或修改密钥分组。", "idle");
+      return;
+    }
+    const metric = normalizeAihubStatisticsMetric(state.statistics.metric);
+    const reconciliationSeries = state.statistics.granularity === "hour"
+      ? state.statistics.accountReconciliationSeries
+      : state.statistics.accountSeries;
+    const reconciliationComparable = state.statistics.granularity !== "hour"
+      || (Array.isArray(reconciliationSeries) && reconciliationSeries.length > 0 && !state.statistics.accountReconciliationError);
+    const reconciliation = reconcileAihubUsage(
+      reconciliationSeries,
+      state.statistics.keyResults,
+      metric,
+    );
+    const exactCoverage = reconciliationComparable && reconciliation.complete && !state.statistics.accountError && !state.statistics.accountReconciliationError && !state.statistics.keysError;
+    const partialCount = reconciliation.failedCount;
+    let summary = "数据完整";
+    let tone = "success";
+    if (state.statistics.accountError) {
+      summary = state.statistics.accountSeries.length
+        ? `趋势刷新失败，保留上次成功数据：${state.statistics.accountError}`
+        : `趋势读取失败：${state.statistics.accountError}`;
+      tone = "error";
+    } else if (state.statistics.keysError) {
+      summary = `密钥列表读取失败，无法给出精确覆盖率：${state.statistics.keysError}`;
+      tone = "partial";
+    } else if (!reconciliationComparable) {
+      summary = state.statistics.accountReconciliationError
+        ? `今日账户日汇总暂不可用，暂不与密钥明细对账：${state.statistics.accountReconciliationError}`
+        : "今日账户趋势仍在聚合，暂不与密钥明细对账";
+      tone = "partial";
+    } else if (partialCount > 0) {
+      summary = `部分数据：${partialCount} 个密钥读取失败，不计算精确覆盖率或未分配量`;
+      tone = "partial";
+    } else if (!reconciliation.accountAvailable) {
+      summary = `${statisticsMetricLabel(metric)}字段契约异常，未把缺失值按 0 计算`;
+      tone = "error";
+    } else if (reconciliation.anomaly) {
+      summary = "对账异常：当前密钥合计高于账户趋势总量，请检查聚合延迟或接口口径";
+      tone = "error";
+    } else if (reconciliation.empty) {
+      summary = "所选范围内没有用量";
+      tone = "idle";
+    } else if (Number(reconciliation.remainder) > 1e-9) {
+      summary = "存在其他/已删除密钥用量，已按账户总量与当前密钥合计的差额展示";
+      tone = "warning";
+    }
+    if (refs.statisticsSummary) {
+      refs.statisticsSummary.textContent = summary;
+      refs.statisticsSummary.dataset.tone = tone;
+    }
+    if (refs.statisticsTotal) refs.statisticsTotal.textContent = formatStatisticsValue(reconciliation.accountTotal, metric, true);
+    if (refs.statisticsAssigned) refs.statisticsAssigned.textContent = formatStatisticsValue(reconciliation.assignedTotal, metric, true);
+    if (refs.statisticsCoverage) {
+      refs.statisticsCoverage.textContent = !reconciliationComparable
+        ? "待对账"
+        : exactCoverage && reconciliation.coverage !== null
+        ? `${(reconciliation.coverage * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}%`
+        : "部分数据";
+      refs.statisticsCoverage.dataset.tone = reconciliation.anomaly ? "error" : exactCoverage ? "complete" : "partial";
+    }
+    if (refs.statisticsTrendSummary) {
+      const total = sumAihubUsageMetric(state.statistics.accountSeries, metric);
+      const summaryLabel = state.statistics.granularity === "hour"
+        ? "今天合计"
+        : `${state.statistics.dataDays} 天合计`;
+      refs.statisticsTrendSummary.textContent = total.available
+        ? `${summaryLabel} ${formatStatisticsValue(total.value, metric, true)}`
+        : "当前指标不可用";
+    }
+    renderStatisticsTrend(state.statistics.accountSeries, metric);
+    renderStatisticsKeyRows(reconciliation, metric, exactCoverage && !reconciliation.anomaly);
+  }
+
   function render() {
     if (!root) return;
     if (refs.panel) refs.panel.hidden = state.collapsed;
@@ -4128,6 +4877,7 @@
       }
     }
     renderCandidates();
+    renderStatistics();
     renderTokenResults();
     renderLogs();
   }
@@ -4245,12 +4995,16 @@
 
   function setActiveView(view, options) {
     state.activeView = normalizeActiveView(view);
+    scheduleStatisticsRefresh();
     persistUiState();
     setTokenMenuOpen(false);
     setModelMenuOpen(false);
     setGroupFilterMenuOpen(false);
     if (refs.workspace) refs.workspace.scrollTop = 0;
     render();
+    if (state.activeView === "statistics" && IS_AIHUB && !state.statistics.loaded && !state.statistics.loading) {
+      void refreshStatistics({ silent: true });
+    }
     if (options && options.focus) {
       const activeTab = root.querySelector(`[data-view-target="${state.activeView}"]`);
       if (activeTab) activeTab.focus();
@@ -4260,6 +5014,8 @@
   function persistUiState() {
     GM_setValue(STORAGE_UI, {
       activeView: state.activeView,
+      statisticsMetric: state.statistics.metric,
+      statisticsDays: state.statistics.days,
     });
   }
 
@@ -4296,6 +5052,18 @@
       });
     });
     refs.check.addEventListener("click", () => runCheck({ manual: true }));
+    refs.statisticsMetric.addEventListener("change", () => {
+      state.statistics.metric = normalizeAihubStatisticsMetric(refs.statisticsMetric.value);
+      persistUiState();
+      render();
+    });
+    refs.statisticsDays.addEventListener("change", () => {
+      state.statistics.days = normalizeAihubStatisticsDays(refs.statisticsDays.value);
+      scheduleStatisticsRefresh();
+      persistUiState();
+      void refreshStatistics();
+    });
+    refs.statisticsRefresh.addEventListener("click", () => refreshStatistics());
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
     refs.resetSpendProtection.addEventListener("click", resetSpendProtection);
@@ -5234,7 +6002,7 @@
         }
         .work-nav {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-template-columns: repeat(4, minmax(0, 1fr));
           min-height: 52px;
           gap: 3px;
           padding: 10px 14px;
@@ -5291,6 +6059,53 @@
         .diagnostic-caption { margin: -3px 0 10px; color: var(--muted); font-size: 9px; }
         .diagnostic-list { min-height: 160px; max-height: 240px; overflow: auto; }
         .diagnostic-list .logs { padding-right: 2px; }
+        .statistics-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+        .statistics-control { display: grid; gap: 5px; min-width: 0; }
+        .statistics-control > span { color: var(--muted); font-size: 8px; font-weight: 650; }
+        .statistics-control select { min-width: 0; height: 32px; padding: 0 28px 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--control); color: var(--text); font-size: 10px; }
+        .statistics-refresh { min-width: 34px; min-height: 32px; align-self: end; }
+        .statistics-source { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--line-soft); color: var(--muted); font-size: 8px; }
+        .statistics-source strong { overflow: hidden; color: var(--text-soft); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+        .statistics-summary { padding: 9px 14px; border-bottom: 1px solid var(--line-soft); color: var(--text-soft); font-size: 9px; line-height: 1.5; }
+        .statistics-summary[data-tone="success"] { color: var(--healthy); background: var(--healthy-soft); }
+        .statistics-summary[data-tone="warning"], .statistics-summary[data-tone="partial"] { color: var(--warning); background: var(--warning-soft); }
+        .statistics-summary[data-tone="error"] { color: var(--danger); background: var(--danger-soft); }
+        .statistics-summary[data-tone="unavailable"] { color: var(--muted); }
+        .statistics-loading { height: 3px; overflow: hidden; background: var(--surface-raised); }
+        .statistics-loading::before { display: block; width: var(--statistics-loading-progress, 0%); height: 100%; background: var(--accent); content: ""; }
+        .statistics-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+        .statistics-overview > div { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; }
+        .statistics-overview > div + div { border-left: 1px solid var(--line-soft); }
+        .statistics-overview small { color: var(--muted); font-size: 8px; }
+        .statistics-overview strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+        .statistics-overview strong[data-tone="error"] { color: var(--danger); }
+        .statistics-overview strong[data-tone="partial"] { color: var(--warning); }
+        .statistics-chart { min-height: 188px; padding: 4px 12px 10px; }
+        .statistics-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+        .statistics-chart svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .statistics-chart-baseline { stroke: var(--line-strong); stroke-width: 1; }
+        .statistics-chart-area { fill: var(--accent-soft); }
+        .statistics-chart-line { fill: none; stroke: var(--accent); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+        .statistics-chart-point { fill: var(--accent); stroke: var(--panel-glass); stroke-width: 1.5; }
+        .statistics-chart-label { fill: var(--muted); font: 8px SFMono-Regular, Consolas, monospace; }
+        .statistics-state { display: grid; align-content: center; justify-items: start; gap: 5px; min-height: 118px; padding: 18px; color: var(--muted); }
+        .statistics-state strong { color: var(--text-soft); font-size: 10px; }
+        .statistics-state span { font-size: 9px; line-height: 1.55; }
+        .statistics-state-error strong { color: var(--danger); }
+        .statistics-state-loading { animation: statistics-pulse 1.4s ease-in-out infinite alternate; }
+        .statistics-key-list { min-height: 150px; max-height: 330px; overflow: auto; padding: 2px 14px 12px; scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
+        .statistics-key-row { display: grid; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+        .statistics-key-row:last-child { border-bottom: 0; }
+        .statistics-key-heading { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+        .statistics-key-heading strong { overflow: hidden; color: var(--text); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+        .statistics-key-heading span { margin-left: auto; color: var(--text-soft); font-size: 9px; }
+        .statistics-key-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--surface-raised); box-shadow: inset 0 0 0 1px var(--line-soft); }
+        .statistics-key-track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+        .statistics-key-row-derived .statistics-key-track > span { background: var(--muted); }
+        .statistics-key-row-derived .statistics-key-heading strong { color: var(--text-soft); }
+        .statistics-key-row-error .statistics-key-track > span { background: var(--danger); }
+        .statistics-key-row-error small { color: var(--danger); font-size: 8px; line-height: 1.4; }
+        @keyframes statistics-pulse { from { opacity: .55; } to { opacity: 1; } }
         .settings-section { background: transparent; }
         .route-settings-advanced { min-width: 0; }
         @media (max-width: 520px) {
@@ -5302,6 +6117,9 @@
         @media (max-width: 390px) {
           .work-nav button { font-size: 9px; }
           .nav-count { display: none; }
+          .statistics-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+          .statistics-overview { grid-template-columns: 1fr; }
+          .statistics-overview > div + div { border-top: 1px solid var(--line-soft); border-left: 0; }
           .route-summary { grid-template-columns: 1fr; }
           .route-summary > div + div { border-top: 1px solid var(--line); border-left: 0; }
         }
@@ -5376,6 +6194,7 @@
         </header>
         <nav class="work-nav" aria-label="插件工作区" role="tablist">
           <button id="kf-tab-monitor" data-view-target="monitor" data-active="true" role="tab" aria-controls="kf-view-monitor" aria-selected="true" type="button">监控 <span class="nav-count" data-ref="candidateCount">0</span></button>
+          <button id="kf-tab-statistics" data-view-target="statistics" data-active="false" role="tab" aria-controls="kf-view-statistics" aria-selected="false" type="button">统计</button>
           <button id="kf-tab-diagnostics" data-view-target="diagnostics" data-active="false" role="tab" aria-controls="kf-view-diagnostics" aria-selected="false" type="button">诊断 <span class="nav-count" data-ref="logCount">0</span></button>
           <button id="kf-tab-settings" data-view-target="settings" data-active="false" role="tab" aria-controls="kf-view-settings" aria-selected="false" type="button">设置</button>
         </nav>
@@ -5424,6 +6243,50 @@
           <div class="candidate-head"><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
         </section>
+        </section>
+        <section class="work-view" id="kf-view-statistics" data-view="statistics" role="tabpanel" aria-labelledby="kf-tab-statistics" tabindex="0" hidden>
+          <div class="view-intro">
+            <h2>用量统计</h2>
+            <p>当前站点的真实账单趋势</p>
+          </div>
+          <div class="statistics-toolbar">
+            <label class="statistics-control">
+              <span>指标</span>
+              <select data-ref="statisticsMetric" aria-label="统计指标">
+                <option value="spend">实际消费</option>
+                <option value="requests">请求数</option>
+                <option value="tokens">Token</option>
+              </select>
+            </label>
+            <label class="statistics-control">
+              <span>范围</span>
+              <select data-ref="statisticsDays" aria-label="统计日期范围">
+                <option value="1">今天</option>
+                <option value="7">最近 7 天</option>
+                <option value="14">最近 14 天</option>
+                <option value="30">最近 30 天</option>
+              </select>
+            </label>
+            <button class="icon-button statistics-refresh" data-ref="statisticsRefresh" type="button" title="刷新统计" aria-label="刷新统计">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>
+            </button>
+          </div>
+          <div class="statistics-source"><strong data-ref="statisticsSource">AIHub 账单 · USD</strong><span data-ref="statisticsUpdated">尚未读取</span></div>
+          <div class="statistics-loading" data-ref="statisticsLoading" hidden aria-hidden="true"></div>
+          <div class="statistics-summary" data-ref="statisticsSummary" data-tone="idle" role="status" aria-live="polite">点击刷新读取统计</div>
+          <section class="statistics-overview" aria-label="统计对账概览">
+            <div><small>账户总量</small><strong class="mono" data-ref="statisticsTotal">-</strong></div>
+            <div><small>当前密钥合计</small><strong class="mono" data-ref="statisticsAssigned">-</strong></div>
+            <div><small>密钥覆盖率</small><strong class="mono" data-ref="statisticsCoverage">-</strong></div>
+          </section>
+          <section class="section">
+            <div class="section-head"><h3 class="section-title">每日趋势</h3><span class="section-meta" data-ref="statisticsTrendSummary">等待数据</span></div>
+            <div class="statistics-chart" data-ref="statisticsTrend"></div>
+          </section>
+          <section class="section">
+            <div class="section-head"><h3 class="section-title">每个密钥使用度</h3><span class="section-meta">全部当前密钥</span></div>
+            <div class="statistics-key-list" data-ref="statisticsKeyRows"></div>
+          </section>
         </section>
         <section class="work-view settings-view" id="kf-view-settings" data-ref="settingsSection" data-view="settings" role="tabpanel" aria-labelledby="kf-tab-settings" tabindex="0" hidden>
           <div class="view-intro">
@@ -5631,6 +6494,7 @@
     const refNames = [
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
+      "statisticsMetric", "statisticsDays", "statisticsRefresh", "statisticsSource", "statisticsUpdated", "statisticsSummary", "statisticsLoading", "statisticsTotal", "statisticsAssigned", "statisticsCoverage", "statisticsTrendSummary", "statisticsTrend", "statisticsKeyRows",
       "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "modelSelect", "modelSelectToggle", "modelSelectLabel", "modelCount", "modelMenu", "modelList", "selectAllModels", "clearModels", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
@@ -5665,6 +6529,7 @@
   }
 
   document.addEventListener("visibilitychange", () => {
+    scheduleStatisticsRefresh(document.visibilityState === "visible" ? 250 : undefined);
     if (config.enabled && document.visibilityState === "visible") {
       scheduleNext(250);
     }
@@ -5687,5 +6552,11 @@
     })
     .catch((error) => {
       setStatus(error instanceof Error ? error.message : String(error), "error");
+    })
+    .finally(() => {
+      if (state.activeView === "statistics" && IS_AIHUB && !state.statistics.loaded) {
+        void refreshStatistics({ silent: true });
+      }
+      scheduleStatisticsRefresh();
     });
 })();
