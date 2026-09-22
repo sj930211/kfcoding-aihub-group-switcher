@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.5", "the userscript metadata should expose the responsive hourly trend");
+assert.equal(metadataVersion, "0.15.6", "the userscript metadata should expose yesterday statistics and the current detection contract");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -70,11 +70,12 @@ assert.equal(source.includes('data-view="statistics" role="tabpanel"'), true, "u
 assert.equal(source.includes('aria-controls="kf-view-statistics"'), true, "the statistics tab should expose its controlled panel");
 assert.equal(source.includes('data-ref="statisticsMetric"'), true, "statistics should expose spend, request, and token metrics");
 assert.equal(source.includes('data-ref="statisticsDays"'), true, "statistics should expose today, 7, 14, and 30 day ranges");
-assert.equal(source.includes('<option value="1">今天</option>'), true, "statistics should expose a today range");
+assert.equal(source.includes('<option value="today">今天</option>'), true, "statistics should expose a today range");
+assert.equal(source.includes('<option value="yesterday">昨天</option>'), true, "statistics should expose a yesterday range");
 assert.equal(source.includes('granularity=${hourly ? "hour" : "day"}'), true, "today statistics should request hourly account points");
 assert.equal(source.includes("STATISTICS_REFRESH_INTERVAL_MS = 5 * 60 * 1000"), true, "today statistics should refresh every five minutes");
 assert.equal(source.includes('state.activeView !== "statistics"'), true, "statistics refresh scheduling should stop outside the statistics workspace");
-assert.equal(source.includes('state.statistics.days !== 1'), true, "statistics refresh scheduling should stop outside today range");
+assert.equal(source.includes('state.statistics.range !== "today"'), true, "statistics refresh scheduling should stop outside today range");
 assert.equal(source.includes('data-ref="statisticsLoading"'), true, "statistics should expose a visible loading progress state");
 assert.equal(source.includes('statisticsTrendPointDetail'), true, "statistics trend points should expose hover and keyboard details");
 assert.equal(source.includes('data-ref="statisticsKeyRows"'), true, "statistics should render the complete per-key distribution");
@@ -232,7 +233,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.5");
+assert.equal(api.extractUserscriptVersion(source), "0.15.6");
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(
@@ -242,6 +243,10 @@ assert.deepEqual(
 );
 assert.equal(api.normalizeAihubStatisticsDays(1), 1);
 assert.equal(api.normalizeAihubStatisticsDays(undefined), 1, "missing saved range should default to today");
+assert.equal(api.normalizeAihubStatisticsRange("today"), "today");
+assert.equal(api.normalizeAihubStatisticsRange(1), "today", "legacy numeric today range should migrate to today");
+assert.equal(api.normalizeAihubStatisticsRange("yesterday"), "yesterday");
+assert.equal(api.normalizeAihubStatisticsRange(7), "7");
 assert.deepEqual(
   JSON.parse(JSON.stringify(api.aihubUsageDateDomain(1, usageNow))),
   ["2026-09-17"],
@@ -252,6 +257,7 @@ assert.equal(api.aihubUsageHourDomain(todayUsageNow)[0], "2026-09-17T00:00");
 assert.equal(api.aihubUsageHourDomain(todayUsageNow)[10], "2026-09-17T10:00");
 assert.equal(api.statisticsTrendPointLabel("2026-09-17T00:00", "hour"), "01:00");
 assert.equal(api.statisticsTrendPointLabel("2026-09-17T10:00", "hour"), "11:00");
+assert.equal(api.statisticsTrendPointLabel("2026-09-17T23:00", "hour"), "24:00", "the final hourly bucket must not wrap to an ambiguous 00:00 label");
 const chartWidth = api.statisticsTrendChartLayout(24, 432, "hour").width;
 assert.equal(chartWidth > 432, true, "all 24 hourly points should use a scrollable plot instead of shrinking into one viewport");
 assert.equal(chartWidth < 2000, true, "the hourly plot should initially show roughly five or six hours");
@@ -261,6 +267,21 @@ assert.equal(api.statisticsTrendScrollLeft(0, 432, 432, false, chartWidth, 432),
 assert.equal(api.statisticsTrendScrollLeft(80, 1600, 432, true, 1700, 432), 80, "a refresh should preserve an earlier scroll position");
 assert.equal(api.statisticsTrendScrollLeft(1168, 1600, 432, true, 1700, 432), 1268, "a refresh should follow the latest point when already at the right edge");
 assert.deepEqual(Array.from(api.aihubUsageHourDomain(new Date(2026, 8, 17, 0, 20, 0))), ["2026-09-17T00:00"]);
+assert.equal(api.aihubUsageHourDomain(new Date(2026, 8, 22, 11, 20, 0), "yesterday").length, 24);
+assert.equal(api.aihubUsageHourDomain(new Date(2026, 8, 22, 11, 20, 0), "yesterday")[0], "2026-09-21T00:00");
+assert.equal(api.aihubUsageHourDomain(new Date(2026, 8, 22, 11, 20, 0), "yesterday")[23], "2026-09-21T23:00");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.aihubUsageRange("yesterday", new Date(2026, 8, 22, 11, 20, 0)))),
+  {
+    range: "yesterday",
+    days: 1,
+    keyApiDays: 2,
+    hourly: true,
+    domain: Array.from({ length: 24 }, (_, hour) => `2026-09-21T${String(hour).padStart(2, "0")}:00`),
+    keyDomain: ["2026-09-21"],
+  },
+  "yesterday should use the previous local natural day and complete hourly domain",
+);
 assert.equal(api.normalizeAihubStatisticsDays(5), 1);
 assert.equal(api.normalizeAihubStatisticsDays(7), 7);
 assert.equal(api.normalizeAihubStatisticsDays(14), 14);
@@ -449,6 +470,48 @@ assert.equal(
   todayStatisticsPaths[0],
   "/api/v1/usage/dashboard/trend?start_date=2026-09-17&end_date=2026-09-17&granularity=hour&timezone=Asia%2FShanghai",
   "today account statistics should use one date boundary with hourly granularity",
+);
+const yesterdayStatisticsPaths = [];
+const yesterdayStatistics = await api.loadAihubUsageStatistics(async (path) => {
+  yesterdayStatisticsPaths.push(path);
+  if (path.startsWith("/api/v1/usage/dashboard/trend?")) {
+    if (path.includes("granularity=day")) {
+      return { items: [{ date: "2026-09-16", requests: 24, total_tokens: 240, actual_cost: 2.4 }] };
+    }
+    return { items: Array.from({ length: 24 }, (_, hour) => ({
+      date: `2026-09-16T${String(hour).padStart(2, "0")}:00:00`,
+      requests: 1,
+      total_tokens: 10,
+      actual_cost: 0.1,
+    })) };
+  }
+  if (path === "/api/v1/keys?page=1&page_size=100") return { items: [{ id: 13, name: "yesterday-key" }], total: 1 };
+  if (path === "/api/v1/user/api-keys/13/usage/daily?days=2&timezone=Asia%2FShanghai") {
+    return { items: [
+      { date: "2026-09-16", requests: 20, total_tokens: 200, actual_cost: 2 },
+      { date: "2026-09-17", requests: 99, total_tokens: 990, actual_cost: 9.9 },
+    ] };
+  }
+  throw new Error(`unexpected yesterday path ${path}`);
+}, { range: "yesterday", timezone: "Asia/Shanghai", now: todayUsageNow, concurrency: 3 });
+assert.equal(yesterdayStatistics.range, "yesterday");
+assert.equal(yesterdayStatistics.granularity, "hour");
+assert.equal(yesterdayStatistics.accountSeries.length, 24, "yesterday should expose every completed hour");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(yesterdayStatistics.keyResults[0].series)),
+  [{ date: "2026-09-16", present: true, spend: 2, requests: 20, tokens: 200 }],
+  "yesterday key usage should exclude today's row returned by the rolling daily endpoint",
+);
+assert.equal(yesterdayStatistics.accountReconciliationSeries[0].date, "2026-09-16");
+assert.equal(
+  yesterdayStatisticsPaths[0],
+  "/api/v1/usage/dashboard/trend?start_date=2026-09-16&end_date=2026-09-16&granularity=hour&timezone=Asia%2FShanghai",
+  "yesterday account statistics should use the previous local natural day",
+);
+assert.equal(
+  api.reconcileAihubUsage(yesterdayStatistics.accountReconciliationSeries, yesterdayStatistics.keyResults, "spend").anomaly,
+  false,
+  "yesterday reconciliation should compare the same historical day for account and key usage",
 );
 assert.equal(source.includes("/api/v1/usage/dashboard/api-keys-usage"), false, "the limited batch endpoint must not become the statistics data source");
 assert.equal(source.includes("Authorization:"), false, "statistics diagnostics must not persist or print authorization credentials");
@@ -2029,33 +2092,49 @@ assert.equal(
   true,
   "an explicit completed and passed matching detection should remain eligible in strict mode",
 );
+const minimalPassedDetection = evaluateDetection({
+  applicable: true,
+  status: "passed",
+  model: "gpt-5.6-sol",
+}, "gpt-5.6-sol", { requireModelDetection: true });
+assert.equal(
+  minimalPassedDetection.available,
+  true,
+  "the current AIHub passed status must remain eligible when legacy evidence fields are omitted",
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(minimalPassedDetection.warnings)),
+  [],
+  "the current AIHub passed status must not be downgraded to a warning when legacy evidence fields are omitted",
+);
 const strictIncompleteDetection = evaluateDetection({
   applicable: true,
   status: "passed",
   model: "gpt-5.6-sol",
+  executionComplete: false,
   expiresAt: new Date(aihubNow + 86_400_000).toISOString(),
 }, "gpt-5.6-sol", { requireModelDetection: true });
-assert.equal(strictIncompleteDetection.available, false, "strict mode should require explicit detection completion evidence");
+assert.equal(strictIncompleteDetection.available, false, "strict mode should reject explicitly incomplete detection evidence");
 assert.ok(strictIncompleteDetection.reasons.includes("model-detection-incomplete"));
 const strictMissingExpiryDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
   expiresAt: "",
 }, "gpt-5.6-sol", { requireModelDetection: true });
-assert.equal(strictMissingExpiryDetection.available, false, "strict mode should require an explicit current detection window");
-assert.ok(strictMissingExpiryDetection.reasons.includes("model-detection-unknown"));
+assert.equal(strictMissingExpiryDetection.available, true, "strict mode should accept a passed status when the optional expiry field is omitted");
+assert.equal(strictMissingExpiryDetection.reasons.includes("model-detection-unknown"), false);
 const missingExpiryDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
   expiresAt: "",
 });
 assert.equal(missingExpiryDetection.available, true);
-assert.ok(missingExpiryDetection.warnings.includes("model-detection-unknown"), "disabled strict detection should still warn about an unverifiable expiry");
+assert.deepEqual(JSON.parse(JSON.stringify(missingExpiryDetection.warnings)), [], "a passed status should not warn when the optional expiry field is omitted");
 const missingCompletionDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
   executionComplete: undefined,
   allTargetsPassed: undefined,
 });
 assert.equal(missingCompletionDetection.available, true);
-assert.ok(missingCompletionDetection.warnings.includes("model-detection-incomplete"), "disabled strict detection should still warn about incomplete evidence");
+assert.deepEqual(JSON.parse(JSON.stringify(missingCompletionDetection.warnings)), [], "a passed status should not warn when legacy completion fields are omitted");
 
 const suspectedDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
@@ -2073,6 +2152,12 @@ const insufficientDetection = evaluateDetection({
 });
 assert.equal(insufficientDetection.available, true);
 assert.ok(insufficientDetection.warnings.includes("model-detection-insufficient"));
+const strictInsufficientDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  status: "insufficient_evidence",
+}, "gpt-5.6-sol", { requireModelDetection: true });
+assert.equal(strictInsufficientDetection.available, false);
+assert.ok(strictInsufficientDetection.reasons.includes("model-detection-insufficient"));
 
 const failedDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
@@ -2088,6 +2173,18 @@ assert.equal(strictFailedDetection.available, false, "a matching failed detectio
 assert.ok(strictFailedDetection.reasons.includes("model-detection-failed"));
 assert.deepEqual(JSON.parse(JSON.stringify(strictFailedDetection.warnings)), []);
 assert.equal(api.candidateHasHealthFailure(strictFailedDetection), true, "strict detection failure must bypass switch hold");
+const strictSuspectedDetection = evaluateDetection({
+  ...detectionBaseSummary.apis[0].modelDetection,
+  status: "suspected",
+}, "gpt-5.6-sol", { requireModelDetection: true });
+assert.equal(strictSuspectedDetection.available, false);
+assert.ok(strictSuspectedDetection.reasons.includes("model-detection-suspected"));
+assert.equal(
+  [minimalPassedDetection, strictSuspectedDetection, strictInsufficientDetection, strictFailedDetection]
+    .filter((candidate) => candidate.available).length,
+  1,
+  "strict detection must retain passed providers instead of filtering every candidate",
+);
 
 const expiredDetection = evaluateDetection({
   ...detectionBaseSummary.apis[0].modelDetection,
@@ -2122,6 +2219,46 @@ const strictOtherModelDetection = evaluateDetection({
   status: "detection_failed",
 }, "gpt-5.6-sol", { requireModelDetection: true });
 assert.equal(strictOtherModelDetection.available, true, "strict mode must ignore a detection record scoped to another model");
+
+const strictMultiModelSummary = {
+  ...detectionBaseSummary,
+  apis: [{
+    ...detectionBaseSummary.apis[0],
+    modelHealth: { sol: "stale", terra: "healthy", luna: "failed" },
+    modelDetection: {
+      applicable: true,
+      status: "passed",
+      model: "gpt-5.6-sol",
+    },
+  }],
+};
+const strictMultiModelCandidate = api.mergeTargetModelCandidates([
+  {
+    model: "gpt-5.6-sol",
+    candidates: api.evaluateAihubCandidates(
+      strictMultiModelSummary,
+      healthySolSeries,
+      [{ id: 1, name: "cheap", rate_multiplier: 0.05, probe_model: "gpt-5.5" }],
+      { 1: 0.04 },
+      api.sanitizeConfig({ ...aihubConfig, models: ["gpt-5.6-sol"], model: "gpt-5.6-sol", requireModelDetection: true }),
+      aihubNow,
+    ),
+  },
+  {
+    model: "gpt-5.6-terra",
+    candidates: api.evaluateAihubCandidates(
+      strictMultiModelSummary,
+      healthySolSeries,
+      [{ id: 1, name: "cheap", rate_multiplier: 0.05, probe_model: "gpt-5.5" }],
+      { 1: 0.04 },
+      api.sanitizeConfig({ ...aihubConfig, models: ["gpt-5.6-terra"], model: "gpt-5.6-terra", requireModelDetection: true }),
+      aihubNow,
+    ),
+  },
+])[0];
+assert.equal(strictMultiModelCandidate.available, true, "a matching passed detection must not invalidate another target model with healthy model health");
+assert.equal(strictMultiModelCandidate.modelResults[0].candidate.modelHealthBackedByDetection, true);
+assert.equal(strictMultiModelCandidate.modelResults[1].candidate.modelHealthStatus, "healthy");
 
 const legacyWithoutDetection = evaluateDetection(null);
 assert.equal(legacyWithoutDetection.available, true, "legacy provider rows without detection must stay compatible");

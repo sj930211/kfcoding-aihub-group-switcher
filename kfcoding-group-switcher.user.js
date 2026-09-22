@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.15.5
+// @version      0.15.6
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -91,7 +91,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.5";
+  const SCRIPT_VERSION = "0.15.6";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -831,10 +831,9 @@
       return "model-detection-expired";
     }
     if (detection.status === "passed") {
-      if (!Number.isFinite(detection.expiresAtMs)) return "model-detection-unknown";
-      return detection.executionComplete === true && detection.allTargetsPassed === true
-        ? ""
-        : "model-detection-incomplete";
+      return detection.executionComplete === false || detection.allTargetsPassed === false
+        ? "model-detection-incomplete"
+        : "";
     }
     if (detection.status === "suspected") return "model-detection-suspected";
     if (detection.status === "insufficient_evidence") return "model-detection-insufficient";
@@ -845,12 +844,7 @@
   function aihubRequiredModelDetectionReason(monitor, model, nowMs) {
     const detection = aihubScopedModelDetection(monitor, model);
     if (!detection) return "";
-    const reason = aihubModelDetectionReason(monitor, model, nowMs);
-    if (reason) return reason;
-    if (!Number.isFinite(detection.expiresAtMs)) return "model-detection-unknown";
-    return detection.executionComplete === true && detection.allTargetsPassed === true
-      ? ""
-      : "model-detection-incomplete";
+    return aihubModelDetectionReason(monitor, model, nowMs);
   }
 
   function buildAihubModelCatalog(summaryPayload) {
@@ -2162,6 +2156,13 @@
     return 1;
   }
 
+  function normalizeAihubStatisticsRange(value) {
+    if (value === "today" || Number(value) === 1) return "today";
+    if (value === "yesterday") return "yesterday";
+    if ([7, 14, 30].includes(Number(value))) return String(Number(value));
+    return "today";
+  }
+
   function normalizeAihubStatisticsMetric(value) {
     return ["spend", "requests", "tokens"].includes(value) ? value : "spend";
   }
@@ -2178,17 +2179,52 @@
     });
   }
 
-  function aihubUsageHourDomain(now) {
+  function aihubUsageHourDomain(now, range) {
     const end = now instanceof Date ? new Date(now.getTime()) : new Date(now == null ? Date.now() : now);
     if (!Number.isFinite(end.getTime())) return [];
+    const normalizedRange = normalizeAihubStatisticsRange(range);
+    const yesterday = normalizedRange === "yesterday";
     const currentHour = end.getHours();
-    const length = currentHour === 0 ? 1 : currentHour;
+    const length = yesterday ? 24 : currentHour === 0 ? 1 : currentHour;
+    if (yesterday) end.setDate(end.getDate() - 1);
     end.setHours(0, 0, 0, 0);
     return Array.from({ length }, (_, index) => {
       const hour = new Date(end.getTime());
       hour.setHours(index, 0, 0, 0);
       return `${localDateKey(hour)}T${String(index).padStart(2, "0")}:00`;
     });
+  }
+
+  function aihubUsageRange(value, now) {
+    const range = normalizeAihubStatisticsRange(value);
+    if (range === "yesterday") {
+      const today = aihubUsageDateDomain(1, now)[0];
+      const yesterdayDate = new Date(`${today}T12:00:00`);
+      yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+      const keyDomain = [localDateKey(yesterdayDate)];
+      return {
+        range,
+        days: 1,
+        keyApiDays: 2,
+        hourly: true,
+        domain: aihubUsageHourDomain(now, range),
+        keyDomain,
+      };
+    }
+    if (range === "today") {
+      const keyDomain = aihubUsageDateDomain(1, now);
+      return {
+        range,
+        days: 1,
+        keyApiDays: 1,
+        hourly: true,
+        domain: aihubUsageHourDomain(now, range),
+        keyDomain,
+      };
+    }
+    const days = normalizeAihubStatisticsDays(range);
+    const keyDomain = aihubUsageDateDomain(days, now);
+    return { range, days, keyApiDays: days, hourly: false, domain: keyDomain, keyDomain };
   }
 
   function aihubUsageRows(payload) {
@@ -2370,11 +2406,9 @@
       if (typeof request.onProgress !== "function") return;
       request.onProgress({ phase, progress: Math.max(0, Math.min(1, Number(progress) || 0)) });
     };
-    const days = normalizeAihubStatisticsDays(request.days);
+    const usageRange = aihubUsageRange(request.range ?? request.days, request.now);
+    const { range, days, keyApiDays, hourly, domain, keyDomain } = usageRange;
     const timezone = String(request.timezone || aihubTimezone());
-    const hourly = days === 1;
-    const domain = hourly ? aihubUsageHourDomain(request.now) : aihubUsageDateDomain(days, request.now);
-    const keyDomain = aihubUsageDateDomain(days, request.now);
     const startDate = keyDomain[0] || "";
     const endDate = keyDomain[keyDomain.length - 1] || "";
     const trendPath = `/api/v1/usage/dashboard/trend?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&granularity=${hourly ? "hour" : "day"}&timezone=${encodeURIComponent(timezone)}`;
@@ -2399,7 +2433,7 @@
     const completedKeys = { count: 0 };
     const keyResults = await mapWithConcurrency(keys, request.concurrency || 3, async (token) => {
       try {
-        const payload = await fetcher(`/api/v1/user/api-keys/${encodeURIComponent(token.id)}/usage/daily?days=${days}&timezone=${encodeURIComponent(timezone)}`);
+        const payload = await fetcher(`/api/v1/user/api-keys/${encodeURIComponent(token.id)}/usage/daily?days=${keyApiDays}&timezone=${encodeURIComponent(timezone)}`);
         return {
           id: token.id,
           name: String(token.name || `密钥 ${token.id}`),
@@ -2420,6 +2454,7 @@
     });
     reportProgress("complete", 1);
     return {
+      range,
       days,
       granularity: hourly ? "hour" : "day",
       timezone,
@@ -2547,6 +2582,7 @@
     aihubMonitorRange,
     aihubUsageDateDomain,
     aihubUsageHourDomain,
+    aihubUsageRange,
     buildTokenUpdatePayload,
     buildFluxionModelCatalog,
     clampPosition,
@@ -2591,6 +2627,7 @@
     normalizeLogs,
     normalizeActiveView,
     normalizeAihubStatisticsDays,
+    normalizeAihubStatisticsRange,
     normalizeAihubStatisticsMetric,
     normalizeAihubTodayUsage,
     normalizeAihubUsageSeries,
@@ -2713,7 +2750,8 @@
     },
     statistics: {
       metric: normalizeAihubStatisticsMetric(storedUi.statisticsMetric),
-      days: normalizeAihubStatisticsDays(storedUi.statisticsDays),
+      range: normalizeAihubStatisticsRange(storedUi.statisticsRange ?? storedUi.statisticsDays),
+      dataRange: "",
       dataDays: 0,
       granularity: "day",
       timezone: "",
@@ -3124,8 +3162,8 @@
   async function refreshStatistics(options) {
     if (!IS_AIHUB || state.statistics.loading) return false;
     const request = options && typeof options === "object" ? options : {};
-    const requestedDays = normalizeAihubStatisticsDays(state.statistics.days);
-    const previousMatchesRange = state.statistics.loaded && state.statistics.dataDays === requestedDays;
+    const requestedRange = normalizeAihubStatisticsRange(state.statistics.range);
+    const previousMatchesRange = state.statistics.loaded && state.statistics.dataRange === requestedRange;
     state.statistics.loading = true;
     state.statistics.loadingPhase = "trend";
     state.statistics.loadingProgress = 0.1;
@@ -3134,7 +3172,7 @@
     render();
     try {
       const result = await loadAihubUsageStatistics(fetchJson, {
-        days: requestedDays,
+        range: requestedRange,
         timezone: aihubTimezone(),
         concurrency: 3,
         keys: tokensCache.length ? tokensCache : undefined,
@@ -3156,7 +3194,9 @@
         : result.keyResults;
       state.statistics = {
         ...state.statistics,
-        dataDays: requestedDays,
+        range: requestedRange,
+        dataRange: result.range,
+        dataDays: result.days,
         granularity: result.granularity,
         timezone: result.timezone,
         loading: false,
@@ -3182,7 +3222,12 @@
         } else if (individualFailures > 0) {
           addLog(`AIHub 统计已刷新，${individualFailures} 个密钥读取失败`, "warning");
         } else {
-          addLog(`AIHub 最近 ${requestedDays} 天统计已刷新`, "success");
+          const rangeLabel = requestedRange === "today"
+            ? "今天"
+            : requestedRange === "yesterday"
+              ? "昨天"
+              : `最近 ${requestedRange} 天`;
+          addLog(`AIHub ${rangeLabel}统计已刷新`, "success");
         }
       }
       render();
@@ -3899,11 +3944,11 @@
     statisticsScheduler = null;
     if (!IS_AIHUB
       || state.activeView !== "statistics"
-      || state.statistics.days !== 1
+      || state.statistics.range !== "today"
       || document.visibilityState !== "visible") return;
     statisticsScheduler = window.setTimeout(async () => {
       statisticsScheduler = null;
-      if (state.activeView !== "statistics" || state.statistics.days !== 1 || document.visibilityState !== "visible") return;
+      if (state.activeView !== "statistics" || state.statistics.range !== "today" || document.visibilityState !== "visible") return;
       await refreshStatistics({ silent: true });
       scheduleStatisticsRefresh(STATISTICS_REFRESH_INTERVAL_MS);
     }, delayMs == null ? STATISTICS_REFRESH_INTERVAL_MS : delayMs);
@@ -4408,6 +4453,13 @@
     }[normalizeAihubStatisticsMetric(metric)];
   }
 
+  function statisticsRangeLabel(value) {
+    const range = normalizeAihubStatisticsRange(value);
+    if (range === "today") return "今天";
+    if (range === "yesterday") return "昨天";
+    return `最近 ${range} 天`;
+  }
+
   function formatStatisticsValue(value, metric, compact) {
     if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value))) return "-";
     const number = Math.max(0, Number(value));
@@ -4444,7 +4496,7 @@
       if (!match) return value;
       const hour = Number.parseInt(match[1], 10);
       if (!Number.isInteger(hour)) return value;
-      return `${String((hour + 1) % 24).padStart(2, "0")}:${match[2] || "00"}`;
+      return `${String(hour + 1).padStart(2, "0")}:${match[2] || "00"}`;
     }
     return value.slice(5) || value;
   }
@@ -4499,7 +4551,7 @@
     const values = series.map((point) => Math.max(0, Number(point[metric]) || 0));
     const maximum = Math.max(...values, 0);
     const granularity = state.statistics.granularity === "hour" ? "hour" : "day";
-    const range = `${state.statistics.days}:${series[0].date.slice(0, 10)}`;
+    const range = `${state.statistics.dataRange}:${series[0].date.slice(0, 10)}`;
     const sameRange = chart.dataset.range === range && chart.dataset.granularity === granularity;
     const { width, height, padding } = statisticsTrendChartLayout(series.length, chart.clientWidth - 24, granularity);
     const plotWidth = width - padding.left - padding.right;
@@ -4518,7 +4570,7 @@
     svg.setAttribute("tabindex", "0");
     svg.setAttribute(
       "aria-label",
-      `AIHub ${granularity === "hour" ? "今天按小时" : `最近 ${series.length} 天按日期`}${statisticsMetricLabel(metric)}趋势，总计 ${formatStatisticsValue(aggregate.value, metric, true)}`,
+      `AIHub ${granularity === "hour" ? `${statisticsRangeLabel(state.statistics.dataRange)}按小时` : `最近 ${series.length} 天按日期`}${statisticsMetricLabel(metric)}趋势，总计 ${formatStatisticsValue(aggregate.value, metric, true)}`,
     );
     const baseline = document.createElementNS(namespace, "line");
     baseline.setAttribute("class", "statistics-chart-baseline");
@@ -4569,7 +4621,7 @@
     if (granularity === "hour") {
       chart.tabIndex = 0;
       chart.setAttribute("role", "region");
-      chart.setAttribute("aria-label", "今天按小时趋势，横向滚动可查看较早时段");
+      chart.setAttribute("aria-label", `${statisticsRangeLabel(state.statistics.dataRange)}按小时趋势，横向滚动可查看较早时段`);
       chart.scrollLeft = statisticsTrendScrollLeft(previousLeft, previousWidth, previousViewport, sameRange, chart.scrollWidth, chart.clientWidth);
     } else {
       chart.removeAttribute("tabindex");
@@ -4638,7 +4690,7 @@
   function renderStatistics() {
     if (!refs.statisticsMetric || !refs.statisticsDays) return;
     refs.statisticsMetric.value = state.statistics.metric;
-    refs.statisticsDays.value = String(state.statistics.days);
+    refs.statisticsDays.value = normalizeAihubStatisticsRange(state.statistics.range);
     if (refs.statisticsRefresh) refs.statisticsRefresh.disabled = state.statistics.loading || !IS_AIHUB;
     if (refs.statisticsSource) {
       refs.statisticsSource.textContent = IS_AIHUB
@@ -4721,8 +4773,8 @@
       tone = "partial";
     } else if (!reconciliationComparable) {
       summary = state.statistics.accountReconciliationError
-        ? `今日账户日汇总暂不可用，暂不与密钥明细对账：${state.statistics.accountReconciliationError}`
-        : "今日账户趋势仍在聚合，暂不与密钥明细对账";
+        ? `${statisticsRangeLabel(state.statistics.dataRange)}账户日汇总暂不可用，暂不与密钥明细对账：${state.statistics.accountReconciliationError}`
+        : `${statisticsRangeLabel(state.statistics.dataRange)}账户趋势仍在聚合，暂不与密钥明细对账`;
       tone = "partial";
     } else if (partialCount > 0) {
       summary = `部分数据：${partialCount} 个密钥读取失败，不计算精确覆盖率或未分配量`;
@@ -4757,7 +4809,7 @@
     if (refs.statisticsTrendSummary) {
       const total = sumAihubUsageMetric(state.statistics.accountSeries, metric);
       const summaryLabel = state.statistics.granularity === "hour"
-        ? "今天合计"
+        ? `${statisticsRangeLabel(state.statistics.dataRange)}合计`
         : `${state.statistics.dataDays} 天合计`;
       refs.statisticsTrendSummary.textContent = total.available
         ? `${summaryLabel} ${formatStatisticsValue(total.value, metric, true)}`
@@ -5058,7 +5110,8 @@
     GM_setValue(STORAGE_UI, {
       activeView: state.activeView,
       statisticsMetric: state.statistics.metric,
-      statisticsDays: state.statistics.days,
+      statisticsRange: state.statistics.range,
+      statisticsDays: state.statistics.range === "today" ? 1 : state.statistics.range,
     });
   }
 
@@ -5101,7 +5154,7 @@
       render();
     });
     refs.statisticsDays.addEventListener("change", () => {
-      state.statistics.days = normalizeAihubStatisticsDays(refs.statisticsDays.value);
+      state.statistics.range = normalizeAihubStatisticsRange(refs.statisticsDays.value);
       scheduleStatisticsRefresh();
       persistUiState();
       void refreshStatistics();
@@ -6305,7 +6358,8 @@
             <label class="statistics-control">
               <span>范围</span>
               <select data-ref="statisticsDays" aria-label="统计日期范围">
-                <option value="1">今天</option>
+                <option value="today">今天</option>
+                <option value="yesterday">昨天</option>
                 <option value="7">最近 7 天</option>
                 <option value="14">最近 14 天</option>
                 <option value="30">最近 30 天</option>

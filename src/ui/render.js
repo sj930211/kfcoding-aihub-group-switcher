@@ -6,6 +6,13 @@
     }[normalizeAihubStatisticsMetric(metric)];
   }
 
+  function statisticsRangeLabel(value) {
+    const range = normalizeAihubStatisticsRange(value);
+    if (range === "today") return "今天";
+    if (range === "yesterday") return "昨天";
+    return `最近 ${range} 天`;
+  }
+
   function formatStatisticsValue(value, metric, compact) {
     if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value))) return "-";
     const number = Math.max(0, Number(value));
@@ -42,7 +49,7 @@
       if (!match) return value;
       const hour = Number.parseInt(match[1], 10);
       if (!Number.isInteger(hour)) return value;
-      return `${String((hour + 1) % 24).padStart(2, "0")}:${match[2] || "00"}`;
+      return `${String(hour + 1).padStart(2, "0")}:${match[2] || "00"}`;
     }
     return value.slice(5) || value;
   }
@@ -97,7 +104,7 @@
     const values = series.map((point) => Math.max(0, Number(point[metric]) || 0));
     const maximum = Math.max(...values, 0);
     const granularity = state.statistics.granularity === "hour" ? "hour" : "day";
-    const range = `${state.statistics.days}:${series[0].date.slice(0, 10)}`;
+    const range = `${state.statistics.dataRange}:${series[0].date.slice(0, 10)}`;
     const sameRange = chart.dataset.range === range && chart.dataset.granularity === granularity;
     const { width, height, padding } = statisticsTrendChartLayout(series.length, chart.clientWidth - 24, granularity);
     const plotWidth = width - padding.left - padding.right;
@@ -116,7 +123,7 @@
     svg.setAttribute("tabindex", "0");
     svg.setAttribute(
       "aria-label",
-      `AIHub ${granularity === "hour" ? "今天按小时" : `最近 ${series.length} 天按日期`}${statisticsMetricLabel(metric)}趋势，总计 ${formatStatisticsValue(aggregate.value, metric, true)}`,
+      `AIHub ${granularity === "hour" ? `${statisticsRangeLabel(state.statistics.dataRange)}按小时` : `最近 ${series.length} 天按日期`}${statisticsMetricLabel(metric)}趋势，总计 ${formatStatisticsValue(aggregate.value, metric, true)}`,
     );
     const baseline = document.createElementNS(namespace, "line");
     baseline.setAttribute("class", "statistics-chart-baseline");
@@ -167,7 +174,7 @@
     if (granularity === "hour") {
       chart.tabIndex = 0;
       chart.setAttribute("role", "region");
-      chart.setAttribute("aria-label", "今天按小时趋势，横向滚动可查看较早时段");
+      chart.setAttribute("aria-label", `${statisticsRangeLabel(state.statistics.dataRange)}按小时趋势，横向滚动可查看较早时段`);
       chart.scrollLeft = statisticsTrendScrollLeft(previousLeft, previousWidth, previousViewport, sameRange, chart.scrollWidth, chart.clientWidth);
     } else {
       chart.removeAttribute("tabindex");
@@ -236,7 +243,7 @@
   function renderStatistics() {
     if (!refs.statisticsMetric || !refs.statisticsDays) return;
     refs.statisticsMetric.value = state.statistics.metric;
-    refs.statisticsDays.value = String(state.statistics.days);
+    refs.statisticsDays.value = normalizeAihubStatisticsRange(state.statistics.range);
     if (refs.statisticsRefresh) refs.statisticsRefresh.disabled = state.statistics.loading || !IS_AIHUB;
     if (refs.statisticsSource) {
       refs.statisticsSource.textContent = IS_AIHUB
@@ -319,8 +326,8 @@
       tone = "partial";
     } else if (!reconciliationComparable) {
       summary = state.statistics.accountReconciliationError
-        ? `今日账户日汇总暂不可用，暂不与密钥明细对账：${state.statistics.accountReconciliationError}`
-        : "今日账户趋势仍在聚合，暂不与密钥明细对账";
+        ? `${statisticsRangeLabel(state.statistics.dataRange)}账户日汇总暂不可用，暂不与密钥明细对账：${state.statistics.accountReconciliationError}`
+        : `${statisticsRangeLabel(state.statistics.dataRange)}账户趋势仍在聚合，暂不与密钥明细对账`;
       tone = "partial";
     } else if (partialCount > 0) {
       summary = `部分数据：${partialCount} 个密钥读取失败，不计算精确覆盖率或未分配量`;
@@ -355,7 +362,7 @@
     if (refs.statisticsTrendSummary) {
       const total = sumAihubUsageMetric(state.statistics.accountSeries, metric);
       const summaryLabel = state.statistics.granularity === "hour"
-        ? "今天合计"
+        ? `${statisticsRangeLabel(state.statistics.dataRange)}合计`
         : `${state.statistics.dataDays} 天合计`;
       refs.statisticsTrendSummary.textContent = total.available
         ? `${summaryLabel} ${formatStatisticsValue(total.value, metric, true)}`
@@ -656,7 +663,8 @@
     GM_setValue(STORAGE_UI, {
       activeView: state.activeView,
       statisticsMetric: state.statistics.metric,
-      statisticsDays: state.statistics.days,
+      statisticsRange: state.statistics.range,
+      statisticsDays: state.statistics.range === "today" ? 1 : state.statistics.range,
     });
   }
 
@@ -699,7 +707,7 @@
       render();
     });
     refs.statisticsDays.addEventListener("change", () => {
-      state.statistics.days = normalizeAihubStatisticsDays(refs.statisticsDays.value);
+      state.statistics.range = normalizeAihubStatisticsRange(refs.statisticsDays.value);
       scheduleStatisticsRefresh();
       persistUiState();
       void refreshStatistics();

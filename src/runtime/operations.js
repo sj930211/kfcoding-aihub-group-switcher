@@ -367,8 +367,8 @@
   async function refreshStatistics(options) {
     if (!IS_AIHUB || state.statistics.loading) return false;
     const request = options && typeof options === "object" ? options : {};
-    const requestedDays = normalizeAihubStatisticsDays(state.statistics.days);
-    const previousMatchesRange = state.statistics.loaded && state.statistics.dataDays === requestedDays;
+    const requestedRange = normalizeAihubStatisticsRange(state.statistics.range);
+    const previousMatchesRange = state.statistics.loaded && state.statistics.dataRange === requestedRange;
     state.statistics.loading = true;
     state.statistics.loadingPhase = "trend";
     state.statistics.loadingProgress = 0.1;
@@ -377,7 +377,7 @@
     render();
     try {
       const result = await loadAihubUsageStatistics(fetchJson, {
-        days: requestedDays,
+        range: requestedRange,
         timezone: aihubTimezone(),
         concurrency: 3,
         keys: tokensCache.length ? tokensCache : undefined,
@@ -399,7 +399,9 @@
         : result.keyResults;
       state.statistics = {
         ...state.statistics,
-        dataDays: requestedDays,
+        range: requestedRange,
+        dataRange: result.range,
+        dataDays: result.days,
         granularity: result.granularity,
         timezone: result.timezone,
         loading: false,
@@ -425,7 +427,12 @@
         } else if (individualFailures > 0) {
           addLog(`AIHub 统计已刷新，${individualFailures} 个密钥读取失败`, "warning");
         } else {
-          addLog(`AIHub 最近 ${requestedDays} 天统计已刷新`, "success");
+          const rangeLabel = requestedRange === "today"
+            ? "今天"
+            : requestedRange === "yesterday"
+              ? "昨天"
+              : `最近 ${requestedRange} 天`;
+          addLog(`AIHub ${rangeLabel}统计已刷新`, "success");
         }
       }
       render();
@@ -1142,11 +1149,11 @@
     statisticsScheduler = null;
     if (!IS_AIHUB
       || state.activeView !== "statistics"
-      || state.statistics.days !== 1
+      || state.statistics.range !== "today"
       || document.visibilityState !== "visible") return;
     statisticsScheduler = window.setTimeout(async () => {
       statisticsScheduler = null;
-      if (state.activeView !== "statistics" || state.statistics.days !== 1 || document.visibilityState !== "visible") return;
+      if (state.activeView !== "statistics" || state.statistics.range !== "today" || document.visibilityState !== "visible") return;
       await refreshStatistics({ silent: true });
       scheduleStatisticsRefresh(STATISTICS_REFRESH_INTERVAL_MS);
     }, delayMs == null ? STATISTICS_REFRESH_INTERVAL_MS : delayMs);

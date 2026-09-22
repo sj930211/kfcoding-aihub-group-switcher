@@ -1039,7 +1039,8 @@
             <label class="statistics-control">
               <span>范围</span>
               <select data-ref="statisticsDays" aria-label="统计日期范围">
-                <option value="1">今天</option>
+                <option value="today">今天</option>
+                <option value="yesterday">昨天</option>
                 <option value="7">最近 7 天</option>
                 <option value="14">最近 14 天</option>
                 <option value="30">最近 30 天</option>

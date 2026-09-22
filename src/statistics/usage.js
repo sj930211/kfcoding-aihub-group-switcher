@@ -54,6 +54,13 @@
     return 1;
   }
 
+  function normalizeAihubStatisticsRange(value) {
+    if (value === "today" || Number(value) === 1) return "today";
+    if (value === "yesterday") return "yesterday";
+    if ([7, 14, 30].includes(Number(value))) return String(Number(value));
+    return "today";
+  }
+
   function normalizeAihubStatisticsMetric(value) {
     return ["spend", "requests", "tokens"].includes(value) ? value : "spend";
   }
@@ -70,17 +77,52 @@
     });
   }
 
-  function aihubUsageHourDomain(now) {
+  function aihubUsageHourDomain(now, range) {
     const end = now instanceof Date ? new Date(now.getTime()) : new Date(now == null ? Date.now() : now);
     if (!Number.isFinite(end.getTime())) return [];
+    const normalizedRange = normalizeAihubStatisticsRange(range);
+    const yesterday = normalizedRange === "yesterday";
     const currentHour = end.getHours();
-    const length = currentHour === 0 ? 1 : currentHour;
+    const length = yesterday ? 24 : currentHour === 0 ? 1 : currentHour;
+    if (yesterday) end.setDate(end.getDate() - 1);
     end.setHours(0, 0, 0, 0);
     return Array.from({ length }, (_, index) => {
       const hour = new Date(end.getTime());
       hour.setHours(index, 0, 0, 0);
       return `${localDateKey(hour)}T${String(index).padStart(2, "0")}:00`;
     });
+  }
+
+  function aihubUsageRange(value, now) {
+    const range = normalizeAihubStatisticsRange(value);
+    if (range === "yesterday") {
+      const today = aihubUsageDateDomain(1, now)[0];
+      const yesterdayDate = new Date(`${today}T12:00:00`);
+      yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+      const keyDomain = [localDateKey(yesterdayDate)];
+      return {
+        range,
+        days: 1,
+        keyApiDays: 2,
+        hourly: true,
+        domain: aihubUsageHourDomain(now, range),
+        keyDomain,
+      };
+    }
+    if (range === "today") {
+      const keyDomain = aihubUsageDateDomain(1, now);
+      return {
+        range,
+        days: 1,
+        keyApiDays: 1,
+        hourly: true,
+        domain: aihubUsageHourDomain(now, range),
+        keyDomain,
+      };
+    }
+    const days = normalizeAihubStatisticsDays(range);
+    const keyDomain = aihubUsageDateDomain(days, now);
+    return { range, days, keyApiDays: days, hourly: false, domain: keyDomain, keyDomain };
   }
 
   function aihubUsageRows(payload) {
@@ -262,11 +304,9 @@
       if (typeof request.onProgress !== "function") return;
       request.onProgress({ phase, progress: Math.max(0, Math.min(1, Number(progress) || 0)) });
     };
-    const days = normalizeAihubStatisticsDays(request.days);
+    const usageRange = aihubUsageRange(request.range ?? request.days, request.now);
+    const { range, days, keyApiDays, hourly, domain, keyDomain } = usageRange;
     const timezone = String(request.timezone || aihubTimezone());
-    const hourly = days === 1;
-    const domain = hourly ? aihubUsageHourDomain(request.now) : aihubUsageDateDomain(days, request.now);
-    const keyDomain = aihubUsageDateDomain(days, request.now);
     const startDate = keyDomain[0] || "";
     const endDate = keyDomain[keyDomain.length - 1] || "";
     const trendPath = `/api/v1/usage/dashboard/trend?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&granularity=${hourly ? "hour" : "day"}&timezone=${encodeURIComponent(timezone)}`;
@@ -291,7 +331,7 @@
     const completedKeys = { count: 0 };
     const keyResults = await mapWithConcurrency(keys, request.concurrency || 3, async (token) => {
       try {
-        const payload = await fetcher(`/api/v1/user/api-keys/${encodeURIComponent(token.id)}/usage/daily?days=${days}&timezone=${encodeURIComponent(timezone)}`);
+        const payload = await fetcher(`/api/v1/user/api-keys/${encodeURIComponent(token.id)}/usage/daily?days=${keyApiDays}&timezone=${encodeURIComponent(timezone)}`);
         return {
           id: token.id,
           name: String(token.name || `密钥 ${token.id}`),
@@ -312,6 +352,7 @@
     });
     reportProgress("complete", 1);
     return {
+      range,
       days,
       granularity: hourly ? "hour" : "day",
       timezone,

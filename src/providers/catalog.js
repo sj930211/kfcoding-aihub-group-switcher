@@ -210,10 +210,9 @@
       return "model-detection-expired";
     }
     if (detection.status === "passed") {
-      if (!Number.isFinite(detection.expiresAtMs)) return "model-detection-unknown";
-      return detection.executionComplete === true && detection.allTargetsPassed === true
-        ? ""
-        : "model-detection-incomplete";
+      return detection.executionComplete === false || detection.allTargetsPassed === false
+        ? "model-detection-incomplete"
+        : "";
     }
     if (detection.status === "suspected") return "model-detection-suspected";
     if (detection.status === "insufficient_evidence") return "model-detection-insufficient";
@@ -224,12 +223,7 @@
   function aihubRequiredModelDetectionReason(monitor, model, nowMs) {
     const detection = aihubScopedModelDetection(monitor, model);
     if (!detection) return "";
-    const reason = aihubModelDetectionReason(monitor, model, nowMs);
-    if (reason) return reason;
-    if (!Number.isFinite(detection.expiresAtMs)) return "model-detection-unknown";
-    return detection.executionComplete === true && detection.allTargetsPassed === true
-      ? ""
-      : "model-detection-incomplete";
+    return aihubModelDetectionReason(monitor, model, nowMs);
   }
 
   function buildAihubModelCatalog(summaryPayload) {

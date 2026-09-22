@@ -60,7 +60,8 @@
     },
     statistics: {
       metric: normalizeAihubStatisticsMetric(storedUi.statisticsMetric),
-      days: normalizeAihubStatisticsDays(storedUi.statisticsDays),
+      range: normalizeAihubStatisticsRange(storedUi.statisticsRange ?? storedUi.statisticsDays),
+      dataRange: "",
       dataDays: 0,
       granularity: "day",
       timezone: "",

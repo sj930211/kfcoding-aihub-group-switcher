@@ -53,7 +53,7 @@
     values.set("aihub-group-switcher:ui:v1", {
       activeView: previewParams.has("statistics") ? "statistics" : "monitor",
       statisticsMetric: previewParams.get("metric") || "spend",
-      statisticsDays: Number(previewParams.get("days")) || 1,
+      statisticsRange: previewParams.get("range") || previewParams.get("days") || "today",
     });
     values.set("kfcoding-group-switcher:switch-guard:v1", {
       blacklist: [{ model: "gpt-4.1", group: "promo-night", until: Date.now() + 42 * 60 * 1000 }],
@@ -74,7 +74,7 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.15.5" : "0.15.4";
+    const previewVersion = previewParams.has("update") ? "0.15.6" : "0.15.5";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     const previewKeys = Array.from({ length: 12 }, (_, index) => ({
       id: index + 1,
@@ -157,8 +157,9 @@
       if (url.pathname === "/api/v1/usage/dashboard/trend") {
         if (previewMode === "error") return jsonResponse({ message: "Authorization header is required" }, 401);
         const granularity = url.searchParams.get("granularity") || "day";
+        const today = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`;
         const dates = granularity === "hour"
-          ? Array.from({ length: Math.max(1, new Date().getHours()) }, (_, hour) => `${url.searchParams.get("start_date")}T${String(hour).padStart(2, "0")}:00:00`)
+          ? Array.from({ length: url.searchParams.get("start_date") === today ? Math.max(1, new Date().getHours()) : 24 }, (_, hour) => `${url.searchParams.get("start_date")}T${String(hour).padStart(2, "0")}:00:00`)
           : dateDomain(url.searchParams.get("start_date"), url.searchParams.get("end_date"));
         document.documentElement.dataset.previewTrendGranularity = granularity;
         document.documentElement.dataset.previewTrendPointCount = String(dates.length);
