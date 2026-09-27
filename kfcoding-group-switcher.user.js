@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.15.6
+// @version      0.15.7
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -91,7 +91,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.6";
+  const SCRIPT_VERSION = "0.15.7";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -788,6 +788,24 @@
     );
   }
 
+  function normalizeAihubModelCards(value) {
+    const source = Array.isArray(value) ? value : [];
+    return source
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const model = String(entry.model ?? entry.model_name ?? entry.name ?? "").trim();
+        if (!model) return null;
+        return {
+          ...entry,
+          model,
+          modelKey: normalizeAihubModelKey(model),
+          alias: String(entry.alias ?? "").trim(),
+          health: String(entry.health ?? entry.status ?? "").trim().toLowerCase(),
+        };
+      })
+      .filter(Boolean);
+  }
+
   function normalizeAihubModelDetection(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const model = aihubModelName(value.model ?? value.model_name ?? value.target_model);
@@ -850,10 +868,20 @@
   function buildAihubModelCatalog(summaryPayload) {
     const summary = summaryPayload && typeof summaryPayload === "object" ? summaryPayload : {};
     const keys = new Set();
+    let hasModelCards = false;
     (Array.isArray(summary.apis) ? summary.apis : []).forEach((monitor) => {
+      const modelCards = normalizeAihubModelCards(monitor && (monitor.modelCards ?? monitor.model_cards));
+      if (modelCards.length) {
+        hasModelCards = true;
+        modelCards.forEach((card) => keys.add(card.model));
+        return;
+      }
       Object.keys(normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health)))
         .forEach((model) => keys.add(model));
     });
+    if (hasModelCards) {
+      return { data: [...keys].map((model) => ({ model_name: model })) };
+    }
     const order = new Map(Object.keys(AIHUB_MODEL_NAMES).map((model, index) => [model, index]));
     return {
       data: [...keys]
@@ -865,6 +893,13 @@
   function aihubModelHealthStatus(monitor, model) {
     const key = normalizeAihubModelKey(model);
     if (!key) return "";
+    const selectedModel = String(model || "").trim().toLowerCase();
+    const modelCards = normalizeAihubModelCards(monitor && (monitor.modelCards ?? monitor.model_cards));
+    if (modelCards.length) {
+      const card = modelCards.find((entry) => entry.model.toLowerCase() === selectedModel)
+        || modelCards.find((entry) => entry.modelKey === key);
+      return card ? card.health : "";
+    }
     const health = normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health));
     return health[key] || "";
   }
@@ -1207,6 +1242,7 @@
           outputTokensPerSecond: item.output_tps,
           cacheHitRate: item.cache_hit_rate,
           modelHealth: normalizeAihubModelHealth(item.model_health ?? item.modelHealth),
+          modelCards: normalizeAihubModelCards(item.model_cards ?? item.modelCards),
           modelDetection: normalizeAihubModelDetection(item.model_detection ?? item.modelDetection),
           successRates: item.success_rates,
           enabled: item.enabled !== false,
@@ -2605,6 +2641,7 @@
     aihubModelName,
     buildAihubModelCatalog,
     normalizeAihubModelHealth,
+    normalizeAihubModelCards,
     normalizeAihubModelDetection,
     normalizeAihubModelKey,
     migrateAihubStoredModelAliases,

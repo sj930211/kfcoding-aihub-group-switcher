@@ -167,6 +167,24 @@
     );
   }
 
+  function normalizeAihubModelCards(value) {
+    const source = Array.isArray(value) ? value : [];
+    return source
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const model = String(entry.model ?? entry.model_name ?? entry.name ?? "").trim();
+        if (!model) return null;
+        return {
+          ...entry,
+          model,
+          modelKey: normalizeAihubModelKey(model),
+          alias: String(entry.alias ?? "").trim(),
+          health: String(entry.health ?? entry.status ?? "").trim().toLowerCase(),
+        };
+      })
+      .filter(Boolean);
+  }
+
   function normalizeAihubModelDetection(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const model = aihubModelName(value.model ?? value.model_name ?? value.target_model);
@@ -229,10 +247,20 @@
   function buildAihubModelCatalog(summaryPayload) {
     const summary = summaryPayload && typeof summaryPayload === "object" ? summaryPayload : {};
     const keys = new Set();
+    let hasModelCards = false;
     (Array.isArray(summary.apis) ? summary.apis : []).forEach((monitor) => {
+      const modelCards = normalizeAihubModelCards(monitor && (monitor.modelCards ?? monitor.model_cards));
+      if (modelCards.length) {
+        hasModelCards = true;
+        modelCards.forEach((card) => keys.add(card.model));
+        return;
+      }
       Object.keys(normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health)))
         .forEach((model) => keys.add(model));
     });
+    if (hasModelCards) {
+      return { data: [...keys].map((model) => ({ model_name: model })) };
+    }
     const order = new Map(Object.keys(AIHUB_MODEL_NAMES).map((model, index) => [model, index]));
     return {
       data: [...keys]
@@ -244,6 +272,13 @@
   function aihubModelHealthStatus(monitor, model) {
     const key = normalizeAihubModelKey(model);
     if (!key) return "";
+    const selectedModel = String(model || "").trim().toLowerCase();
+    const modelCards = normalizeAihubModelCards(monitor && (monitor.modelCards ?? monitor.model_cards));
+    if (modelCards.length) {
+      const card = modelCards.find((entry) => entry.model.toLowerCase() === selectedModel)
+        || modelCards.find((entry) => entry.modelKey === key);
+      return card ? card.health : "";
+    }
     const health = normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health));
     return health[key] || "";
   }

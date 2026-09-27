@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.6", "the userscript metadata should expose yesterday statistics and the current detection contract");
+assert.equal(metadataVersion, "0.15.7", "the userscript metadata should expose current AIHub model-card support");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -233,7 +233,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.6");
+assert.equal(api.extractUserscriptVersion(source), "0.15.7");
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(
@@ -1703,6 +1703,54 @@ assert.deepEqual(
   ] },
 );
 assert.equal(normalizedProviderData.series.seriesByApiId["1"].length, 2);
+const currentModelCardSummary = {
+  version: 2,
+  generated_at: new Date(aihubNow).toISOString(),
+  items: [{
+    code: "A025-BugTeam",
+    group_id: 1,
+    rate_multiplier: 0.09,
+    available: false,
+    last_probed_at: new Date(aihubNow - 10_000).toISOString(),
+    probe_e2e_ttft_ms: null,
+    output_tps: null,
+    output_tokens: 0,
+    success_rates: { "1h": 0.96, "24h": 0.97 },
+    model_health: { astra: "healthy", luna: "failed", sol: "healthy", terra: "healthy" },
+    model_cards: [
+      { model: "gpt-6-astra", alias: "Astra", health: "healthy" },
+      { model: "gpt-6-sol", alias: "6-Sol", health: "failed" },
+      { model: "gpt-5.6-sol", alias: "5.6-Sol", health: "healthy" },
+      { model: "gpt-5.6-luna", alias: "5.6-Luna", health: "failed" },
+    ],
+  }],
+};
+const currentModelCardData = api.normalizeAihubProviderData(currentModelCardSummary, {
+  items: [{ group_id: 1, probe: monitorSeries([true, true]) }],
+});
+assert.deepEqual(
+  JSON.parse(JSON.stringify(api.buildAihubModelCatalog(currentModelCardData.summary))),
+  { data: [
+    { model_name: "gpt-6-astra" },
+    { model_name: "gpt-6-sol" },
+    { model_name: "gpt-5.6-sol" },
+    { model_name: "gpt-5.6-luna" },
+  ] },
+  "current AIHub model cards should drive the exact model catalog instead of stale legacy aliases",
+);
+const currentModelCardCandidate = api.evaluateAihubCandidates(
+  currentModelCardData.summary,
+  currentModelCardData.series,
+  aihubGroups,
+  { 1: 0.04 },
+  api.sanitizeConfig({ ...aihubConfig, models: ["gpt-6-sol"], model: "gpt-6-sol" }),
+  aihubNow,
+)[0];
+assert.equal(currentModelCardCandidate.modelHealthStatus, "failed");
+assert.ok(
+  currentModelCardCandidate.reasons.includes("model-unavailable"),
+  "current AIHub model cards must scope health to gpt-6-sol instead of borrowing legacy terra health",
+);
 const providerPaths = [];
 const loadedProviderData = await api.loadAihubMonitorData(async (path) => {
   providerPaths.push(path);

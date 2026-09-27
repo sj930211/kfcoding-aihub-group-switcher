@@ -28,6 +28,7 @@
     aihubModelName,
     buildAihubModelCatalog,
     normalizeAihubModelHealth,
+    normalizeAihubModelCards,
     normalizeAihubModelDetection,
     normalizeAihubModelKey,
     migrateAihubStoredModelAliases,
