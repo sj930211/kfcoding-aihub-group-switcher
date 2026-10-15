@@ -49,7 +49,7 @@
     if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
     values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, models: ["gpt-4.1"], model: "gpt-4.1", selectionMode: "balanced" });
-    values.set("aihub-group-switcher:config:v1", { theme: previewParams.get("theme") || "dark", glassTransparency: 0, enabled: false, models: ["gpt-6.1-sol", "gpt-6-astra"], model: "gpt-6.1-sol", selectionMode: "balanced", ...(previewParams.has("layout") ? { minSuccessRate: 35, maxFirstTokenLatencySeconds: 20 } : {}) });
+    values.set("aihub-group-switcher:config:v1", { theme: previewParams.get("theme") || "dark", glassTransparency: 0, enabled: false, models: ["gpt-6.1-sol", "gpt-6-astra"], model: "gpt-6.1-sol", selectionMode: previewParams.get("strategy") || "balanced", tokenIds: previewParams.has("current") ? [1, 2, 3] : [], ...(previewParams.has("layout") ? { minSuccessRate: 35, maxFirstTokenLatencySeconds: 20, maxOutputDurationSeconds: 0 } : {}) });
     values.set("aihub-group-switcher:ui:v1", {
       activeView: previewParams.has("statistics") ? "statistics" : "monitor",
       statisticsMetric: previewParams.get("metric") || "spend",
@@ -74,14 +74,16 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.15.10" : "0.15.9";
+    const previewVersion = previewParams.has("update") ? "0.15.11" : "0.15.10";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     const previewKeys = Array.from({ length: 12 }, (_, index) => ({
       id: index + 1,
       name: index === 0 ? "生产主密钥" : index === 1 ? "批处理密钥" : `业务密钥 ${String(index + 1).padStart(2, "0")}`,
       status: "active",
-      group_id: 1,
-      group: { id: 1, name: "A001-SOL" },
+      group_id: previewParams.has("layout") && index === 1 ? 2 : 1,
+      group: previewParams.has("layout")
+        ? { id: index === 1 ? 2 : 1, name: index === 1 ? "A039-Plus/Team" : "A034-Team" }
+        : { id: 1, name: "A001-SOL" },
     }));
     const previewMode = previewParams.get("state") || "complete";
     const previewGroups = (previewParams.has("layout")
@@ -129,6 +131,8 @@
         const start = (page - 1) * size;
         return jsonResponse({ items: previewKeys.slice(start, start + size), total: previewKeys.length, page, page_size: size });
       }
+      const previewKeyMatch = url.pathname.match(/^\/api\/v1\/keys\/(\d+)$/);
+      if (previewKeyMatch) return jsonResponse(previewKeys.find(key => key.id === Number(previewKeyMatch[1])) || {}, 200);
       if (url.pathname === "/api/v1/groups/available") {
         return jsonResponse(previewParams.has("layout") ? previewGroups : [{ id: 1, name: "A001-SOL", rate_multiplier: 0.08 }]);
       }
@@ -169,7 +173,17 @@
             effective_multiplier_ready: true,
             effective_multiplier: [0.1844, 0.2153, 0.2686, 0.3984][index],
             effective_input_price_per_million_1h: [0.19, 0.23, 0.31, 0.42][index],
-          })) : [item]),
+          })) : [item]).map((item, index) => previewParams.has("strategy-demo") ? {
+            ...item,
+            enabled: index !== 3,
+            model_cards: item.model_cards.map(card => ({ ...card, health: index === 3 ? "failed" : "healthy" })),
+            probe_e2e_ttft_ms: [12000, 1200, 500, 18000][index],
+            output_tokens: 5,
+            output_tps: [0.1, 5 / 7, 2, 0.5][index],
+            cache_hit_rate: [10, 80, 99, 40][index],
+            success_rates: { "1h": [0.96, 0.995, 1, 0.95][index] },
+            effective_multiplier: [0.05, 0.1, 0.2, 0.001][index],
+          } : item),
         });
       }
       if (/^\/api\/v[12]\/public\/providers\/series$/.test(url.pathname)) return jsonResponse({ items: [] });

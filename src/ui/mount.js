@@ -953,33 +953,57 @@
           .candidate-head > span:nth-child(4), .candidate > span:nth-child(4) { display: none; }
           .actions { grid-template-columns: 1fr; }
         }
-        .candidate.candidate-details { display: block; padding: 12px; }
-        .candidate-heading { display: flex; align-items: center; gap: 12px; min-height: 40px; }
-        .candidate-heading .candidate-name { flex: 1; gap: 10px; color: var(--text); }
+        .candidate.candidate-details {
+          display: grid; grid-template-columns: 26px minmax(0, 1fr); column-gap: 8px; row-gap: 3px;
+          height: 48px; min-height: 48px; box-sizing: border-box;
+          padding: 5px 10px; align-items: center;
+        }
+        .candidate-media { grid-column: 1; grid-row: 1 / span 2; min-width: 0; }
+        .candidate-media .candidate-pelican { width: 26px; height: 26px; }
+        .candidate-details[data-current="true"] { background: var(--accent-soft); }
+        .candidate-heading { grid-column: 2; display: flex; align-items: center; gap: 5px; height: 17px; min-width: 0; }
+        .candidate-heading .candidate-name { flex: 1; min-width: 0; color: var(--text); }
         .candidate-heading .candidate-name-label {
-          overflow: visible; text-overflow: clip; white-space: normal;
-          overflow-wrap: anywhere; font-size: 12px; font-weight: 650; line-height: 1.5;
+          display: block; max-width: 100%; padding: 0; border: 0; border-radius: 2px; background: transparent;
+          color: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          font: inherit; font-size: 12px; font-weight: 650; line-height: 17px; cursor: copy;
         }
-        .candidate-heading .candidate-pelican { flex-basis: 40px; width: 40px; height: 40px; }
-        .candidate-heading .verdict { flex: 0 0 auto; max-width: 32%; text-align: right; font-size: 10px; }
-        .candidate-metrics {
-          display: grid; grid-template-columns: 1.1fr .9fr .95fr 1.25fr .8fr .85fr;
-          align-items: start; gap: 0; margin: 12px 0 0;
+        .candidate-heading .candidate-name-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .candidate-current-tag { flex: 0 0 auto; padding: 1px 3px; border: 1px solid var(--accent); border-radius: 3px; color: var(--text); font-size: 8px; line-height: 1.2; }
+        .candidate-heading .verdict { flex: 0 0 auto; max-width: 29%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 10px; }
+        .candidate-metrics, .candidate-column-labels {
+          display: grid; grid-template-columns: 1.65fr 1fr 1fr 1.05fr .85fr 1fr .6fr;
+          align-items: center; gap: 3px; margin: 0; font-variant-numeric: tabular-nums;
         }
-        .candidate-metric { min-width: 0; padding-inline: 8px; border-left: 1px solid var(--line); }
-        .candidate-metric:first-child { padding-left: 0; border-left: 0; }
-        .candidate-metric:last-child { padding-right: 0; }
-        .candidate-metric dt { margin-bottom: 6px; color: var(--text-soft); font-size: 9px; line-height: 1.2; }
-        .candidate-metric dd { margin: 0; font-size: 10px; line-height: 1.4; white-space: nowrap; }
-        .candidate-metrics .candidate-ratio { justify-items: start; gap: 3px; }
-        .candidate-metrics .candidate-ratio small { font-size: 9px; }
-        .candidate-metrics .candidate-ratio .candidate-price { font-size: 8px; }
-        .candidate-metrics .health-value { display: inline-block; }
-        .candidate-media-hint { margin: 0; padding: 8px 12px 0; border-top: 1px solid var(--line); color: var(--text-soft); font-size: 10px; }
+        :host([data-image-quality="false"]) .candidate-metrics,
+        :host([data-image-quality="false"]) .candidate-column-labels { grid-template-columns: 1.65fr 1fr 1fr 1.05fr .85fr 1fr; }
+        .candidate-metrics { grid-column: 2; min-width: 0; height: 15px; }
+        .candidate-metric { min-width: 0; text-align: right; }
+        .candidate-metric:first-child { text-align: left; }
+        .candidate-metric dt { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        .candidate-metric dd { margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10px; line-height: 15px; white-space: nowrap; }
+        .candidate-metrics .candidate-ratio { display: inline; color: var(--text-soft); font-size: 10px; }
+        .candidate-metrics .health-value { display: inline; background: none; }
+        .candidate-image-score { display: inline; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 10px; line-height: 15px; white-space: nowrap; cursor: zoom-in; }
+        .candidate-image-score:focus-visible { outline: 2px solid var(--accent); }
+        .candidate-column-labels { padding: 5px 10px 5px 44px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--text-soft); background: var(--surface-raised); font-size: 9px; line-height: 14px; }
+        .candidate-column-labels > span { min-width: 0; text-align: right; white-space: nowrap; }
+        .candidate-column-labels > span:first-child { text-align: left; }
+        :host([data-image-quality="false"]) .candidate-quality-column { display: none; }
+        .image-quality-actions { padding: 5px 10px; border-top: 1px solid var(--line); }
+        .image-quality-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+        .image-quality-toolbar p { flex: 1; min-width: 0; }
+        .image-quality-toolbar button { flex-shrink: 0; }
+        .image-quality-actions[hidden], .image-quality-settings[hidden] { display: none; }
+        .image-quality-actions p, .image-quality-settings p { font-size: 10px; line-height: 1.5; color: var(--text-soft); margin: 2px 0; }
+        .image-quality-test-result, .detection-image-quality { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .detection-image-quality { font-size: 12px; line-height: 1.6; }
+        .candidate-media-hint { margin: 0; padding: 6px 10px 0; border-top: 1px solid var(--line); color: var(--text-soft); font-size: 9px; }
         @media (max-width: 420px) {
-          .candidate-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 12px; }
-          .candidate-metric:nth-child(4) { padding-left: 0; border-left: 0; }
-          .candidate-metric dd { font-size: 11px; }
+          .candidate.candidate-details { padding-inline: 8px; column-gap: 6px; }
+          .candidate-column-labels { padding-inline: 40px 8px; }
+          .candidate-metrics, .candidate-column-labels { gap: 2px; }
+          .candidate-heading .candidate-name-label { font-size: 11px; }
         }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
@@ -1073,8 +1097,17 @@
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
           <div class="candidate-head" ${IS_AIHUB ? "hidden" : ""}><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
+          <div class="image-quality-actions" data-ref="imageQualityActions" hidden>
+            <div class="image-quality-toolbar">
+              <button class="text-button" type="button" data-ref="imageQualityRun">评分新图（计费）</button>
+              <button class="text-button" type="button" data-ref="imageQualityStop" hidden>停止</button>
+              <p data-ref="imageQualityStatus" role="status"></p>
+            </div>
+            <p title="列表参考分为策略85% + 有效图片分15%；无分沿用策略，低证据分不参与。策略推荐与自动切换仍按原策略。">图片分占15%，仅影响列表排序；无分沿用策略</p>
+          </div>
+          ${IS_AIHUB ? '<div class="candidate-column-labels" aria-hidden="true"><span>倍率/预估</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span class="candidate-quality-column">效果</span></div>' : ""}
           <div data-ref="candidateRows"></div>
-          ${IS_AIHUB ? '<p class="candidate-media-hint">点击缩略图查看大图</p>' : ""}
+          ${IS_AIHUB ? '<p class="candidate-media-hint">点击图片放大 · 悬停倍率查看价格 · 点击名称复制</p>' : ""}
         </section>
         </section>
         <section class="work-view" id="kf-view-statistics" data-view="statistics" role="tabpanel" aria-labelledby="kf-tab-statistics" tabindex="0" hidden>
@@ -1192,6 +1225,26 @@
                   <div class="token-list" data-ref="modelList"></div>
                 </div>
               </div>
+            </div>
+            <div class="field field-wide image-quality-settings" ${IS_AIHUB ? "" : "hidden"}>
+              <label for="kf-image-quality-key">图片效果评分（可选）</label>
+              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">不使用图片评分</option></select>
+              <label for="kf-image-quality-model">支持图片输入的评分模型</label>
+              <input id="kf-image-quality-model" data-ref="imageQualityModel" type="text" maxlength="120" list="kf-image-quality-models" placeholder="读取列表后选择，或输入模型名" autocomplete="off" aria-describedby="kf-image-quality-models-status">
+              <datalist id="kf-image-quality-models" data-ref="imageQualityModels"></datalist>
+              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
+              <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
+              <label for="kf-image-quality-task">图片预期任务</label>
+              <input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300">
+              <p>密钥或模型留空即关闭，不展示、不采用图片分。配置不会自动请求；手动评分或测试会消耗AIHub额度。批量每次最多10张，无自动重试。</p>
+              <div class="image-quality-toolbar">
+                <button class="text-button" type="button" data-ref="imageQualityTest">测试1张（计费）</button>
+                <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
+              </div>
+              <p data-ref="imageQualityTestStatus" role="status"></p>
+              <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
+              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
+              <p>任务40 + 结构40 + 完成度20。按原图MD5长期复用，最多保存1000条；模型、任务或规则变化才重新评分。测试1张会主动重新请求并计费。</p>
             </div>
             <div class="field field-wide group-filter-field">
               <div class="group-filter-heading">
@@ -1332,11 +1385,14 @@
           <p class="detection-image-status" data-ref="detectionImageStatus" role="status"></p>
           <img data-ref="detectionImage" alt="" referrerpolicy="no-referrer" hidden>
         </div>
+        <p class="detection-image-quality" data-ref="detectionImageQuality" hidden></p>
         <a class="detection-image-original" data-ref="detectionImageOriginal" target="_blank" rel="noopener noreferrer">在新标签页查看原图</a>
       </dialog>
     `;
 
     const refNames = [
+      "imageQualityClearCache", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
+      "imageQualityKey", "imageQualityModel", "imageQualityTask", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",

@@ -10,6 +10,8 @@
     refs.detectionImage.hidden = true;
     refs.detectionImage.alt = `${candidate.group} 的${media.title}`;
     refs.detectionImageOriginal.href = media.url;
+    refs.detectionImageQuality.hidden = !imageQualityEnabled(config);
+    refs.detectionImageQuality.textContent = imageQualityDescription(candidateImageQuality(candidate));
     dialog.showModal();
     refs.detectionImageClose.focus();
     refs.detectionImage.src = media.url;
@@ -391,6 +393,7 @@
 
   function render() {
     if (!root) return;
+    root.host.dataset.imageQuality = String(imageQualityEnabled(config));
     if (refs.panel) refs.panel.hidden = state.collapsed;
     if (refs.launcher) refs.launcher.hidden = !state.collapsed;
     positionElement(state.collapsed ? refs.launcher : refs.panel, state.collapsed ? "launcher" : "panel", false);
@@ -424,7 +427,7 @@
     if (refs.candidateSummary) {
       const availableCount = state.candidates.filter((candidate) => candidate.available).length;
       refs.candidateSummary.textContent = state.candidates.length
-        ? `${availableCount} 可用 / ${state.candidates.length} 总计`
+        ? `${IS_AIHUB ? `${selectionModeLabel(config.selectionMode)} · ` : ""}${availableCount} 可用 / ${state.candidates.length} 总计`
         : "等待检查";
     }
     if (refs.candidateCount) refs.candidateCount.textContent = String(state.candidates.length);
@@ -541,6 +544,7 @@
           : `已解除 ${state.isolationUndo.entries.length} 个分组`;
       }
     }
+    renderImageQualityControls();
     renderCandidates();
     renderStatistics();
     renderTokenResults();
@@ -573,6 +577,9 @@
       models: [...refs.modelList.querySelectorAll('input[data-model-name]:checked')]
         .map((checkbox) => checkbox.dataset.modelName),
       selectionMode: refs.selectionMode.value,
+      imageQualityKeyId: refs.imageQualityKey.value,
+      imageQualityModel: refs.imageQualityModel.value,
+      imageQualityTask: refs.imageQualityTask.value,
       groupFilterMode: config.groupFilterMode,
       groupWhitelist: config.groupWhitelist,
       groupBlacklist: config.groupBlacklist,
@@ -600,6 +607,8 @@
     if (refs.glassTransparencyValue) refs.glassTransparencyValue.textContent = `${config.glassTransparency}%`;
     refs.enabled.checked = config.enabled;
     refs.selectionMode.value = config.selectionMode;
+    refs.imageQualityModel.value = config.imageQualityModel;
+    refs.imageQualityTask.value = config.imageQualityTask;
     refs.requireModelDetection.checked = config.requireModelDetection;
     refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
     refs.dailySpendLimit.value = String(config.dailySpendLimit);
@@ -620,8 +629,22 @@
 
   function persistFormConfig() {
     const previousIdentity = `${config.tokenIds.join(",")}:${targetModelIdentity(config)}`;
+    const previousQualityKey = config.imageQualityKeyId;
+    const previousQuality = JSON.stringify([config.imageQualityKeyId, config.imageQualityModel, config.imageQualityTask]);
     const wasEnabled = config.enabled;
     config = readFormConfig();
+    if (previousQuality !== JSON.stringify([config.imageQualityKeyId, config.imageQualityModel, config.imageQualityTask])) {
+      cancelImageQuality();
+      imageQuality.status = "";
+      imageQuality.testStatus = "";
+      imageQuality.testResult = "";
+      if (previousQualityKey !== config.imageQualityKeyId) {
+        imageQuality.models = [];
+        imageQuality.modelsKeyId = 0;
+        imageQuality.modelsStatus = "";
+        renderImageQualityModelOptions();
+      }
+    }
     GM_setValue(STORAGE_CONFIG, config);
     if (state.todayUsage.available) syncSpendProtection({ notify: true });
     if (`${config.tokenIds.join(",")}:${targetModelIdentity(config)}` !== previousIdentity) {
@@ -629,6 +652,9 @@
       state.candidates = [];
       state.tokenResults = [];
       state.currentGroup = "-";
+    }
+    if (IS_AIHUB) {
+      state.bestGroup = candidateRecommendationLabel(selectBestCandidate(state.candidates, "", config.selectionMode));
     }
     if (config.enabled !== wasEnabled) {
       scheduleNext(config.enabled ? 250 : undefined);
@@ -731,6 +757,13 @@
     });
     refs.statisticsRefresh.addEventListener("click", () => refreshStatistics());
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
+    refs.imageQualityRun.addEventListener("click", () => runImageQuality());
+    refs.imageQualityModel.addEventListener("input", persistFormConfig);
+    refs.imageQualityLoadModels.addEventListener("click", loadImageQualityModels);
+    refs.imageQualityTest.addEventListener("click", () => runImageQuality({ test: true }));
+    refs.imageQualityTestStop.addEventListener("click", cancelImageQuality);
+    refs.imageQualityClearCache.addEventListener("click", clearImageQualityCache);
+    refs.imageQualityStop.addEventListener("click", cancelImageQuality);
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
     refs.resetSpendProtection.addEventListener("click", resetSpendProtection);
     refs.clearAllIsolations.addEventListener("click", clearAllIsolations);

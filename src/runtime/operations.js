@@ -469,9 +469,17 @@
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
         pricingCache = buildAihubModelCatalog(monitorPayload.summary);
+        const sample = monitorPayload.summary.apis.find((api) => api.detectionMedia?.status === "successful");
+        imageQuality.catalog = monitorPayload.summary.apis.map((api) => ({
+          group: api.planType, groupId: Number(api.id), detectionMedia: api.detectionMedia,
+        }));
+        imageQuality.sample = sample ? {
+          group: sample.planType, groupId: Number(sample.id), detectionMedia: sample.detectionMedia,
+        } : null;
       }
       renderOptions();
       render();
+      if (IS_AIHUB) void refreshImageQualityHashes();
       return;
     }
     const [pricing, tokenList, userGroups] = await Promise.all([
@@ -497,9 +505,24 @@
 
   async function getTokenDetail(tokenId) {
     if (IS_AIHUB_API) {
-      const payload = await fetchJson(`/api/v1/keys/${tokenId}`);
-      if (!payload || typeof payload !== "object") throw new Error("API 密钥详情为空");
-      return normalizeAihubToken(payload);
+      try {
+        const payload = await fetchJson(`/api/v1/keys/${tokenId}`);
+        if (!payload || typeof payload !== "object") throw new Error("API 密钥详情为空");
+        const detail = normalizeAihubToken(payload);
+        if (IS_AIHUB) {
+          const cached = tokensCache.find((token) => Number(token.id) === Number(tokenId));
+          const groupState = { id: Number(tokenId), group: detail.group, groupId: detail.groupId };
+          if (cached) Object.assign(cached, groupState);
+          else tokensCache.push({ ...groupState, name: detail.name });
+        }
+        return detail;
+      } catch (error) {
+        if (IS_AIHUB) {
+          const cached = tokensCache.find((token) => Number(token.id) === Number(tokenId));
+          if (cached) Object.assign(cached, { group: "", groupId: 0 });
+        }
+        throw error;
+      }
     }
     const payload = await fetchJson(`/api/token/${tokenId}`);
     if (!payload.data || typeof payload.data !== "object") {
@@ -1010,6 +1033,7 @@
       if (manual) renderOptions(true);
       const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
       state.candidates = candidates;
+      if (IS_AIHUB) void refreshImageQualityHashes();
       state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (targetGroup) {
@@ -1033,6 +1057,7 @@
         return;
       }
 
+      if (IS_AIHUB) await tokenCatalogRefresh;
       const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => getTokenDetail(tokenId)));
       state.tokenResults = [];
       for (let index = 0; index < details.length; index += 1) {
@@ -1235,6 +1260,7 @@
       refs.tokenList.appendChild(option);
     });
     renderTokenSelectionCount();
+    renderImageQualityKeyOptions();
 
     refs.modelList.replaceChildren();
     const models = [...new Set([
@@ -1404,7 +1430,8 @@
   function renderCandidates() {
     if (!refs.candidateRows) return;
     refs.candidateRows.replaceChildren();
-    const rows = state.candidates
+    const rows = IS_AIHUB ? sortRowsWithImageQuality(state.candidates, config.selectionMode,
+      imageQualityEnabled(config) ? candidateImageQuality : null) : state.candidates
       .slice()
       .sort((left, right) => {
         if (left.available !== right.available) return left.available ? -1 : 1;
@@ -1424,16 +1451,26 @@
       const warnings = Array.isArray(candidate.warnings) ? candidate.warnings : [];
       const warningText = warnings.map(reasonLabel).join("、");
       row.className = `candidate ${candidate.available ? "candidate-ok" : "candidate-off"}${candidate.available && warningText ? " candidate-warning" : ""}`;
+      row.dataset.group = candidate.group;
       const name = document.createElement("span");
       name.className = "candidate-name";
       const signal = document.createElement("span");
       signal.className = "candidate-signal";
       signal.setAttribute("aria-hidden", "true");
-      const nameLabel = document.createElement("span");
+      const nameLabel = document.createElement(IS_AIHUB ? "button" : "span");
       nameLabel.className = "candidate-name-label";
       nameLabel.textContent = candidate.group;
       nameLabel.title = candidate.group;
       if (IS_AIHUB) {
+        nameLabel.type = "button";
+        nameLabel.title = `${candidate.group} · 点击复制完整名称`;
+        nameLabel.setAttribute("aria-label", `复制完整分组名称：${candidate.group}`);
+        nameLabel.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(candidate.group);
+            setStatus(`已复制完整分组名称：${candidate.group}`, "success");
+          } catch { setStatus("复制失败，可在图片弹窗标题查看完整名称", "warning"); }
+        });
         name.classList.add("candidate-name-with-media");
         name.append(createDetectionImageThumbnail(candidate), nameLabel);
       } else {
@@ -1522,9 +1559,23 @@
         row.classList.add("candidate-details");
         const heading = document.createElement("div");
         heading.className = "candidate-heading";
-        heading.append(name, verdict);
+        const currentTokens = candidateCurrentTokens(candidate, tokensCache, config.tokenIds);
+        if (currentTokens.length) {
+          row.dataset.current = "true";
+          const currentTag = document.createElement("span");
+          currentTag.className = "candidate-current-tag";
+          currentTag.textContent = currentTokens.length > 1 ? `当前×${currentTokens.length}` : "当前";
+          currentTag.title = `当前使用：${currentTokens.map(tokenLabel).join("、")}`;
+          currentTag.setAttribute("aria-label", currentTag.title);
+          heading.append(currentTag);
+        }
+        heading.prepend(name);
+        heading.append(verdict);
         const metrics = document.createElement("dl");
         metrics.className = "candidate-metrics";
+        ratio.textContent = `${formatRatio(candidate.ratio).replace(/x$/, "")}/${hasEffectiveEstimate ? formatRatio(candidateEffectiveRatio(candidate)) : "—"}`;
+        firstTokenLatency.textContent = formatLatency(candidate.firstTokenLatencyMs);
+        firstTokenLatency.title = `${candidateFirstTokenLatencyTitle(candidate)} · ${formatAihubLatency(candidate.firstTokenLatencyMs)}`;
         [
           ["倍率", ratio], ["整体", success], ["近期", recentSuccess],
           ["首字", firstTokenLatency], ["输出", outputLatency], ["缓存", cacheHitRate],
@@ -1538,7 +1589,30 @@
           metric.append(term, definition);
           metrics.appendChild(metric);
         });
-        row.append(heading, metrics);
+        const thumbnail = name.querySelector(".candidate-pelican");
+        const media = document.createElement("div");
+        media.className = "candidate-media";
+        media.append(thumbnail);
+        if (imageQualityEnabled(config)) {
+          const entry = candidateImageQuality(candidate);
+          const score = document.createElement("button");
+          score.type = "button";
+          score.className = "candidate-image-score";
+          score.textContent = entry ? String(entry.score) : "—";
+          score.title = `${entry ? "MD5缓存结果 · " : ""}${imageQualityDescription(entry)}`;
+          score.setAttribute("aria-label", `${candidate.group}：${score.title}`);
+          score.disabled = !candidate.detectionMedia?.url;
+          score.addEventListener("click", () => openDetectionImage(candidate, thumbnail));
+          const metric = document.createElement("div");
+          metric.className = "candidate-metric candidate-quality-metric";
+          const term = document.createElement("dt");
+          term.textContent = "效果";
+          const value = document.createElement("dd");
+          value.append(score);
+          metric.append(term, value);
+          metrics.append(metric);
+        }
+        row.append(media, heading, metrics);
       } else {
         row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, cacheHitRate, verdict);
       }

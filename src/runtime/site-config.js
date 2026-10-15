@@ -63,7 +63,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.9";
+  const SCRIPT_VERSION = "0.15.10";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -81,6 +81,9 @@
     models: [],
     model: "",
     selectionMode: "saving",
+    imageQualityKeyId: 0,
+    imageQualityModel: "",
+    imageQualityTask: "鹈鹕骑自行车",
     groupFilterMode: "whitelist",
     groupWhitelist: [],
     groupBlacklist: [],
@@ -102,6 +105,7 @@
   });
 
   const STORAGE_PREFIX = storagePrefixForSite(SITE_ID);
+  const STORAGE_IMAGE_QUALITY = `${STORAGE_PREFIX}:image-quality:content:v2`;
   const STORAGE_CONFIG = `${STORAGE_PREFIX}:config:v1`;
   const STORAGE_LAST_SWITCH = `${STORAGE_PREFIX}:last-switch:v1`;
   const STORAGE_LOGS = `${STORAGE_PREFIX}:logs:v1`;

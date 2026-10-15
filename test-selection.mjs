@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.9", "the userscript metadata should expose current AIHub model-card support");
+assert.equal(metadataVersion, "0.15.10", "the userscript metadata should expose current AIHub model-card support");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -233,7 +233,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.9");
+assert.equal(api.extractUserscriptVersion(source), "0.15.10");
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(
@@ -514,7 +514,7 @@ assert.equal(
   "yesterday reconciliation should compare the same historical day for account and key usage",
 );
 assert.equal(source.includes("/api/v1/usage/dashboard/api-keys-usage"), false, "the limited batch endpoint must not become the statistics data source");
-assert.equal(source.includes("Authorization:"), false, "statistics diagnostics must not persist or print authorization credentials");
+assert.equal(fs.readFileSync(new URL("./src/statistics/usage.js", import.meta.url), "utf8").includes("Authorization:"), false, "statistics diagnostics must not persist or print authorization credentials");
 assert.equal(source.includes(".slice(0, 8)"), false, "the channel status table must not truncate the evaluated groups");
 assert.equal(source.includes('IS_AIHUB ? "倍率/价/预" : "标/预"'), true, "the multiplier column should expose route ratio, real price, and predicted values");
 assert.equal(source.includes("formatAihubLatency(candidate.firstTokenLatencyMs)"), true, "AIHub latency should use the provider page's millisecond display");
@@ -2669,6 +2669,30 @@ const strategyCandidates = [
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "saving").group, "most-stable");
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "stable").group, "most-stable");
 assert.equal(api.selectBestCandidate(strategyCandidates, "", "balanced").group, "balanced-choice");
+for (const mode of ["saving", "stable", "balanced"]) {
+  const unavailable = { ...strategyCandidates[2], group: "unavailable-perfect", available: false, effectiveRatio: 0.0001 };
+  const mixed = [unavailable, ...strategyCandidates];
+  const originalOrder = mixed.map(candidate => candidate.group).join(",");
+  const rows = api.sortCandidateRowsForMode(mixed, mode);
+  assert.equal(rows[0].group, api.selectBestCandidate(strategyCandidates, "", mode).group,
+    `${mode} list order must start with the policy recommendation, unaffected by unavailable groups`);
+  assert.equal(rows.at(-1).group, unavailable.group, "unavailable groups must follow every available group");
+  assert.equal(mixed.map(candidate => candidate.group).join(","), originalOrder, "display sorting must not mutate routing candidates");
+}
+const currentGroupTokens = [
+  { id: 1, groupId: 12, group: "renamed-group", name: "primary" },
+  { id: 2, groupId: 12, group: "selected", name: "backup" },
+  { id: 3, groupId: 13, group: "selected", name: "other-group" },
+  { id: 4, groupId: 12, group: "selected", name: "unselected" },
+];
+assert.deepEqual(Array.from(api.candidateCurrentTokens({ groupId: 12, group: "selected" }, currentGroupTokens, [1, 2, 3]), token => token.id), [1, 2],
+  "current markers must match selected key group IDs, not misleading or renamed display names");
+assert.equal(api.candidateCurrentTokens({ groupId: 12, group: "selected" }, currentGroupTokens, []).length, 0,
+  "no selected keys must produce no current group marker");
+assert.equal(api.candidateCurrentTokens({ group: "selected" }, currentGroupTokens, [2]).length, 1,
+  "legacy data may fall back to group names when group IDs are absent");
+assert.equal(api.candidateCurrentTokens({ groupId: 12, group: "selected" }, [...currentGroupTokens, currentGroupTokens[0]], [1, 1]).length, 1,
+  "duplicate keys must not inflate current-group counts");
 assert.ok(
   api.candidateHealthScore(strategyCandidates[2]) > api.candidateHealthScore(strategyCandidates[1]),
   "stable scoring should reward recent success, latency, output time, and cache hit rate",
@@ -3081,3 +3105,173 @@ await assert.rejects(
 );
 
 console.log("selection tests passed");
+
+// Optional image quality: unknown is not zero; only validated Responses output is accepted.
+const qualityResult = { unable_to_assess: false, task: 36, structure: 31, finish: 18,
+  confidence: "high", reasons: ["主体完整，车轮连接略有错位"] };
+const qualityPayload = (value) => ({ status: "completed", output: [{ type: "message", role: "assistant",
+  content: [{ type: "output_text", text: JSON.stringify(value) }] }] });
+const parsedQuality = api.parseImageQualityResponse(qualityPayload(qualityResult));
+assert.equal(parsedQuality.score, 85);
+assert.equal(api.parseImageQualityResponse(qualityPayload({ ...qualityResult, task: 0, structure: 0, finish: 0 })).score, 0);
+for (const changed of [{ task: 41 }, { structure: -1 }, { finish: "18" }, { task: 1.5 },
+  { confidence: "certain" }, { unable_to_assess: true }, { reasons: null }, { reasons: [] }, { reasons: ["  "] }, { reasons: ["x".repeat(181)] }]) {
+  assert.throws(() => api.parseImageQualityResponse(qualityPayload({ ...qualityResult, ...changed })));
+}
+assert.throws(() => api.parseImageQualityResponse({ ...qualityPayload(qualityResult), status: "incomplete" }));
+assert.throws(() => api.parseImageQualityResponse({ status: "completed", output: [{ type: "reasoning", content: [{ type: "output_text", text: JSON.stringify(qualityResult) }] }] }));
+const qualityNow = Date.now();
+const qualityEntry = { ...parsedQuality, assessedAt: qualityNow };
+const qualitySettings = { imageQualityKeyId: 5, imageQualityModel: "vision-example", imageQualityTask: "鹈鹕骑自行车" };
+const fixtureMd5 = "900150983cd24fb0d6963f7d28e17f72";
+const qualityContentKey = api.imageQualityContentKey(fixtureMd5, 3, qualitySettings);
+const oldContentKey = api.imageQualityContentKey(fixtureMd5, 4, qualitySettings);
+const futureContentKey = api.imageQualityContentKey(fixtureMd5, 5, qualitySettings);
+const brokenContentKey = api.imageQualityContentKey(fixtureMd5, 6, qualitySettings);
+const sanitizedQuality = api.normalizeImageQualityCache({
+  [qualityContentKey]: { ...qualityEntry, key: "must-not-persist", bytes: "must-not-persist" },
+  [oldContentKey]: { ...qualityEntry, assessedAt: qualityNow - 365 * 24 * 3600000 },
+  [futureContentKey]: { ...qualityEntry, assessedAt: qualityNow + 1 },
+  [brokenContentKey]: { ...qualityEntry, score: 100 },
+  malformed: qualityEntry,
+}, qualityNow);
+assert.equal(Object.keys(sanitizedQuality).length, 2, "valid content results must not expire with time");
+assert.ok(sanitizedQuality[oldContentKey], "year-old analysis remains reusable");
+assert.equal("key" in sanitizedQuality[qualityContentKey], false, "cache must whitelist score metadata only");
+assert.equal("bytes" in sanitizedQuality[qualityContentKey], false);
+const qualityCandidate = { groupId: 1, detectionMedia: { status: "successful", url: "https://aihub.top/api/v1/public/model-detection-artifacts/fixture-1", publishedAt: "2026-10-15" } };
+const fixtureImageData = "data:image/png;base64,iVBORw0KGgo=";
+const qualityRequest = api.buildImageQualityRequest(qualityCandidate, qualitySettings, fixtureImageData);
+assert.equal(qualityRequest.model, "vision-example");
+assert.equal(qualityRequest.store, false);
+assert.equal(qualityRequest.input[0].content[1].image_url, fixtureImageData, "model must analyze exactly the locally hashed bytes");
+assert.throws(() => api.buildImageQualityRequest({ detectionMedia: { url: "https://other.example/image.png" } }, qualitySettings, fixtureImageData));
+assert.throws(() => api.buildImageQualityRequest(qualityCandidate, qualitySettings));
+assert.throws(() => api.buildImageQualityRequest(qualityCandidate, qualitySettings, "data:text/html;base64,aGVsbG8="));
+for (const change of [{ imageQualityModel: "other" }, { imageQualityTask: "different" }]) {
+  assert.notEqual(api.imageQualityContentKey(fixtureMd5, 3, { ...qualitySettings, ...change }), qualityContentKey);
+}
+assert.equal(api.imageQualityContentKey(fixtureMd5, 3, { ...qualitySettings, imageQualityKeyId: 6 }), qualityContentKey,
+  "changing billing key alone must reuse the same image analysis");
+assert.equal(api.imageQualityContentKey("invalid", 3, qualitySettings), "");
+assert.equal(api.imageQualityContentKey(fixtureMd5, 0, qualitySettings), "");
+assert.equal(api.imageQualityContentKey(fixtureMd5, 8 * 1024 * 1024 + 1, qualitySettings), "");
+assert.equal(api.imageQualityIdentity({ detectionMedia: { status: "failed" } }, qualitySettings), "");
+assert.equal(api.imageQualityIdentity({ ...qualityCandidate, groupId: 2 }), api.imageQualityIdentity(qualityCandidate),
+  "source indexing must not duplicate identical URL/version across groups");
+const md5Vectors = [
+  ["", "d41d8cd98f00b204e9800998ecf8427e"], ["a", "0cc175b9c0f1b6a831c399e269772661"],
+  ["abc", fixtureMd5], ["message digest", "f96b697d7cb7938d525a2f31aaf161d0"],
+  ["abcdefghijklmnopqrstuvwxyz", "c3fcd3d76192e4007dfb496cca67e13b"],
+  ["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", "d174ab98d277d9f5a5611c2c9f419d9f"],
+  ["12345678901234567890123456789012345678901234567890123456789012345678901234567890", "57edf4a22be3c955ac49da2e2107b67a"],
+];
+for (const [input, expected] of md5Vectors) assert.equal(api.imageBytesMd5(new TextEncoder().encode(input)), expected);
+const { createHash } = await import("node:crypto");
+for (const length of [0, 1, 55, 56, 63, 64, 65, 127, 128, 1024, 8193, 1048576]) {
+  const bytes = Uint8Array.from({ length }, (_, index) => (index * 131 + 17) % 256);
+  assert.equal(api.imageBytesMd5(bytes), createHash("md5").update(bytes).digest("hex"), `MD5 binary length ${length}`);
+  if (length > 3) assert.equal(api.imageBytesMd5(bytes.subarray(1, length - 1)), createHash("md5").update(bytes.subarray(1, length - 1)).digest("hex"));
+}
+assert.equal(api.imageQualityMime(Uint8Array.from([137,80,78,71,13,10,26,10])), "image/png");
+assert.equal(api.imageQualityMime(Uint8Array.from([255,216,255,224])), "image/jpeg");
+assert.equal(api.imageQualityMime(new TextEncoder().encode("GIF89a")), "image/gif");
+assert.equal(api.imageQualityMime(new TextEncoder().encode("RIFF1234WEBP")), "image/webp");
+assert.equal(api.imageQualityMime(new TextEncoder().encode("<html>error</html>")), "");
+const manyContent = Object.fromEntries(Array.from({ length: 1002 }, (_, index) => [
+  api.imageQualityContentKey(index.toString(16).padStart(32, "0"), 10, qualitySettings),
+  { ...qualityEntry, assessedAt: qualityNow - index },
+]));
+assert.equal(Object.keys(api.normalizeImageQualityCache(manyContent, qualityNow)).length, 1000);
+console.log("MD5 vectors, content-cache isolation, persistence, and image-byte checks passed");
+const qualitySortRows = [
+  { group: "first", available: true, ratio: 1, successRate: 100, latestSuccessRate: 100, firstTokenLatencyMs: 1000, outputTokensPerSecond: 50, cacheHitRate: 100 },
+  { group: "second", available: true, ratio: 1, successRate: 100, latestSuccessRate: 100, firstTokenLatencyMs: 1000, outputTokensPerSecond: 50, cacheHitRate: 100 },
+  { group: "off", available: false, ratio: 0.01, successRate: 100, latestSuccessRate: 100 },
+];
+const qualityRowsBefore = JSON.stringify(qualitySortRows);
+assert.equal(api.sortRowsWithImageQuality(qualitySortRows, "stable", row => ({ ...qualityEntry, score: row.group === "first" ? 0 : 100 }))[0].group, "second");
+assert.equal(api.sortRowsWithImageQuality(qualitySortRows, "stable", row => ({ ...qualityEntry, confidence: "low", score: row.group === "first" ? 0 : 100 }))[0].group, "first");
+assert.equal(api.sortRowsWithImageQuality(qualitySortRows, "stable", () => qualityEntry).at(-1).group, "off");
+assert.equal(JSON.stringify(api.sortRowsWithImageQuality(qualitySortRows, "saving", null)), JSON.stringify(api.sortCandidateRowsForMode(qualitySortRows, "saving")));
+assert.equal(JSON.stringify(qualitySortRows), qualityRowsBefore);
+console.log("optional image-quality tests passed");
+
+// Reverification: use AIHub's actual provider branch and compare to independently calculated scores.
+const verifiedStrategyRows = [
+  { providerId: "aihub", group: "verified-cheap", available: true, ratio: 0.18,
+    effectiveRatioReady: true, effectiveRatio: 0.05, recentMinSuccess: 96, aggregateSuccess: 96,
+    firstTokenLatencyMs: 12000, outputLatencyMs: 50000, cacheHitRate: 10 },
+  { providerId: "aihub", group: "verified-balanced", available: true, ratio: 0.3,
+    effectiveRatioReady: true, effectiveRatio: 0.08, recentMinSuccess: 100, aggregateSuccess: 99.5,
+    firstTokenLatencyMs: 1200, outputLatencyMs: 7000, cacheHitRate: 80 },
+  { providerId: "aihub", group: "verified-stable", available: true, ratio: 0.3,
+    effectiveRatioReady: true, effectiveRatio: 0.2, recentMinSuccess: 100, aggregateSuccess: 100,
+    firstTokenLatencyMs: 500, outputLatencyMs: 2500, cacheHitRate: 99 },
+];
+const verifiedHealthScores = [55.19047619047619, 82.18970588235294, 91.9];
+const verifiedPriceScores = [100, 62.5, 25];
+const verifiedOrders = {
+  saving: ["verified-cheap", "verified-balanced", "verified-stable"],
+  stable: ["verified-stable", "verified-balanced", "verified-cheap"],
+  balanced: ["verified-balanced", "verified-stable", "verified-cheap"],
+};
+for (const mode of ["saving", "stable", "balanced"]) {
+  verifiedStrategyRows.forEach((row, index) => {
+    const expected = mode === "saving" ? verifiedPriceScores[index]
+      : mode === "stable" ? verifiedHealthScores[index]
+        : verifiedHealthScores[index] * 0.7 + verifiedPriceScores[index] * 0.3;
+    assert.ok(Math.abs(api.candidateStrategyScore(row, verifiedStrategyRows, mode) - expected) < 1e-9,
+      `${mode}: actual AIHub branch must match the independently calculated score`);
+  });
+  assert.deepEqual(Array.from(api.sortCandidateRowsForMode(verifiedStrategyRows, mode), row => row.group), verifiedOrders[mode]);
+  assert.equal(api.selectBestCandidate(verifiedStrategyRows, "", mode).group, verifiedOrders[mode][0]);
+
+  const nearTiedRows = mode === "saving" ? [
+    { ...verifiedStrategyRows[0], group: "slightly-cheaper", ratio: 0.1, effectiveRatio: 0.1 },
+    { ...verifiedStrategyRows[2], group: "healthier-price-tie", ratio: 0.2, effectiveRatio: 0.10000005 },
+  ] : [
+    { ...verifiedStrategyRows[2], group: "lower-ratio", ratio: 0.1, cacheHitRate: 99.9999 },
+    { ...verifiedStrategyRows[2], group: "slightly-healthier", ratio: 0.2, cacheHitRate: 100 },
+  ];
+  const expectedTieOrder = mode === "saving"
+    ? ["healthier-price-tie", "slightly-cheaper"] : ["lower-ratio", "slightly-healthier"];
+  assert.deepEqual(Array.from(api.sortCandidateRowsForMode(nearTiedRows, mode), row => row.group), expectedTieOrder);
+  for (const qualityFor of [null, () => null, () => ({ score: 100, confidence: "low" })]) {
+    assert.deepEqual(Array.from(api.sortRowsWithImageQuality(nearTiedRows, mode, qualityFor), row => row.group), expectedTieOrder,
+      `${mode}: unavailable or low-evidence image scores must preserve the original near-tie ordering`);
+  }
+  const equalStrategyRows = [
+    { ...verifiedStrategyRows[1], group: "poor-image" },
+    { ...verifiedStrategyRows[1], group: "good-image" },
+    { ...verifiedStrategyRows[1], group: "unavailable-image", available: false },
+  ];
+  assert.deepEqual(Array.from(api.sortRowsWithImageQuality(equalStrategyRows, mode,
+    row => ({ score: row.group === "poor-image" ? 0 : 100, confidence: "high" })), row => row.group),
+  ["good-image", "poor-image", "unavailable-image"], `${mode}: image quality must break real strategy ties without reviving unavailable rows`);
+  assert.equal(api.selectBestCandidate(equalStrategyRows, "", mode).group, "poor-image",
+    `${mode}: image display sorting must not mutate automatic routing order`);
+  assert.equal(api.selectBestCandidate([], "", mode), null);
+  assert.equal(api.selectBestCandidate([{ ...verifiedStrategyRows[0], available: false }], "", mode), null);
+}
+assert.equal(api.selectBestCandidate([
+  { ...verifiedStrategyRows[0], group: "other" },
+  { ...verifiedStrategyRows[2], group: "current", effectiveRatio: 0.05 },
+], "current", "saving").group, "current", "equal-cost saving routing must keep the current group");
+console.log("three-strategy formula and image-order regressions passed");
+
+assert.deepEqual(Array.from(api.normalizeImageQualityModels({ data: [
+  { id: "vision-b" }, { id: " vision-a " }, { id: "vision-b" },
+  { id: "" }, { id: 12 }, null, { id: "x".repeat(121) },
+] })), ["vision-a", "vision-b"], "key model choices must be unique, bounded strings");
+assert.deepEqual(Array.from(api.normalizeImageQualityModels({ data: [] })), []);
+assert.throws(() => api.normalizeImageQualityModels({ data: { id: "invalid" } }), /模型列表格式/);
+assert.throws(() => api.normalizeImageQualityModels(null), /模型列表格式/);
+console.log("image-quality model-choice tests passed");
+
+const recentlyReusedKey = api.imageQualityContentKey("f".repeat(32), 100, qualitySettings);
+const recentlyReusedCache = api.normalizeImageQualityCache({ ...manyContent,
+  [recentlyReusedKey]: { ...qualityEntry, assessedAt: qualityNow - 365 * 86400000, lastUsedAt: qualityNow },
+}, qualityNow);
+assert.ok(recentlyReusedCache[recentlyReusedKey], "recently reused old results must survive LRU eviction");
+assert.equal(Object.keys(recentlyReusedCache).length, 1000);

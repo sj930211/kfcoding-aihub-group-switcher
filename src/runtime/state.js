@@ -40,6 +40,12 @@
   }) : null;
   const pendingCandidates = new Map();
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
+  const imageQuality = {
+    cache: normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {})),
+    controller: null, hashController: null, hashes: new Map(), catalog: [], status: "",
+    modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
+    sample: null, testStatus: "", testResult: "",
+  };
   const state = {
     tone: "idle",
     status: config.enabled ? "等待首次检查" : "自动切换已暂停",
