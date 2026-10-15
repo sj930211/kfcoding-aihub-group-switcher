@@ -535,6 +535,7 @@
           font-size: 10px;
         }
         .candidate-head { padding: 0 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-raised); color: var(--muted); font-size: 8px; font-weight: 650; }
+        .candidate-head[hidden] { display: none; }
         .candidate { min-height: 39px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); color: var(--text-soft); }
         .candidate:last-child { border-bottom: 0; }
         .candidate:hover { background: var(--surface-raised); }
@@ -931,8 +932,8 @@
           .launcher { right: 10px; bottom: 10px; }
           .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 40px 40px 43px 43px 52px; }
-          .candidate-head span:nth-child(3), .candidate span:nth-child(3),
-          .candidate-head span:nth-child(7), .candidate span:nth-child(7) { display: none; }
+          .candidate-head > span:nth-child(3), .candidate > span:nth-child(3),
+          .candidate-head > span:nth-child(7), .candidate > span:nth-child(7) { display: none; }
         }
         @media (max-width: 390px) {
           .header { gap: 6px; padding-inline: 9px; }
@@ -949,8 +950,36 @@
           .control-grid { grid-template-columns: 1fr; }
           .field-wide { grid-column: auto; }
           .candidate-head, .candidate { grid-template-columns: minmax(70px, 1fr) 39px 41px 41px 48px; gap: 4px; }
-          .candidate-head span:nth-child(4), .candidate span:nth-child(4) { display: none; }
+          .candidate-head > span:nth-child(4), .candidate > span:nth-child(4) { display: none; }
           .actions { grid-template-columns: 1fr; }
+        }
+        .candidate.candidate-details { display: block; padding: 12px; }
+        .candidate-heading { display: flex; align-items: center; gap: 12px; min-height: 40px; }
+        .candidate-heading .candidate-name { flex: 1; gap: 10px; color: var(--text); }
+        .candidate-heading .candidate-name-label {
+          overflow: visible; text-overflow: clip; white-space: normal;
+          overflow-wrap: anywhere; font-size: 12px; font-weight: 650; line-height: 1.5;
+        }
+        .candidate-heading .candidate-pelican { flex-basis: 40px; width: 40px; height: 40px; }
+        .candidate-heading .verdict { flex: 0 0 auto; max-width: 32%; text-align: right; font-size: 10px; }
+        .candidate-metrics {
+          display: grid; grid-template-columns: 1.1fr .9fr .95fr 1.25fr .8fr .85fr;
+          align-items: start; gap: 0; margin: 12px 0 0;
+        }
+        .candidate-metric { min-width: 0; padding-inline: 8px; border-left: 1px solid var(--line); }
+        .candidate-metric:first-child { padding-left: 0; border-left: 0; }
+        .candidate-metric:last-child { padding-right: 0; }
+        .candidate-metric dt { margin-bottom: 6px; color: var(--text-soft); font-size: 9px; line-height: 1.2; }
+        .candidate-metric dd { margin: 0; font-size: 10px; line-height: 1.4; white-space: nowrap; }
+        .candidate-metrics .candidate-ratio { justify-items: start; gap: 3px; }
+        .candidate-metrics .candidate-ratio small { font-size: 9px; }
+        .candidate-metrics .candidate-ratio .candidate-price { font-size: 8px; }
+        .candidate-metrics .health-value { display: inline-block; }
+        .candidate-media-hint { margin: 0; padding: 8px 12px 0; border-top: 1px solid var(--line); color: var(--text-soft); font-size: 10px; }
+        @media (max-width: 420px) {
+          .candidate-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 12px; }
+          .candidate-metric:nth-child(4) { padding-left: 0; border-left: 0; }
+          .candidate-metric dd { font-size: 11px; }
         }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
@@ -1043,8 +1072,9 @@
         </div>
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
-          <div class="candidate-head"><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
+          <div class="candidate-head" ${IS_AIHUB ? "hidden" : ""}><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div data-ref="candidateRows"></div>
+          ${IS_AIHUB ? '<p class="candidate-media-hint">点击缩略图查看大图</p>' : ""}
         </section>
         </section>
         <section class="work-view" id="kf-view-statistics" data-view="statistics" role="tabpanel" aria-labelledby="kf-tab-statistics" tabindex="0" hidden>

@@ -1518,7 +1518,30 @@
       verdict.title = candidate.available
         ? (issueText ? `不阻断切换：${issueText}` : "符合全部目标模型的自动切换条件")
         : issueText || candidate.reasons.map(reasonLabel).join("、") || "不可用";
-      row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, cacheHitRate, verdict);
+      if (IS_AIHUB) {
+        row.classList.add("candidate-details");
+        const heading = document.createElement("div");
+        heading.className = "candidate-heading";
+        heading.append(name, verdict);
+        const metrics = document.createElement("dl");
+        metrics.className = "candidate-metrics";
+        [
+          ["倍率", ratio], ["整体", success], ["近期", recentSuccess],
+          ["首字", firstTokenLatency], ["输出", outputLatency], ["缓存", cacheHitRate],
+        ].forEach(([label, value]) => {
+          const metric = document.createElement("div");
+          metric.className = "candidate-metric";
+          const term = document.createElement("dt");
+          term.textContent = label;
+          const definition = document.createElement("dd");
+          definition.append(value);
+          metric.append(term, definition);
+          metrics.appendChild(metric);
+        });
+        row.append(heading, metrics);
+      } else {
+        row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, cacheHitRate, verdict);
+      }
       refs.candidateRows.appendChild(row);
     });
   }

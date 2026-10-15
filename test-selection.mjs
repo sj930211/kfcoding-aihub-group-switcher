@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.8", "the userscript metadata should expose current AIHub model-card support");
+assert.equal(metadataVersion, "0.15.9", "the userscript metadata should expose current AIHub model-card support");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -233,7 +233,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.8");
+assert.equal(api.extractUserscriptVersion(source), "0.15.9");
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(

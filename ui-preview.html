@@ -49,7 +49,7 @@
     if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
     values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, models: ["gpt-4.1"], model: "gpt-4.1", selectionMode: "balanced" });
-    values.set("aihub-group-switcher:config:v1", { theme: previewParams.get("theme") || "dark", glassTransparency: 0, enabled: false, models: ["gpt-6.1-sol", "gpt-6-astra"], model: "gpt-6.1-sol", selectionMode: "balanced" });
+    values.set("aihub-group-switcher:config:v1", { theme: previewParams.get("theme") || "dark", glassTransparency: 0, enabled: false, models: ["gpt-6.1-sol", "gpt-6-astra"], model: "gpt-6.1-sol", selectionMode: "balanced", ...(previewParams.has("layout") ? { minSuccessRate: 35, maxFirstTokenLatencySeconds: 20 } : {}) });
     values.set("aihub-group-switcher:ui:v1", {
       activeView: previewParams.has("statistics") ? "statistics" : "monitor",
       statisticsMetric: previewParams.get("metric") || "spend",
@@ -74,7 +74,7 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.15.9" : "0.15.8";
+    const previewVersion = previewParams.has("update") ? "0.15.10" : "0.15.9";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     const previewKeys = Array.from({ length: 12 }, (_, index) => ({
       id: index + 1,
@@ -84,6 +84,9 @@
       group: { id: 1, name: "A001-SOL" },
     }));
     const previewMode = previewParams.get("state") || "complete";
+    const previewGroups = (previewParams.has("layout")
+      ? ["A034-Team", "A039-Plus/Team", "A039-Pro-高并发专线", "A037-官转"]
+      : ["A001-SOL"]).map((name, index) => ({ id: index + 1, name, rate_multiplier: [0.18, 0.23, 0.30, 0.50][index] }));
     const dateDomain = (start, end) => {
       const dates = [];
       const current = new Date(`${start}T12:00:00`);
@@ -127,9 +130,9 @@
         return jsonResponse({ items: previewKeys.slice(start, start + size), total: previewKeys.length, page, page_size: size });
       }
       if (url.pathname === "/api/v1/groups/available") {
-        return jsonResponse([{ id: 1, name: "A001-SOL", rate_multiplier: 0.08 }]);
+        return jsonResponse(previewParams.has("layout") ? previewGroups : [{ id: 1, name: "A001-SOL", rate_multiplier: 0.08 }]);
       }
-      if (url.pathname === "/api/v1/groups/rates") return jsonResponse({ "A001-SOL": 0.08 });
+      if (url.pathname === "/api/v1/groups/rates") return jsonResponse(previewParams.has("layout") ? Object.fromEntries(previewGroups.map(group => [group.id, group.rate_multiplier])) : { "A001-SOL": 0.08 });
       if (/^\/api\/v[12]\/public\/providers$/.test(url.pathname)) {
         return jsonResponse({
           version: 2,
@@ -157,7 +160,16 @@
             model_health: { sol: "healthy", terra: "healthy", luna: "healthy", astra: "healthy" },
             success_rates: { "1h": 0.998, "24h": 0.997 },
             enabled: true,
-          }],
+          }].flatMap(item => previewParams.has("layout") ? previewGroups.map((group, index) => ({
+            ...item, group_id: group.id, code: group.name, rate_multiplier: group.rate_multiplier,
+            available: true, probe_e2e_ttft_ms: [10598, 11024, 10583, 13945][index],
+            output_tokens: 1, output_tps: [33.333, 2.786, 1.751, 0.417][index],
+            cache_hit_rate: [88.6, 90.5, 91.4, 93.6][index],
+            success_rates: { "1h": [0.895, 0.517, 0.388, 0.951][index] },
+            effective_multiplier_ready: true,
+            effective_multiplier: [0.1844, 0.2153, 0.2686, 0.3984][index],
+            effective_input_price_per_million_1h: [0.19, 0.23, 0.31, 0.42][index],
+          })) : [item]),
         });
       }
       if (/^\/api\/v[12]\/public\/providers\/series$/.test(url.pathname)) return jsonResponse({ items: [] });
