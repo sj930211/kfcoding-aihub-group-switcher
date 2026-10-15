@@ -186,7 +186,7 @@
   function imageQualityFailureMessage(error, controller) {
     // Never display upstream response bodies or browser errors that may contain credentials.
     if (controller.signal.aborted) return "操作已停止；已发出的评分请求可能已计费";
-    return error instanceof Error && /^(请求失败（HTTP|接口未返回|无法读取完整|评分未完成|评分格式|模型未能|评分超出|图片地址|图片内容|图片读取|模型列表)/.test(error.message)
+    return error instanceof Error && /^(读取评分密钥失败|读取模型列表失败|图片评分请求失败|接口未返回|无法读取完整|评分未完成|评分格式|模型未能|评分超出|图片地址|图片内容|图片读取|模型列表)/.test(error.message)
       ? error.message : "请求失败，请检查网络、密钥和模型图片能力；未自动重试";
   }
 
@@ -228,11 +228,48 @@
     imageQuality.modelsController?.abort();
   }
 
+  async function readImageQualityErrorPrefix(response) {
+    const reader = response.body?.getReader?.();
+    if (!reader) return "";
+    const decoder = new TextDecoder();
+    let text = "";
+    let length = 0;
+    try {
+      while (length < 4096) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = value.subarray(0, 4096 - length);
+        length += chunk.length;
+        text += decoder.decode(chunk, { stream: true });
+      }
+      return text;
+    } catch { return ""; }
+    finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+
   async function imageQualityFetchJson(path, options, controller) {
     const timer = setTimeout(() => controller.abort(), 60000);
     try {
       const response = await fetch(path, { ...options, signal: controller.signal, cache: "no-store", redirect: "error" });
-      if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}），请检查密钥、余额及模型图片能力`);
+      if (!response.ok) {
+        const prefix = await readImageQualityErrorPrefix(response);
+        // Match only an allowlisted marker, including AIHub's JSON + SSE error shape.
+        // Never echo response text: upstreams may include credentials or request content.
+        const supplierBlocked = /"(?:code|message)"\s*:\s*"SUPPLIER_UPSTREAM_BLOCKED"/.test(prefix);
+        const stage = path === "/v1/responses" ? "图片评分请求"
+          : path === "/v1/models" ? "读取模型列表" : "读取评分密钥";
+        const reason = supplierBlocked
+          ? "供应商上游拒绝请求（SUPPLIER_UPSTREAM_BLOCKED），请手动选择其他评分密钥/分组或联系 AIHub"
+          : response.status === 401 ? "认证失败，请检查登录状态或评分密钥"
+            : response.status === 403 ? "接口拒绝访问，请核对密钥、分组及上游访问限制"
+              : response.status === 429 ? "接口限流或配额受限，请核对额度后手动重试"
+                : response.status >= 500 ? "服务端或上游异常，请稍后手动重试"
+                  : "接口未接受请求，请核对模型与请求参数";
+        throw new Error(`${stage}失败（HTTP ${response.status}）：${reason}；未自动重试，未采用图片分。`);
+      }
       try { return await response.json(); }
       catch { throw new Error("接口未返回有效JSON，未采用图片分"); }
     } finally { clearTimeout(timer); }
@@ -280,7 +317,7 @@
       }
       if (!bytes.length || bytes.length > IMAGE_QUALITY_MAX_BYTES || !imageQualityMime(bytes)) throw new Error("图片内容不是支持的有效图片，未调用模型");
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const fingerprint = { md5: imageBytesMd5(bytes), byteLength: bytes.length };
+      const fingerprint = { md5: await imageBytesMd5Async(bytes, controller.signal), byteLength: bytes.length };
       imageQuality.hashes.set(identity, fingerprint);
       return { ...fingerprint, bytes };
     } finally { clearTimeout(timer); }

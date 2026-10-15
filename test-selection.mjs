@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.10", "the userscript metadata should expose current AIHub model-card support");
+assert.equal(metadataVersion, "0.15.11", "the userscript metadata should expose current AIHub model-card support");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -224,6 +224,7 @@ assert.equal(
 const sandbox = {
   __KFCODING_GROUP_SWITCHER_TEST__: true,
   AbortController,
+  DOMException,
   clearTimeout,
   console,
   setTimeout,
@@ -233,7 +234,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.10");
+assert.equal(api.extractUserscriptVersion(source), "0.15.11");
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(
@@ -3275,3 +3276,48 @@ const recentlyReusedCache = api.normalizeImageQualityCache({ ...manyContent,
 }, qualityNow);
 assert.ok(recentlyReusedCache[recentlyReusedKey], "recently reused old results must survive LRU eviction");
 assert.equal(Object.keys(recentlyReusedCache).length, 1000);
+
+// AIHub can append a response.failed SSE event to a JSON HTTP error.
+// Replay the observed shape at the real fetch boundary; never echo arbitrary bodies.
+const supplierBlockedBody = '{"error":{"message":"SUPPLIER_UPSTREAM_BLOCKED","type":"invalid_request_error"}}'
+  + 'event: response.failed\ndata: {"response":{"status":"failed","error":{"code":"upstream_error"}}}\n\n';
+for (const [path, status, body, expected] of [
+  ["/v1/responses", 403, supplierBlockedBody, /供应商上游.*SUPPLIER_UPSTREAM_BLOCKED/],
+  ["/v1/responses", 403, '{"error":{"code":"SUPPLIER_UPSTREAM_BLOCKED"}}', /供应商上游.*SUPPLIER_UPSTREAM_BLOCKED/],
+  ["/api/v1/keys/5", 403, "private-fixture-credential", /读取评分密钥失败（HTTP 403）/],
+  ["/v1/models", 403, "private-fixture-credential", /读取模型列表失败（HTTP 403）/],
+  ["/v1/responses", 403, "private-fixture-credential", /图片评分请求失败（HTTP 403）.*拒绝访问/],
+  ["/v1/responses", 401, "private-fixture-credential", /HTTP 401/],
+  ["/v1/responses", 429, "private-fixture-credential", /HTTP 429/],
+  ["/v1/responses", 502, "private-fixture-credential", /HTTP 502/],
+]) {
+  let failureCalls = 0;
+  sandbox.TextDecoder = TextDecoder;
+  sandbox.fetch = async () => { failureCalls++; return new Response(body, { status }); };
+  const controller = new AbortController();
+  await assert.rejects(api.imageQualityFetchJson(path, {}, controller), (error) => {
+    const message = api.imageQualityFailureMessage(error, controller);
+    assert.match(message, expected);
+    assert.equal(message.includes("private-fixture-credential"), false);
+    assert.match(message, /未自动重试/);
+    return true;
+  });
+  assert.equal(failureCalls, 1, "HTTP failures must never trigger an automatic retry");
+}
+sandbox.fetch = async () => new Response('{"data":[]}', { status: 200 });
+assert.deepEqual(JSON.parse(JSON.stringify(await api.imageQualityFetchJson("/v1/models", {}, new AbortController()))), { data: [] });
+delete sandbox.fetch;
+console.log("image-quality HTTP error replay tests passed");
+
+const asyncMd5Bytes = new Uint8Array(512 * 1024).map((_, index) => index % 251);
+let md5EventLoopAdvanced = false;
+setTimeout(() => { md5EventLoopAdvanced = true; }, 0);
+assert.equal(await api.imageBytesMd5Async(asyncMd5Bytes), createHash("md5").update(asyncMd5Bytes).digest("hex"));
+assert.equal(md5EventLoopAdvanced, true, "large-image hashing must yield so input events can run");
+const md5Abort = new AbortController();
+setTimeout(() => md5Abort.abort(), 0);
+await assert.rejects(api.imageBytesMd5Async(asyncMd5Bytes, md5Abort.signal), (error) => error.name === "AbortError");
+const md5AlreadyAborted = new AbortController();
+md5AlreadyAborted.abort();
+await assert.rejects(api.imageBytesMd5Async(asyncMd5Bytes, md5AlreadyAborted.signal), (error) => error.name === "AbortError");
+console.log("cooperative MD5 correctness, event-loop yielding, and cancellation tests passed");

@@ -20,6 +20,7 @@
   let isolationUndoScheduler = null;
   let root = null;
   let refs = {};
+  const renderedSections = new WeakMap();
   let running = false;
   let pricingCache = null;
   let tokensCache = [];

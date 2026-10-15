@@ -1429,6 +1429,11 @@
 
   function renderCandidates() {
     if (!refs.candidateRows) return;
+    const qualityEnabled = imageQualityEnabled(config);
+    if (!sectionNeedsRender(refs.candidateRows, [state.candidates, config.selectionMode,
+      tokensCache, ...tokensCache.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
+      config.tokenIds.join(","), qualityEnabled, config.imageQualityModel, config.imageQualityTask,
+      ...(qualityEnabled ? state.candidates.map(candidateImageQuality) : [])])) return;
     refs.candidateRows.replaceChildren();
     const rows = IS_AIHUB ? sortRowsWithImageQuality(state.candidates, config.selectionMode,
       imageQualityEnabled(config) ? candidateImageQuality : null) : state.candidates
@@ -1622,6 +1627,8 @@
 
   function renderManualGroups() {
     if (!refs.manualGroup) return;
+    if (!sectionNeedsRender(refs.manualGroup, [state.candidates, state.tokenResults,
+      state.tokenResults.length, running])) return;
     const selectedGroup = refs.manualGroup.querySelector('input[data-manual-group]:checked')?.value || "";
     refs.manualGroup.replaceChildren();
 
@@ -1681,6 +1688,7 @@
 
   function renderLogs() {
     if (!refs.logs) return;
+    if (!sectionNeedsRender(refs.logs, [state.logs])) return;
     refs.logs.replaceChildren();
     if (!state.logs.length) {
       const empty = document.createElement("div");
@@ -1704,6 +1712,7 @@
 
   function renderTokenResults() {
     if (!refs.tokenResultRows) return;
+    if (!sectionNeedsRender(refs.tokenResultRows, [state.tokenResults, state.tokenResults.length])) return;
     refs.tokenResultRows.replaceChildren();
     if (!state.tokenResults.length) {
       const empty = document.createElement("div");

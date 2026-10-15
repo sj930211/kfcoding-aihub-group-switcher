@@ -994,6 +994,27 @@
         .image-quality-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
         .image-quality-toolbar p { flex: 1; min-width: 0; }
         .image-quality-toolbar button { flex-shrink: 0; }
+        .settings-view > .section { padding: 16px; border-bottom: 1px solid var(--line); }
+        .settings-view > .section:last-of-type { border-bottom: 0; }
+        .settings-view .section-head { margin-bottom: 12px; }
+        .settings-view .model-detection-setting { margin-top: 12px; padding-bottom: 0; }
+        .settings-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+        .settings-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; }
+        .settings-label-row label { margin: 0; }
+        .settings-label-row .text-button { flex-shrink: 0; padding: 0; font-size: 10px; }
+        .settings-fields input, .settings-fields select { width: 100%; min-width: 0; }
+        .settings-view .image-quality-settings > p { margin-top: 8px; overflow-wrap: anywhere; }
+        .settings-view .settings-billing-note { color: var(--text-soft); }
+        .settings-disclosure { margin-top: 12px; border-top: 1px solid var(--line-soft); border-bottom: 0; }
+        .settings-disclosure > summary { padding: 10px 0; color: var(--text-soft); cursor: pointer; font-size: 11px; }
+        .settings-detail-content { display: grid; gap: 8px; padding-bottom: 4px; }
+        .settings-view .image-quality-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+        .settings-protection .protection-bar { margin-bottom: 0; border-bottom: 0; }
+        .settings-protection .route-settings-advanced { margin-top: 8px; border-bottom: 0; }
+        .settings-protection .isolation-section { padding: 4px 0; border: 0; }
+        .settings-secondary > .settings-appearance { margin: 0; border-top: 0; padding: 8px 0; }
+        .settings-secondary .settings-footer { margin-top: 8px; padding: 12px 0 0; border-top: 1px solid var(--line-soft); }
+        @media (max-width: 420px) { .settings-fields { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
         .image-quality-actions[hidden], .image-quality-settings[hidden] { display: none; }
         .image-quality-actions p, .image-quality-settings p { font-size: 10px; line-height: 1.5; color: var(--text-soft); margin: 2px 0; }
         .image-quality-test-result, .detection-image-quality { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -1161,7 +1182,7 @@
             <p>所有更改自动保存</p>
           </div>
         <section class="section control-section settings-section">
-          <div class="section-head"><h2 class="section-title">自动路由</h2><span class="section-meta">运行策略与保护</span></div>
+          <div class="section-head"><h2 class="section-title">自动路由</h2><span class="section-meta">密钥、模型与分组</span></div>
           <div class="automation-bar">
             <span class="automation-name">自动切换</span>
             <label class="toggle" for="kf-enabled" title="自动切换">
@@ -1173,23 +1194,6 @@
               <option value="stable">稳定优先</option>
               <option value="balanced">均衡推荐</option>
             </select>
-          </div>
-          <div class="protection-bar">
-            <span class="protection-copy">
-              <strong>消费保护</strong>
-              <small data-ref="spendProtectionStatus" data-tone="none">未启用</small>
-            </span>
-            <label class="toggle" for="kf-spend-protection" title="消费保护仅提醒，不影响任务">
-              <input id="kf-spend-protection" data-ref="spendProtectionEnabled" type="checkbox" aria-label="启用消费保护">
-              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
-            </label>
-            <label class="spend-limit-field">
-              <span>每日上限</span>
-              <input data-ref="dailySpendLimit" type="number" min="0" step="0.01" aria-label="每日消费上限">
-            </label>
-            <button class="icon-button" data-ref="resetSpendProtection" type="button" title="从当前消费重新计数" aria-label="重置消费保护计数">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 3v6h6"></path></svg>
-            </button>
           </div>
           <div class="control-grid">
             <div class="field">
@@ -1226,26 +1230,6 @@
                 </div>
               </div>
             </div>
-            <div class="field field-wide image-quality-settings" ${IS_AIHUB ? "" : "hidden"}>
-              <label for="kf-image-quality-key">图片效果评分（可选）</label>
-              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">不使用图片评分</option></select>
-              <label for="kf-image-quality-model">支持图片输入的评分模型</label>
-              <input id="kf-image-quality-model" data-ref="imageQualityModel" type="text" maxlength="120" list="kf-image-quality-models" placeholder="读取列表后选择，或输入模型名" autocomplete="off" aria-describedby="kf-image-quality-models-status">
-              <datalist id="kf-image-quality-models" data-ref="imageQualityModels"></datalist>
-              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
-              <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
-              <label for="kf-image-quality-task">图片预期任务</label>
-              <input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300">
-              <p>密钥或模型留空即关闭，不展示、不采用图片分。配置不会自动请求；手动评分或测试会消耗AIHub额度。批量每次最多10张，无自动重试。</p>
-              <div class="image-quality-toolbar">
-                <button class="text-button" type="button" data-ref="imageQualityTest">测试1张（计费）</button>
-                <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
-              </div>
-              <p data-ref="imageQualityTestStatus" role="status"></p>
-              <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
-              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
-              <p>任务40 + 结构40 + 完成度20。按原图MD5长期复用，最多保存1000条；模型、任务或规则变化才重新评分。测试1张会主动重新请求并计费。</p>
-            </div>
             <div class="field field-wide group-filter-field">
               <div class="group-filter-heading">
                 <label id="kf-group-filter-label" data-ref="groupFilterLabel">白名单分组</label>
@@ -1269,21 +1253,6 @@
               </div>
             </div>
           </div>
-        </section>
-          <section class="section isolation-section" aria-labelledby="kf-isolation-title">
-            <div class="section-head isolation-heading">
-              <div class="isolation-heading-copy">
-                <h2 class="section-title" id="kf-isolation-title">故障隔离</h2>
-                <p class="isolation-description">切换后的健康检查失败时自动隔离，不影响用户黑白名单</p>
-              </div>
-              <span class="isolation-actions">
-                <span class="section-meta" data-ref="isolationCount">当前无隔离</span>
-                <button class="text-button" data-ref="clearAllIsolations" type="button">清除全部</button>
-              </span>
-            </div>
-            <div class="isolation-list" data-ref="isolationRows"></div>
-        </section>
-        <section class="section settings-secondary">
           <div class="settings-appearance model-detection-setting"${IS_AIHUB ? "" : " hidden"}>
             <span class="settings-appearance-copy">
               <strong id="kf-model-detection-label">模型检测参与切换</strong>
@@ -1293,6 +1262,56 @@
               <input id="kf-require-model-detection" data-ref="requireModelDetection" type="checkbox" aria-labelledby="kf-model-detection-label" aria-describedby="kf-model-detection-help">
               <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
             </label>
+          </div>
+        </section>
+        <section class="section settings-group image-quality-settings" aria-labelledby="kf-image-quality-title" ${IS_AIHUB ? "" : "hidden"}>
+          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">可选 · 手动调用</span></div>
+          <div class="settings-fields">
+            <div class="field">
+              <label for="kf-image-quality-key">评分密钥</label>
+              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">不使用图片评分</option></select>
+            </div>
+            <div class="field">
+              <div class="settings-label-row"><label for="kf-image-quality-model">评分模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
+              <input id="kf-image-quality-model" data-ref="imageQualityModel" type="text" maxlength="120" list="kf-image-quality-models" placeholder="选择或输入支持图片的模型" autocomplete="off" aria-describedby="kf-image-quality-models-status">
+              <datalist id="kf-image-quality-models" data-ref="imageQualityModels"></datalist>
+            </div>
+          </div>
+          <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
+          <p class="settings-billing-note">测试按1张原图计费；批量每次最多10张，不自动重试。密钥或模型留空即关闭图片分。</p>
+          <div class="image-quality-toolbar">
+            <button class="button" type="button" data-ref="imageQualityTest">测试1张（计费）</button>
+            <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
+          </div>
+          <p data-ref="imageQualityTestStatus" role="status"></p>
+          <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
+          <details class="settings-disclosure">
+            <summary>评分规则与缓存</summary>
+            <div class="settings-detail-content">
+              <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
+              <p>任务40 + 结构40 + 完成度20。按原图MD5长期复用，最多保存1000条；模型、任务或规则变化才重新评分。测试1张会主动重新请求并计费。</p>
+              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
+            </div>
+          </details>
+        </section>
+        <section class="section settings-group settings-protection" aria-labelledby="kf-protection-title">
+          <div class="section-head"><h2 class="section-title" id="kf-protection-title">保护与判定</h2><span class="section-meta">消费与故障保护</span></div>
+          <div class="protection-bar">
+            <span class="protection-copy">
+              <strong>消费保护</strong>
+              <small data-ref="spendProtectionStatus" data-tone="none">未启用</small>
+            </span>
+            <label class="toggle" for="kf-spend-protection" title="消费保护仅提醒，不影响任务">
+              <input id="kf-spend-protection" data-ref="spendProtectionEnabled" type="checkbox" aria-label="启用消费保护">
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </label>
+            <label class="spend-limit-field">
+              <span>每日上限</span>
+              <input data-ref="dailySpendLimit" type="number" min="0" step="0.01" aria-label="每日消费上限">
+            </label>
+            <button class="icon-button" data-ref="resetSpendProtection" type="button" title="从当前消费重新计数" aria-label="重置消费保护计数">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 3v6h6"></path></svg>
+            </button>
           </div>
           <details class="route-settings-advanced">
             <summary>判定与保护参数</summary>
@@ -1311,6 +1330,25 @@
               <div class="field"><label>故障拉黑（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
             </div>
           </details>
+          <details class="settings-disclosure isolation-disclosure">
+            <summary>故障隔离</summary>
+          <section class="section isolation-section" aria-labelledby="kf-isolation-title">
+            <div class="section-head isolation-heading">
+              <div class="isolation-heading-copy">
+                <h2 class="section-title" id="kf-isolation-title">故障隔离</h2>
+                <p class="isolation-description">切换后的健康检查失败时自动隔离，不影响用户黑白名单</p>
+              </div>
+              <span class="isolation-actions">
+                <span class="section-meta" data-ref="isolationCount">当前无隔离</span>
+                <button class="text-button" data-ref="clearAllIsolations" type="button">清除全部</button>
+              </span>
+            </div>
+            <div class="isolation-list" data-ref="isolationRows"></div>
+        </section>
+          </details>
+        </section>
+        <section class="section settings-secondary settings-group" aria-labelledby="kf-appearance-title">
+          <div class="section-head"><h2 class="section-title" id="kf-appearance-title">界面与更新</h2></div>
           <div class="settings-appearance">
             <span class="settings-appearance-copy"><strong>界面主题</strong><small>可跟随系统自动切换</small></span>
             <select class="theme-select" data-ref="theme" aria-label="插件皮肤">
@@ -1326,7 +1364,6 @@
               <output class="glass-transparency-value mono" data-ref="glassTransparencyValue" for="kf-glass-transparency">0%</output>
             </span>
           </div>
-        </section>
           <div class="settings-footer">
             <span class="settings-version"><strong>脚本更新</strong><small>当前版本 v${SCRIPT_VERSION}</small></span>
             <button class="button settings-update" data-ref="checkUpdate" data-state="idle" data-update="none" type="button" title="检查更新" aria-label="检查更新">
@@ -1334,6 +1371,7 @@
               <span data-ref="updateLabel">检查更新</span>
             </button>
           </div>
+        </section>
         </section>
         <section class="work-view" id="kf-view-diagnostics" data-view="diagnostics" role="tabpanel" aria-labelledby="kf-tab-diagnostics" tabindex="0" hidden>
           <div class="view-intro">

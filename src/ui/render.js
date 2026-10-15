@@ -391,6 +391,15 @@
     renderStatisticsKeyRows(reconciliation, metric, exactCoverage && !reconciliation.anomaly);
   }
 
+  function sectionNeedsRender(element, dependencies) {
+    if (!element) return false;
+    const previous = renderedSections.get(element);
+    if (previous && previous.length === dependencies.length
+      && previous.every((value, index) => value === dependencies[index])) return false;
+    renderedSections.set(element, dependencies);
+    return true;
+  }
+
   function render() {
     if (!root) return;
     root.host.dataset.imageQuality = String(imageQualityEnabled(config));
@@ -527,14 +536,14 @@
         checkbox.disabled = running;
       });
     }
-    renderManualGroups();
+    if (refs.manualDialog?.open) renderManualGroups();
     if (refs.manualGroup) {
       refs.manualGroup.querySelectorAll('input[data-manual-group]').forEach((radio) => {
         radio.disabled = running;
       });
     }
     if (refs.manualSwitch) refs.manualSwitch.disabled = running;
-    renderIsolations();
+    if (!state.collapsed && state.activeView === "settings") renderIsolations();
     if (refs.isolationToast) {
       const undoAvailable = state.isolationUndo.entries.length > 0 && state.isolationUndo.expiresAt > Date.now();
       refs.isolationToast.hidden = !undoAvailable;
@@ -545,10 +554,12 @@
       }
     }
     renderImageQualityControls();
-    renderCandidates();
-    renderStatistics();
-    renderTokenResults();
-    renderLogs();
+    if (!state.collapsed && state.activeView === "monitor") renderCandidates();
+    if (!state.collapsed && state.activeView === "statistics") renderStatistics();
+    if (!state.collapsed && state.activeView === "diagnostics") {
+      renderTokenResults();
+      renderLogs();
+    }
   }
 
   function applyTheme() {

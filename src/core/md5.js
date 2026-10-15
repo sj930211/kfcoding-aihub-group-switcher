@@ -1,5 +1,5 @@
   // RFC 1321 byte-oriented MD5, used only as a content cache fingerprint.
-  function imageBytesMd5(input) {
+  function* imageMd5Steps(input) {
     const bytes = input instanceof Uint8Array ? input : ArrayBuffer.isView(input)
       ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
     const length = bytes.byteLength;
@@ -28,6 +28,26 @@
       }
       state[0] = (state[0] + a) | 0; state[1] = (state[1] + b) | 0;
       state[2] = (state[2] + c) | 0; state[3] = (state[3] + d) | 0;
+      // Bound each main-thread slice to 64KiB; sync callers consume without yielding.
+      if (offset && offset % 65536 === 0) yield;
     }
     return state.map((word) => [0, 8, 16, 24].map((shift) => ((word >>> shift) & 255).toString(16).padStart(2, "0")).join("")).join("");
+  }
+
+  function imageBytesMd5(input) {
+    const steps = imageMd5Steps(input);
+    let result;
+    do { result = steps.next(); } while (!result.done);
+    return result.value;
+  }
+
+  async function imageBytesMd5Async(input, signal) {
+    const steps = imageMd5Steps(input);
+    while (true) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const result = steps.next();
+      if (result.done) return result.value;
+      if (globalThis.scheduler?.postTask) await globalThis.scheduler.postTask(() => {}, { priority: "background" });
+      else await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
