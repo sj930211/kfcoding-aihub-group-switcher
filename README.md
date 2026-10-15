@@ -4,6 +4,8 @@
 
 ## 安装
 
+AIHub 的分组状态列表会显示每个分组最新检测生成的鹈鹕缩略图，点击后可放大查看原图，也可在新标签页打开；支持 Esc、关闭按钮和点击遮罩关闭，关闭后恢复键盘焦点。生成失败或暂无图片时显示对应状态，图片不会影响分组可用性与自动切换判断。图片来自站点公共检测接口，不另外生成或保存。
+
 1. 在浏览器安装 Tampermonkey。
 2. 点击[安装脚本](https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js)，由 Tampermonkey 确认安装。
 3. 登录 `https://kfcoding.codes/`、`https://aihub.top/usage`、`https://ooioo.work/` 或 `https://fluxionai.space/`，页面右下角会出现对应站点的分组监控。
@@ -101,7 +103,7 @@ AIHub 和 FluxionAI 复用页面当前的 Bearer 登录状态。脚本每次请�
 - 可用性优先读取 `/api/v2/public/providers` 和 `/api/v2/public/providers/series`，v2 汇总不可用时回退到同路径的 v1 版本，二者均不可用时再回退到 `/api/v1/public/monitor/summary` 和 `/api/v1/public/monitor/series/{range}`。监控页与模型目录共用这条回退链。序列接口临时不可用时保留同版本的有效汇总，不混入其他版本。v2 的整体成功率固定采用 `1h`；v1/legacy 优先使用设置所选窗口，其次为 `24h`，二者均缺失时采用明确标注的 `1h`。近期状态只采用时间最新的一个监测点；仅当分组的 `probe_model` 与目标模型相同时才使用该柱状图，否则使用目标模型自己的精确 `model_cards[].health`，旧版接口再回退到 `model_health`，避免新旧模型名称互相借用健康状态。
 - 首字延迟优先读取公共监测的 `runtime_trimmed_avg_ttft_ms`（最快 95% 用户平均），无有效样本时回退到 `runtime_p90_ttft_ms`，再回退到 `probe_e2e_ttft_ms`；列表按页面同口径显示毫秒，并在悬停提示中标明来源。缓存命中率读取公共监测的 `cacheHitRate`；完整输出耗时使用 `outputTokens / outputTokensPerSecond` 计算。
 - 平台预测倍率读取 `effective_multiplier`，并且只在 `effective_multiplier_ready=true`、数值有效时用于列表展示和省钱排序；`effective_input_price_per_million_1h` 作为悬停详情。未就绪时读取 `effective_multiplier_reason` 展示“统计窗口未就绪”或“样本不足”，不再根据缓存率自行推算。
-- 模型多选列表优先从 AIHub v2 公共监测的 `model_cards[].model` 生成，并使用卡片自身的 `health` 判断精确模型；当前接口返回的 `gpt-6-astra`、`gpt-6-sol`、`gpt-5.6-sol` 和 `gpt-5.6-luna` 不会与旧版 `model_health` 中的 `terra` 键互相映射。旧版接口没有 `model_cards` 时，才回退到 `model_health` 键并把 `astra` 映射为 `gpt-6-astra`，保持旧版本兼容。每个目标模型状态为 `healthy` 时允许继续判定，`failed` 或 `insufficient` 等非健康状态不会被当作可用。设置中的“模型检测参与切换”默认关闭：关闭时 `model_detection` 只显示警告，不会为 `stale` 状态背书或改变渠道资格；开启后，与已选目标模型匹配的 `model_detection.status` 为 `passed` 即可作为当前模型证据，不再要求新接口已省略的有效期和完成标志；若接口显式返回已过期、未完成或未全部通过，仍会立即判为不可用并绕过保持时间切换。AIHub 当前每个渠道只提供一条检测记录，因此没有匹配检测记录的其他已选模型继续由模型卡片或旧版 `model_health` 和基础指标判定，不会因缺少逐模型检测记录被误杀。
+- 模型多选列表优先从 AIHub v2 公共监测的 `model_cards[].model` 生成，并使用卡片自身的 `health` 判断精确模型；当前接口返回的 `gpt-6-astra`、`gpt-6.1-sol`、`gpt-5.6-sol` 和 `gpt-5.6-luna` 不会与旧版 `model_health` 中的 `terra` 键互相映射。旧版接口没有 `model_cards` 时，才回退到 `model_health` 键并把 `astra` 映射为 `gpt-6-astra`，保持旧版本兼容。每个目标模型状态为 `healthy` 时允许继续判定，`failed` 或 `insufficient` 等非健康状态不会被当作可用。设置中的“模型检测参与切换”默认关闭：关闭时 `model_detection` 只显示警告，不会为 `stale` 状态背书或改变渠道资格；开启后，与已选目标模型匹配的 `model_detection.status` 为 `passed` 即可作为当前模型证据，不再要求新接口已省略的有效期和完成标志；若接口显式返回已过期、未完成或未全部通过，仍会立即判为不可用并绕过保持时间切换。AIHub 当前每个渠道只提供一条检测记录，因此没有匹配检测记录的其他已选模型继续由模型卡片或旧版 `model_health` 和基础指标判定，不会因缺少逐模型检测记录被误杀。
 - 密钥分组更新沿用站点前端接口，只提交 `group_id`，成功后重新读取密钥详情确认结果。
 - 统计页的账户日趋势读取`GET /api/v1/usage/dashboard/trend`，按密钥日明细读取`GET /api/v1/user/api-keys/{id}/usage/daily`；两类请求共用浏览器当前时区和同一组自然日边界。今天按已完成小时展示并每 5 分钟刷新，昨天按前一自然日完整 24 小时展示且不自动刷新。批量密钥用量接口只提供今日与默认最近 30 天消费，缺少统一范围、请求数和 Token，因此不作为统计页数据源。
 - 统计刷新只发送读取请求，不会调用模型、修改密钥分组或保存完整 API Key。当前本地实现的确定性夹具已覆盖完整、空、部分失败、限流、鉴权失败、字段漂移、已删除密钥余量和对账异常；真实登录态 HTTP 200 与账单数值仍需在 AIHub 页面由用户验收。

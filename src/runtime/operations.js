@@ -1367,6 +1367,40 @@
     updateGroupFilterSummary();
   }
 
+  function createDetectionImageThumbnail(candidate) {
+    const media = candidate.detectionMedia;
+    const hasImage = media?.status === "successful" && Boolean(media.url);
+    const thumbnail = document.createElement(hasImage ? "button" : "span");
+    thumbnail.className = "candidate-pelican";
+    if (!hasImage) {
+      thumbnail.textContent = media?.status === "failed" ? "失败" : "暂无";
+      thumbnail.title = media?.status === "failed" ? `鹈鹕图片生成失败${media.reason ? `：${media.reason}` : ""}` : "该分组暂无鹈鹕图片";
+      thumbnail.setAttribute("aria-label", thumbnail.title);
+      return thumbnail;
+    }
+    thumbnail.type = "button";
+    thumbnail.title = `${candidate.group} · 点击放大查看${media.title}`;
+    thumbnail.setAttribute("aria-label", thumbnail.title);
+    thumbnail.dataset.detectionImage = media.url;
+    thumbnail.dataset.groupId = String(candidate.groupId);
+    const image = document.createElement("img");
+    image.alt = media.title;
+    image.width = 28;
+    image.height = 28;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => {
+      thumbnail.textContent = "查看";
+      thumbnail.title = `${candidate.group} · 预览加载失败，点击查看原图`;
+      thumbnail.setAttribute("aria-label", thumbnail.title);
+    }, { once: true });
+    image.src = media.previewUrl || media.url;
+    thumbnail.appendChild(image);
+    thumbnail.addEventListener("click", () => openDetectionImage(candidate, thumbnail));
+    return thumbnail;
+  }
+
   function renderCandidates() {
     if (!refs.candidateRows) return;
     refs.candidateRows.replaceChildren();
@@ -1398,7 +1432,13 @@
       const nameLabel = document.createElement("span");
       nameLabel.className = "candidate-name-label";
       nameLabel.textContent = candidate.group;
-      name.append(signal, nameLabel);
+      nameLabel.title = candidate.group;
+      if (IS_AIHUB) {
+        name.classList.add("candidate-name-with-media");
+        name.append(createDetectionImageThumbnail(candidate), nameLabel);
+      } else {
+        name.append(signal, nameLabel);
+      }
       const ratio = document.createElement("span");
       ratio.className = "candidate-ratio mono";
       const nominalRatio = document.createElement("span");

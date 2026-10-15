@@ -6,6 +6,30 @@
     }
   }
 
+  function aihubDetectionImageUrl(value) {
+    const path = String(value || "").trim().replace(/^https:\/\/aihub\.top(?=\/)/, "");
+    return /^\/api\/v1\/public\/model-detection-artifacts\/[A-Za-z0-9_-]+(?:\/preview)?$/.test(path)
+      ? `https://aihub.top${path}`
+      : "";
+  }
+
+  function normalizeAihubDetectionMedia(monitor) {
+    const source = monitor && typeof monitor === "object" ? monitor : {};
+    const media = source.detection_media ?? source.detectionMedia;
+    const presentation = media?.presentation ?? source.model_detection?.presentation ?? source.modelDetection?.presentation;
+    const image = presentation?.image ?? media;
+    const url = aihubDetectionImageUrl(image?.url);
+    const status = String(image?.status || "").toLowerCase();
+    return {
+      status: url && status === "successful" ? "successful" : status === "failed" ? "failed" : "missing",
+      url: status === "successful" ? url : "",
+      previewUrl: status === "successful" && url ? aihubDetectionImageUrl(image?.preview_url ?? image?.previewUrl) || url : "",
+      title: String(image?.title?.zh || image?.title?.en || (typeof image?.title === "string" ? image.title : "鹈鹕")),
+      reason: String(image?.user_reason || image?.reason || ""),
+      publishedAt: String(media?.published_at || media?.publishedAt || ""),
+    };
+  }
+
   function normalizeAihubProviderData(providersPayload, seriesPayload) {
     const providers = providersPayload && typeof providersPayload === "object" ? providersPayload : {};
     const providerItems = Array.isArray(providers.items) ? providers.items : [];
@@ -39,6 +63,7 @@
           modelHealth: normalizeAihubModelHealth(item.model_health ?? item.modelHealth),
           modelCards: normalizeAihubModelCards(item.model_cards ?? item.modelCards),
           modelDetection: normalizeAihubModelDetection(item.model_detection ?? item.modelDetection),
+          detectionMedia: normalizeAihubDetectionMedia(item),
           successRates: item.success_rates,
           enabled: item.enabled !== false,
         })),
@@ -364,6 +389,7 @@
           effectiveRatioReady: Number.isFinite(effectiveRatio),
           effectiveRatioReason,
           providerId: "aihub",
+          detectionMedia: normalizeAihubDetectionMedia(monitor),
           modelHealthStatus,
           modelHealthBackedByDetection,
           modelDetectionStatus: modelDetection ? modelDetection.status : "",

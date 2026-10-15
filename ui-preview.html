@@ -49,7 +49,7 @@
     if (previewParams.has("reset-update-notice")) sessionStorage.removeItem(updateNoticeKey);
     const values = new Map();
     values.set("kfcoding-group-switcher:config:v1", { theme: "dark", glassTransparency: 0, enabled: false, models: ["gpt-4.1"], model: "gpt-4.1", selectionMode: "balanced" });
-    values.set("aihub-group-switcher:config:v1", { theme: previewParams.get("theme") || "dark", glassTransparency: 0, enabled: false, models: ["gpt-6-sol", "gpt-6-astra"], model: "gpt-6-sol", selectionMode: "balanced" });
+    values.set("aihub-group-switcher:config:v1", { theme: previewParams.get("theme") || "dark", glassTransparency: 0, enabled: false, models: ["gpt-6.1-sol", "gpt-6-astra"], model: "gpt-6.1-sol", selectionMode: "balanced" });
     values.set("aihub-group-switcher:ui:v1", {
       activeView: previewParams.has("statistics") ? "statistics" : "monitor",
       statisticsMetric: previewParams.get("metric") || "spend",
@@ -74,7 +74,7 @@
       document.documentElement.dataset.notificationTitle = String(notification.title || "");
     };
     window.GM_openInTab = () => {};
-    const previewVersion = previewParams.has("update") ? "0.15.7" : "0.15.6";
+    const previewVersion = previewParams.has("update") ? "0.15.9" : "0.15.8";
     window.GM_xmlhttpRequest = ({ onload }) => setTimeout(() => onload({ status: 200, responseText: `// @version ${previewVersion}` }), 20);
     const previewKeys = Array.from({ length: 12 }, (_, index) => ({
       id: index + 1,
@@ -143,9 +143,14 @@
             output_tokens: 32,
             output_tps: 48,
             cache_hit_rate: 92.4,
+            detection_media: { presentation: { image: {
+              status: "successful", title: { zh: "鹈鹕", en: "pelican" },
+              url: "/api/v1/public/model-detection-artifacts/preview-pelican",
+              preview_url: "/api/v1/public/model-detection-artifacts/preview-pelican/preview",
+            } } },
             model_cards: [
               { model: "gpt-6-astra", alias: "Astra", health: "healthy" },
-              { model: "gpt-6-sol", alias: "6-Sol", health: "healthy" },
+              { model: "gpt-6.1-sol", alias: "6.1-Sol", health: "healthy" },
               { model: "gpt-5.6-sol", alias: "5.6-Sol", health: "healthy" },
               { model: "gpt-5.6-luna", alias: "5.6-Luna", health: "healthy" },
             ],
@@ -212,6 +217,7 @@
       return jsonResponse({ message: `Unhandled preview request: ${url.pathname}` }, 404);
     };
     setTimeout(() => {
+      if (previewParams.has("pelican")) return;
       const host = document.getElementById("kfcoding-group-switcher-host")
         || document.getElementById("aihub-group-switcher-host")
         || document.getElementById("ooioo-group-switcher-host")

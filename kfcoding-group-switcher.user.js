@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.15.7
+// @version      0.15.8
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -91,7 +91,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.15.7";
+  const SCRIPT_VERSION = "0.15.8";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -1211,6 +1211,30 @@
     }
   }
 
+  function aihubDetectionImageUrl(value) {
+    const path = String(value || "").trim().replace(/^https:\/\/aihub\.top(?=\/)/, "");
+    return /^\/api\/v1\/public\/model-detection-artifacts\/[A-Za-z0-9_-]+(?:\/preview)?$/.test(path)
+      ? `https://aihub.top${path}`
+      : "";
+  }
+
+  function normalizeAihubDetectionMedia(monitor) {
+    const source = monitor && typeof monitor === "object" ? monitor : {};
+    const media = source.detection_media ?? source.detectionMedia;
+    const presentation = media?.presentation ?? source.model_detection?.presentation ?? source.modelDetection?.presentation;
+    const image = presentation?.image ?? media;
+    const url = aihubDetectionImageUrl(image?.url);
+    const status = String(image?.status || "").toLowerCase();
+    return {
+      status: url && status === "successful" ? "successful" : status === "failed" ? "failed" : "missing",
+      url: status === "successful" ? url : "",
+      previewUrl: status === "successful" && url ? aihubDetectionImageUrl(image?.preview_url ?? image?.previewUrl) || url : "",
+      title: String(image?.title?.zh || image?.title?.en || (typeof image?.title === "string" ? image.title : "鹈鹕")),
+      reason: String(image?.user_reason || image?.reason || ""),
+      publishedAt: String(media?.published_at || media?.publishedAt || ""),
+    };
+  }
+
   function normalizeAihubProviderData(providersPayload, seriesPayload) {
     const providers = providersPayload && typeof providersPayload === "object" ? providersPayload : {};
     const providerItems = Array.isArray(providers.items) ? providers.items : [];
@@ -1244,6 +1268,7 @@
           modelHealth: normalizeAihubModelHealth(item.model_health ?? item.modelHealth),
           modelCards: normalizeAihubModelCards(item.model_cards ?? item.modelCards),
           modelDetection: normalizeAihubModelDetection(item.model_detection ?? item.modelDetection),
+          detectionMedia: normalizeAihubDetectionMedia(item),
           successRates: item.success_rates,
           enabled: item.enabled !== false,
         })),
@@ -1569,6 +1594,7 @@
           effectiveRatioReady: Number.isFinite(effectiveRatio),
           effectiveRatioReason,
           providerId: "aihub",
+          detectionMedia: normalizeAihubDetectionMedia(monitor),
           modelHealthStatus,
           modelHealthBackedByDetection,
           modelDetectionStatus: modelDetection ? modelDetection.status : "",
@@ -2669,6 +2695,7 @@
     normalizeAihubTodayUsage,
     normalizeAihubUsageSeries,
     normalizeAihubProviderData,
+    normalizeAihubDetectionMedia,
     normalizeAihubToken,
     normalizeFluxionMonitors,
     normalizeNewApiTodayUsage,
@@ -4199,6 +4226,40 @@
     updateGroupFilterSummary();
   }
 
+  function createDetectionImageThumbnail(candidate) {
+    const media = candidate.detectionMedia;
+    const hasImage = media?.status === "successful" && Boolean(media.url);
+    const thumbnail = document.createElement(hasImage ? "button" : "span");
+    thumbnail.className = "candidate-pelican";
+    if (!hasImage) {
+      thumbnail.textContent = media?.status === "failed" ? "失败" : "暂无";
+      thumbnail.title = media?.status === "failed" ? `鹈鹕图片生成失败${media.reason ? `：${media.reason}` : ""}` : "该分组暂无鹈鹕图片";
+      thumbnail.setAttribute("aria-label", thumbnail.title);
+      return thumbnail;
+    }
+    thumbnail.type = "button";
+    thumbnail.title = `${candidate.group} · 点击放大查看${media.title}`;
+    thumbnail.setAttribute("aria-label", thumbnail.title);
+    thumbnail.dataset.detectionImage = media.url;
+    thumbnail.dataset.groupId = String(candidate.groupId);
+    const image = document.createElement("img");
+    image.alt = media.title;
+    image.width = 28;
+    image.height = 28;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => {
+      thumbnail.textContent = "查看";
+      thumbnail.title = `${candidate.group} · 预览加载失败，点击查看原图`;
+      thumbnail.setAttribute("aria-label", thumbnail.title);
+    }, { once: true });
+    image.src = media.previewUrl || media.url;
+    thumbnail.appendChild(image);
+    thumbnail.addEventListener("click", () => openDetectionImage(candidate, thumbnail));
+    return thumbnail;
+  }
+
   function renderCandidates() {
     if (!refs.candidateRows) return;
     refs.candidateRows.replaceChildren();
@@ -4230,7 +4291,13 @@
       const nameLabel = document.createElement("span");
       nameLabel.className = "candidate-name-label";
       nameLabel.textContent = candidate.group;
-      name.append(signal, nameLabel);
+      nameLabel.title = candidate.group;
+      if (IS_AIHUB) {
+        name.classList.add("candidate-name-with-media");
+        name.append(createDetectionImageThumbnail(candidate), nameLabel);
+      } else {
+        name.append(signal, nameLabel);
+      }
       const ratio = document.createElement("span");
       ratio.className = "candidate-ratio mono";
       const nominalRatio = document.createElement("span");
@@ -4480,6 +4547,23 @@
       row.append(copy, clear);
       refs.isolationRows.appendChild(row);
     });
+  }
+
+  function openDetectionImage(candidate, trigger) {
+    const media = candidate.detectionMedia;
+    if (!media?.url || !refs.detectionImageDialog) return;
+    const dialog = refs.detectionImageDialog;
+    dialog.imageTrigger = trigger;
+    dialog.imageGroupId = String(candidate.groupId);
+    refs.detectionImageTitle.textContent = `${candidate.group} · ${media.title}`;
+    refs.detectionImageStatus.textContent = "正在加载原图…";
+    refs.detectionImageStatus.hidden = false;
+    refs.detectionImage.hidden = true;
+    refs.detectionImage.alt = `${candidate.group} 的${media.title}`;
+    refs.detectionImageOriginal.href = media.url;
+    dialog.showModal();
+    refs.detectionImageClose.focus();
+    refs.detectionImage.src = media.url;
   }
 
   function statisticsMetricLabel(metric) {
@@ -5246,6 +5330,34 @@
         || refs.manualGroup.querySelector('input[data-manual-group]');
       (firstChoice || refs.manualClose).focus();
     });
+    refs.detectionImageClose.addEventListener("click", () => refs.detectionImageDialog.close());
+    refs.detectionImageDialog.addEventListener("click", (event) => {
+      if (event.target !== refs.detectionImageDialog) return;
+      const bounds = refs.detectionImageDialog.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right
+        || event.clientY < bounds.top || event.clientY > bounds.bottom) refs.detectionImageDialog.close();
+    });
+    refs.detectionImageDialog.addEventListener("close", () => {
+      refs.detectionImage.removeAttribute("src");
+      refs.detectionImage.hidden = true;
+      const dialog = refs.detectionImageDialog;
+      const trigger = dialog.imageTrigger?.isConnected ? dialog.imageTrigger
+        : [...refs.candidateRows.querySelectorAll("button[data-detection-image]")]
+          .find((button) => button.dataset.groupId === dialog.imageGroupId);
+      (trigger || refs.check).focus({ preventScroll: true });
+      dialog.imageTrigger = null;
+    });
+    refs.detectionImage.addEventListener("load", () => {
+      if (!refs.detectionImageDialog.open) return;
+      refs.detectionImageStatus.hidden = true;
+      refs.detectionImage.hidden = false;
+    });
+    refs.detectionImage.addEventListener("error", () => {
+      if (!refs.detectionImageDialog.open) return;
+      refs.detectionImage.hidden = true;
+      refs.detectionImageStatus.hidden = false;
+      refs.detectionImageStatus.textContent = "图片加载失败，可在新标签页重试查看原图。";
+    });
     refs.manualGroup.addEventListener("change", () => {
       refs.manualConfirm.disabled = running || !refs.manualGroup.querySelector('input[data-manual-group]:checked');
     });
@@ -5900,6 +6012,16 @@
         .candidate-off { color: var(--muted); }
         .candidate-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .candidate-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .candidate-name-with-media { gap: 6px; }
+        .candidate-pelican {
+          display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px;
+          overflow: hidden; padding: 0; border: 1px solid var(--line-strong); border-radius: 4px;
+          background: var(--surface-raised); color: var(--text-soft); font: inherit; font-size: 9px;
+        }
+        button.candidate-pelican { cursor: zoom-in; }
+        button.candidate-pelican:hover { border-color: var(--accent); }
+        button.candidate-pelican:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .candidate-pelican img { display: block; width: 100%; height: 100%; object-fit: contain; }
         .candidate-ratio { display: grid; justify-items: center; gap: 1px; line-height: 1.05; }
         .candidate-ratio small { color: var(--accent); font-size: 8px; font-weight: 650; }
         .candidate-ratio .candidate-price { color: var(--text-soft); font-size: 7px; font-weight: 550; }
@@ -5955,6 +6077,21 @@
           backdrop-filter: blur(24px) saturate(175%) contrast(108%);
         }
         .manual-dialog::backdrop { background: var(--dialog-backdrop); }
+        .detection-image-dialog {
+          width: min(1000px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
+          padding: 16px; border: 1px solid var(--line-strong); border-radius: 12px;
+          background: var(--menu); color: var(--text); pointer-events: auto;
+          box-sizing: border-box; overflow: auto; font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+        }
+        .detection-image-dialog::backdrop { background: var(--dialog-backdrop); }
+        .detection-image-dialog [hidden] { display: none; }
+        .detection-image-dialog .dialog-header { align-items: flex-start; }
+        .detection-image-dialog .dialog-title { min-width: 0; overflow-wrap: anywhere; }
+        .detection-image-dialog .icon-button { flex: 0 0 32px; width: 32px; height: 32px; }
+        .detection-image-body { display: grid; place-items: center; min-height: min(300px, 45vh); }
+        .detection-image-body img { display: block; max-width: 100%; max-height: calc(100dvh - 160px); object-fit: contain; }
+        .detection-image-status { color: var(--text-soft); }
+        .detection-image-original { display: inline-block; margin-top: 12px; color: var(--accent); text-underline-offset: 3px; }
         .manual-group-list {
           display: grid;
           max-height: min(440px, calc(100vh - 190px));
@@ -6624,9 +6761,21 @@
           </div>
         </form>
       </dialog>
+      <dialog class="detection-image-dialog" data-ref="detectionImageDialog" aria-labelledby="kf-detection-image-title">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="kf-detection-image-title" data-ref="detectionImageTitle">鹈鹕图片</h2>
+          <button class="icon-button" data-ref="detectionImageClose" type="button" aria-label="关闭图片" title="关闭图片">×</button>
+        </div>
+        <div class="detection-image-body">
+          <p class="detection-image-status" data-ref="detectionImageStatus" role="status"></p>
+          <img data-ref="detectionImage" alt="" referrerpolicy="no-referrer" hidden>
+        </div>
+        <a class="detection-image-original" data-ref="detectionImageOriginal" target="_blank" rel="noopener noreferrer">在新标签页查看原图</a>
+      </dialog>
     `;
 
     const refNames = [
+      "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
       "statisticsMetric", "statisticsDays", "statisticsRefresh", "statisticsSource", "statisticsUpdated", "statisticsSummary", "statisticsLoading", "statisticsTotal", "statisticsAssigned", "statisticsCoverage", "statisticsTrendSummary", "statisticsTrend", "statisticsKeyRows",

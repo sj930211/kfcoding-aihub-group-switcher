@@ -544,6 +544,16 @@
         .candidate-off { color: var(--muted); }
         .candidate-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .candidate-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .candidate-name-with-media { gap: 6px; }
+        .candidate-pelican {
+          display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px;
+          overflow: hidden; padding: 0; border: 1px solid var(--line-strong); border-radius: 4px;
+          background: var(--surface-raised); color: var(--text-soft); font: inherit; font-size: 9px;
+        }
+        button.candidate-pelican { cursor: zoom-in; }
+        button.candidate-pelican:hover { border-color: var(--accent); }
+        button.candidate-pelican:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .candidate-pelican img { display: block; width: 100%; height: 100%; object-fit: contain; }
         .candidate-ratio { display: grid; justify-items: center; gap: 1px; line-height: 1.05; }
         .candidate-ratio small { color: var(--accent); font-size: 8px; font-weight: 650; }
         .candidate-ratio .candidate-price { color: var(--text-soft); font-size: 7px; font-weight: 550; }
@@ -599,6 +609,21 @@
           backdrop-filter: blur(24px) saturate(175%) contrast(108%);
         }
         .manual-dialog::backdrop { background: var(--dialog-backdrop); }
+        .detection-image-dialog {
+          width: min(1000px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
+          padding: 16px; border: 1px solid var(--line-strong); border-radius: 12px;
+          background: var(--menu); color: var(--text); pointer-events: auto;
+          box-sizing: border-box; overflow: auto; font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+        }
+        .detection-image-dialog::backdrop { background: var(--dialog-backdrop); }
+        .detection-image-dialog [hidden] { display: none; }
+        .detection-image-dialog .dialog-header { align-items: flex-start; }
+        .detection-image-dialog .dialog-title { min-width: 0; overflow-wrap: anywhere; }
+        .detection-image-dialog .icon-button { flex: 0 0 32px; width: 32px; height: 32px; }
+        .detection-image-body { display: grid; place-items: center; min-height: min(300px, 45vh); }
+        .detection-image-body img { display: block; max-width: 100%; max-height: calc(100dvh - 160px); object-fit: contain; }
+        .detection-image-status { color: var(--text-soft); }
+        .detection-image-original { display: inline-block; margin-top: 12px; color: var(--accent); text-underline-offset: 3px; }
         .manual-group-list {
           display: grid;
           max-height: min(440px, calc(100vh - 190px));
@@ -1268,9 +1293,21 @@
           </div>
         </form>
       </dialog>
+      <dialog class="detection-image-dialog" data-ref="detectionImageDialog" aria-labelledby="kf-detection-image-title">
+        <div class="dialog-header">
+          <h2 class="dialog-title" id="kf-detection-image-title" data-ref="detectionImageTitle">鹈鹕图片</h2>
+          <button class="icon-button" data-ref="detectionImageClose" type="button" aria-label="关闭图片" title="关闭图片">×</button>
+        </div>
+        <div class="detection-image-body">
+          <p class="detection-image-status" data-ref="detectionImageStatus" role="status"></p>
+          <img data-ref="detectionImage" alt="" referrerpolicy="no-referrer" hidden>
+        </div>
+        <a class="detection-image-original" data-ref="detectionImageOriginal" target="_blank" rel="noopener noreferrer">在新标签页查看原图</a>
+      </dialog>
     `;
 
     const refNames = [
+      "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
       "statisticsMetric", "statisticsDays", "statisticsRefresh", "statisticsSource", "statisticsUpdated", "statisticsSummary", "statisticsLoading", "statisticsTotal", "statisticsAssigned", "statisticsCoverage", "statisticsTrendSummary", "statisticsTrend", "statisticsKeyRows",

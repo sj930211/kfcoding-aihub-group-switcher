@@ -5,7 +5,7 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.7", "the userscript metadata should expose current AIHub model-card support");
+assert.equal(metadataVersion, "0.15.8", "the userscript metadata should expose current AIHub model-card support");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -233,7 +233,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.7");
+assert.equal(api.extractUserscriptVersion(source), "0.15.8");
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(
@@ -1752,6 +1752,55 @@ assert.ok(
   "current AIHub model cards must scope health to gpt-6-sol instead of borrowing legacy terra health",
 );
 const providerPaths = [];
+// Current public AIHub detection-media contract (2026-10-15).
+const pelicanPath = "/api/v1/public/model-detection-artifacts/pelican-test_123";
+const pelicanPresentation = { image: {
+  status: "successful", title: { zh: "鹈鹕", en: "pelican" },
+  url: pelicanPath, preview_url: `${pelicanPath}/preview`,
+} };
+const pelicanProvider = {
+  ...currentModelCardSummary.items[0],
+  detection_media: { published_at: "2026-10-15T10:00:00+08:00", presentation: pelicanPresentation },
+  model_cards: [
+    { model: "gpt-6.1-sol", health: "healthy" },
+    { model: "gpt-image-2.5-flare", health: "failed" },
+  ],
+};
+const pelicanData = api.normalizeAihubProviderData({ items: [pelicanProvider] }, {});
+const pelicanMedia = pelicanData.summary.apis[0].detectionMedia;
+assert.equal(pelicanMedia.url, `https://aihub.top${pelicanPath}`);
+assert.equal(pelicanMedia.previewUrl, `https://aihub.top${pelicanPath}/preview`);
+assert.equal(pelicanMedia.title, "鹈鹕");
+const pelicanCandidate = api.evaluateAihubCandidates(
+  pelicanData.summary, pelicanData.series, aihubGroups, { 1: 0.04 },
+  api.sanitizeConfig({ ...aihubConfig, models: ["gpt-6.1-sol"], model: "gpt-6.1-sol" }), aihubNow,
+)[0];
+assert.equal(pelicanCandidate.detectionMedia.url, pelicanMedia.url, "group evaluation must preserve its own image");
+assert.equal(api.mergeTargetModelCandidates([
+  { model: "gpt-6.1-sol", candidates: [pelicanCandidate] },
+  { model: "gpt-6-astra", candidates: [pelicanCandidate] },
+])[0].detectionMedia.url, pelicanMedia.url, "multi-model rows must retain the group image");
+assert.deepEqual(JSON.parse(JSON.stringify(api.buildAihubModelCatalog(pelicanData.summary))), {
+  data: [{ model_name: "gpt-6.1-sol" }, { model_name: "gpt-image-2.5-flare" }],
+}, "new exact model names must continue to come from public model cards");
+assert.equal(api.normalizeAihubDetectionMedia({ model_detection: { presentation: pelicanPresentation } }).url, pelicanMedia.url);
+assert.equal(api.normalizeAihubDetectionMedia({ detectionMedia: pelicanMedia }).url, pelicanMedia.url);
+assert.equal(api.normalizeAihubDetectionMedia({}).status, "missing");
+const failedPelican = api.normalizeAihubDetectionMedia({ detection_media: { presentation: {
+  image: { status: "failed", user_reason: "Image generation failed.", url: pelicanPath },
+} } });
+assert.equal(failedPelican.status, "failed");
+assert.equal(failedPelican.url, "", "failed generation must never expose a stale image");
+assert.equal(failedPelican.reason, "Image generation failed.");
+for (const unsafeUrl of ["javascript:alert(1)", "data:image/svg+xml,test", "//other.test/image", "https://other.test/image", `${pelicanPath}/../secret`, "/api/v1/keys"]) {
+  const media = api.normalizeAihubDetectionMedia({ detection_media: { presentation: {
+    image: { status: "successful", url: unsafeUrl },
+  } } });
+  assert.equal(media.url, "", `non-artifact image URL must be ignored: ${unsafeUrl}`);
+}
+assert.equal(api.normalizeAihubDetectionMedia({ detection_media: { presentation: {
+  image: { status: "successful", url: pelicanPath, preview_url: "https://other.test/image" },
+} } }).previewUrl, pelicanMedia.url, "invalid previews should fall back to the original artifact");
 const loadedProviderData = await api.loadAihubMonitorData(async (path) => {
   providerPaths.push(path);
   if (path === "/api/v1/public/providers?timezone=Asia%2FShanghai") return providerSummary;

@@ -56,6 +56,7 @@
     normalizeAihubTodayUsage,
     normalizeAihubUsageSeries,
     normalizeAihubProviderData,
+    normalizeAihubDetectionMedia,
     normalizeAihubToken,
     normalizeFluxionMonitors,
     normalizeNewApiTodayUsage,

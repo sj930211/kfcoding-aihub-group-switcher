@@ -1,3 +1,20 @@
+  function openDetectionImage(candidate, trigger) {
+    const media = candidate.detectionMedia;
+    if (!media?.url || !refs.detectionImageDialog) return;
+    const dialog = refs.detectionImageDialog;
+    dialog.imageTrigger = trigger;
+    dialog.imageGroupId = String(candidate.groupId);
+    refs.detectionImageTitle.textContent = `${candidate.group} · ${media.title}`;
+    refs.detectionImageStatus.textContent = "正在加载原图…";
+    refs.detectionImageStatus.hidden = false;
+    refs.detectionImage.hidden = true;
+    refs.detectionImage.alt = `${candidate.group} 的${media.title}`;
+    refs.detectionImageOriginal.href = media.url;
+    dialog.showModal();
+    refs.detectionImageClose.focus();
+    refs.detectionImage.src = media.url;
+  }
+
   function statisticsMetricLabel(metric) {
     return {
       spend: "实际消费",
@@ -761,6 +778,34 @@
       const firstChoice = refs.manualGroup.querySelector('input[data-manual-group]:checked')
         || refs.manualGroup.querySelector('input[data-manual-group]');
       (firstChoice || refs.manualClose).focus();
+    });
+    refs.detectionImageClose.addEventListener("click", () => refs.detectionImageDialog.close());
+    refs.detectionImageDialog.addEventListener("click", (event) => {
+      if (event.target !== refs.detectionImageDialog) return;
+      const bounds = refs.detectionImageDialog.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right
+        || event.clientY < bounds.top || event.clientY > bounds.bottom) refs.detectionImageDialog.close();
+    });
+    refs.detectionImageDialog.addEventListener("close", () => {
+      refs.detectionImage.removeAttribute("src");
+      refs.detectionImage.hidden = true;
+      const dialog = refs.detectionImageDialog;
+      const trigger = dialog.imageTrigger?.isConnected ? dialog.imageTrigger
+        : [...refs.candidateRows.querySelectorAll("button[data-detection-image]")]
+          .find((button) => button.dataset.groupId === dialog.imageGroupId);
+      (trigger || refs.check).focus({ preventScroll: true });
+      dialog.imageTrigger = null;
+    });
+    refs.detectionImage.addEventListener("load", () => {
+      if (!refs.detectionImageDialog.open) return;
+      refs.detectionImageStatus.hidden = true;
+      refs.detectionImage.hidden = false;
+    });
+    refs.detectionImage.addEventListener("error", () => {
+      if (!refs.detectionImageDialog.open) return;
+      refs.detectionImage.hidden = true;
+      refs.detectionImageStatus.hidden = false;
+      refs.detectionImageStatus.textContent = "图片加载失败，可在新标签页重试查看原图。";
     });
     refs.manualGroup.addEventListener("change", () => {
       refs.manualConfirm.disabled = running || !refs.manualGroup.querySelector('input[data-manual-group]:checked');
