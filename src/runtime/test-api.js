@@ -1,6 +1,7 @@
   const TEST_API = Object.freeze({
     DEFAULT_CONFIG,
     imageQualityEnabled,
+    imageQualityScores,
     imageQualityFetchJson,
     imageQualityFailureMessage,
     imageQualityIdentity,
@@ -9,6 +10,8 @@
     imageQualityContentKey,
     imageQualityMime,
     normalizeImageQualityCache,
+    normalizeImageQualitySources,
+    pruneImageQualityCache,
     normalizeImageQualityModels,
     parseImageQualityResponse,
     buildImageQualityRequest,

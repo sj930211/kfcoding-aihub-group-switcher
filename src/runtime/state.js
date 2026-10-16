@@ -41,9 +41,16 @@
   }) : null;
   const pendingCandidates = new Map();
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
+  // Isolate strict scores from open tabs running the old rubric and retire its stored results once.
+  if (IS_AIHUB && GM_getValue(STORAGE_IMAGE_QUALITY, null) === null) {
+    GM_setValue(STORAGE_IMAGE_QUALITY, {});
+    GM_setValue(`${STORAGE_PREFIX}:image-quality:content:v2`, {});
+  }
   const imageQuality = {
     cache: normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {})),
-    controller: null, hashController: null, hashes: new Map(), catalog: [], status: "",
+    sources: normalizeImageQualitySources(GM_getValue(STORAGE_IMAGE_QUALITY_SOURCES, {})), refreshPending: false,
+    catalogAt: 0, catalogRevision: 0, clearing: false,
+    controller: null, hashController: null, hashes: new Map(), catalog: [], catalogReady: false, status: "",
     modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
     sample: null, testStatus: "", testResult: "",
   };

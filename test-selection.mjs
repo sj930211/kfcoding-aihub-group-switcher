@@ -5,7 +5,8 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
 const runtimeVersion = source.match(/const SCRIPT_VERSION = "([^"]+)";/)?.[1] || "";
-assert.equal(metadataVersion, "0.15.11", "the userscript metadata should expose current AIHub model-card support");
+const packageVersion = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
+assert.equal(metadataVersion, packageVersion, "the userscript metadata must use the package version");
 assert.equal(
   runtimeVersion,
   metadataVersion,
@@ -234,7 +235,7 @@ vm.runInNewContext(source, sandbox, { filename: "kfcoding-group-switcher.user.js
 
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 assert.ok(api, "test API should be exposed");
-assert.equal(api.extractUserscriptVersion(source), "0.15.11");
+assert.equal(api.extractUserscriptVersion(source), packageVersion);
 const usageNow = new Date(2026, 8, 17, 12, 0, 0);
 const todayUsageNow = new Date(2026, 8, 17, 11, 20, 0);
 assert.deepEqual(
@@ -577,6 +578,15 @@ assert.equal(api.compareVersions("0.4.5", "0.4.4"), 1);
 assert.equal(api.compareVersions("v1.0.0", "1.0"), 0);
 assert.equal(api.compareVersions("0.4.4", "0.4.5"), -1);
 assert.equal(api.compareVersions("0.11.0", "0.9.9"), 1);
+assert.equal(api.compareVersions("0.16.0", "0.15.11"), 1);
+assert.equal(api.compareVersions("0.16.1", "0.16.0"), 1);
+assert.equal(api.compareVersions("0.16.10", "0.16.9"), 1);
+assert.equal(api.compareVersions("0.17.0", "0.16.99"), 1);
+assert.equal(api.compareVersions("1.0.0", "0.99.99"), 1);
+assert.equal(api.extractUserscriptVersion("// @version 0.16.0-beta.1"), "");
+assert.equal(api.extractUserscriptVersion("// @version 0.016.0"), "");
+assert.equal(api.compareVersions("0.16.0-beta.1", "0.15.11"), 0);
+assert.equal(api.compareVersions("broken", "0.15.11"), 0);
 assert.equal(api.DEFAULT_CONFIG.theme, "system");
 assert.equal(api.DEFAULT_CONFIG.glassTransparency, 0);
 assert.equal(api.sanitizeConfig({ theme: "light" }).theme, "light");
@@ -3108,13 +3118,20 @@ await assert.rejects(
 console.log("selection tests passed");
 
 // Optional image quality: unknown is not zero; only validated Responses output is accepted.
-const qualityResult = { unable_to_assess: false, task: 36, structure: 31, finish: 18,
+const strictCriteria = Object.fromEntries([
+  ["subject", 20], ["object", 10], ["relation", 10], ["anatomy", 5], ["frame", 5], ["wheels", 5],
+  ["contact", 10], ["composition", 10], ["coherence", 10],
+].map(([key, score]) => [key, { score, evidence: "测试可见依据" }]));
+const qualityResult = { unable_to_assess: false, criteria: strictCriteria, task: 40, structure: 25, finish: 20,
   confidence: "high", reasons: ["主体完整，车轮连接略有错位"] };
 const qualityPayload = (value) => ({ status: "completed", output: [{ type: "message", role: "assistant",
   content: [{ type: "output_text", text: JSON.stringify(value) }] }] });
 const parsedQuality = api.parseImageQualityResponse(qualityPayload(qualityResult));
 assert.equal(parsedQuality.score, 85);
-assert.equal(api.parseImageQualityResponse(qualityPayload({ ...qualityResult, task: 0, structure: 0, finish: 0 })).score, 0);
+const unexpectedDetail = api.parseImageQualityResponse(qualityPayload({ ...qualityResult,
+  criteria: { ...strictCriteria, subject: { ...strictCriteria.subject, unexpected: "discard this response field" } } }));
+assert.equal(unexpectedDetail.criteria.subject.unexpected, undefined, "only scores and evidence may enter stored criteria");
+assert.equal(api.parseImageQualityResponse(qualityPayload({ ...qualityResult, criteria: Object.fromEntries(Object.keys(strictCriteria).map(key=>[key,{score:0,evidence:"不满足该项"}])), task: 0, structure: 0, finish: 0 })).score, 0);
 for (const changed of [{ task: 41 }, { structure: -1 }, { finish: "18" }, { task: 1.5 },
   { confidence: "certain" }, { unable_to_assess: true }, { reasons: null }, { reasons: [] }, { reasons: ["  "] }, { reasons: ["x".repeat(181)] }]) {
   assert.throws(() => api.parseImageQualityResponse(qualityPayload({ ...qualityResult, ...changed })));
@@ -3321,3 +3338,45 @@ const md5AlreadyAborted = new AbortController();
 md5AlreadyAborted.abort();
 await assert.rejects(api.imageBytesMd5Async(asyncMd5Bytes, md5AlreadyAborted.signal), (error) => error.name === "AbortError");
 console.log("cooperative MD5 correctness, event-loop yielding, and cancellation tests passed");
+
+const sourceBinding = { source: api.imageQualityIdentity(qualityCandidate), md5: fixtureMd5, byteLength: 3, observedAt: qualityNow };
+const normalizedSources = api.normalizeImageQualitySources({
+  1: { ...sourceBinding, secret: 'must-not-persist' },
+  2: { ...sourceBinding, source: JSON.stringify(['https://other.example/private', '']) },
+  3: { ...sourceBinding, md5: 'invalid' },
+});
+assert.deepEqual(Object.keys(normalizedSources), ['1']);
+assert.equal('secret' in normalizedSources[1], false);
+const sharedSources = { 1: sourceBinding, 2: { ...sourceBinding } };
+assert.ok(api.pruneImageQualityCache(sanitizedQuality, sharedSources)[qualityContentKey], 'live shared image survives cleanup');
+delete sharedSources[1];
+assert.ok(api.pruneImageQualityCache(sanitizedQuality, sharedSources)[qualityContentKey], 'one changed group cannot remove another group shared score');
+delete sharedSources[2];
+assert.equal(Object.keys(api.pruneImageQualityCache(sanitizedQuality, sharedSources)).length, 0, 'last reference removed collects retired scores');
+console.log('image-source index validation and shared-content cleanup tests passed');
+
+
+const allFullCriteria = Object.fromEntries(Object.entries(strictCriteria).map(([key, item]) => [key, {
+  ...item, score: key === "subject" ? 20 : 10,
+}]));
+const strictScore = changes => api.imageQualityScores({ ...allFullCriteria, ...Object.fromEntries(Object.entries(changes)
+  .map(([key, score]) => [key, { score, evidence: "用于验证明确缺陷的测试依据" }])) });
+assert.equal(strictScore({}).score, 100);
+assert.equal(strictScore({ anatomy: 5 }).score, 95);
+assert.equal(strictScore({ anatomy: 0 }).score, 69, "a severe structural defect cannot receive a near-perfect aggregate");
+assert.equal(strictScore({ relation: 0 }).score, 59);
+assert.equal(strictScore({ object: 0 }).score, 49);
+assert.equal(strictScore({ subject: 0 }).score, 39);
+assert.equal(strictScore({ subject: 0, object: 0, relation: 0, anatomy: 0, frame: 0, wheels: 0, contact: 0 }).score, 20, "caps must never increase a genuinely low score");
+assert.equal(strictScore({ anatomy: 0 }).rawScore, 90);
+assert.match(strictScore({ anatomy: 0 }).capReason, /结构/);
+assert.equal(strictScore({ anatomy: 7 }), null, "impression grades between anchors must be rejected");
+assert.equal(api.imageQualityScores({ ...allFullCriteria, frame: { score: 10, evidence: " " } }), null);
+assert.throws(() => api.parseImageQualityResponse(qualityPayload({ unable_to_assess: false,
+  task: 36, structure: 31, finish: 18, confidence: "high", reasons: ["old-style scores"] })), /细项/);
+const legacyRubricKey = JSON.stringify(["pelican-v1", qualitySettings.imageQualityModel, qualitySettings.imageQualityTask, fixtureMd5, 3]);
+assert.equal(api.normalizeImageQualityCache({ [legacyRubricKey]: qualityEntry })[legacyRubricKey], undefined,
+  "strict grading must not reuse a result produced with the lenient rubric");
+const lenientLabelsOnly = { task: 40, structure: 25, finish: 20, score: 85, confidence: "high", reasons: ["no details"], assessedAt: qualityNow };
+assert.equal(api.normalizeImageQualityCache({ [qualityContentKey]: lenientLabelsOnly })[qualityContentKey], undefined);
+console.log("strict rubric anchors, defect caps, evidence validation, and old-rule cache isolation passed");

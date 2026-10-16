@@ -22,6 +22,9 @@
   });
 
   mountUi();
+  window.addEventListener("focus", () => {
+    if (IS_AIHUB && !state.collapsed) { syncImageQualityStore(); render(); }
+  });
   window.addEventListener("resize", () => {
     positionElement(state.collapsed ? refs.launcher : refs.panel, state.collapsed ? "launcher" : "panel", true);
     if (state.activeView === "statistics" && state.statistics.loaded && !state.statistics.loading) {

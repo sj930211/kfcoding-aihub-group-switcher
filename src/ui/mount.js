@@ -972,7 +972,7 @@
         .candidate-current-tag { flex: 0 0 auto; padding: 1px 3px; border: 1px solid var(--accent); border-radius: 3px; color: var(--text); font-size: 8px; line-height: 1.2; }
         .candidate-heading .verdict { flex: 0 0 auto; max-width: 29%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 10px; }
         .candidate-metrics, .candidate-column-labels {
-          display: grid; grid-template-columns: 1.65fr 1fr 1fr 1.05fr .85fr 1fr .6fr;
+          display: grid; grid-template-columns: 1.65fr 1fr 1fr 1.05fr .85fr 1fr;
           align-items: center; gap: 3px; margin: 0; font-variant-numeric: tabular-nums;
         }
         :host([data-image-quality="false"]) .candidate-metrics,
@@ -984,12 +984,12 @@
         .candidate-metric dd { margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10px; line-height: 15px; white-space: nowrap; }
         .candidate-metrics .candidate-ratio { display: inline; color: var(--text-soft); font-size: 10px; }
         .candidate-metrics .health-value { display: inline; background: none; }
-        .candidate-image-score { display: inline; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 10px; line-height: 15px; white-space: nowrap; cursor: zoom-in; }
+        .candidate-image-score { flex: 0 0 auto; display: inline-block; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--healthy); font: inherit; font-size: 11px; font-weight: 700; line-height: 17px; white-space: nowrap; cursor: help; }
         .candidate-image-score:focus-visible { outline: 2px solid var(--accent); }
         .candidate-column-labels { padding: 5px 10px 5px 44px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--text-soft); background: var(--surface-raised); font-size: 9px; line-height: 14px; }
         .candidate-column-labels > span { min-width: 0; text-align: right; white-space: nowrap; }
         .candidate-column-labels > span:first-child { text-align: left; }
-        :host([data-image-quality="false"]) .candidate-quality-column { display: none; }
+        .candidate-quality-column { display: none; }
         .image-quality-actions { padding: 5px 10px; border-top: 1px solid var(--line); }
         .image-quality-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
         .image-quality-toolbar p { flex: 1; min-width: 0; }
@@ -1019,6 +1019,22 @@
         .image-quality-actions p, .image-quality-settings p { font-size: 10px; line-height: 1.5; color: var(--text-soft); margin: 2px 0; }
         .image-quality-test-result, .detection-image-quality { white-space: pre-wrap; overflow-wrap: anywhere; }
         .detection-image-quality { font-size: 12px; line-height: 1.6; }
+        .image-quality-tooltip { position: fixed; z-index: 2147483001; width: min(288px, calc(100vw - 24px)); box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--native-option-bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; font-size: 11px; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none; box-shadow: 0 6px 20px rgb(0 0 0 / 24%); }
+        .image-quality-tooltip[hidden] { display: none; }
+        .image-quality-records { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+        .image-quality-records .section-head { margin-bottom: 8px; }
+        .image-quality-records h3 { margin: 0; font-size: 11px; color: var(--text); }
+        .image-quality-record-list { max-height: 360px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+        .image-quality-record { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+        .image-quality-record:last-child { border-bottom: 0; }
+        .image-quality-record .candidate-pelican { width: 32px; height: 32px; }
+        .image-quality-record-copy { min-width: 0; }
+        .image-quality-record-heading { display: flex; align-items: center; gap: 8px; }
+        .image-quality-record-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text); }
+        .image-quality-breakdown { font-variant-numeric: tabular-nums; }
+        .image-quality-record-detail { margin-top: 4px; border: 0; }
+        .image-quality-record-detail summary { min-height: 24px; padding: 4px 0; font-size: 10px; font-weight: 500; }
+        .image-quality-record-detail p { white-space: pre-line; overflow-wrap: anywhere; }
         .candidate-media-hint { margin: 0; padding: 6px 10px 0; border-top: 1px solid var(--line); color: var(--text-soft); font-size: 9px; }
         @media (max-width: 420px) {
           .candidate.candidate-details { padding-inline: 8px; column-gap: 6px; }
@@ -1278,7 +1294,7 @@
             </div>
           </div>
           <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
-          <p class="settings-billing-note">测试按1张原图计费；批量每次最多10张，不自动重试。密钥或模型留空即关闭图片分。</p>
+          <p class="settings-billing-note">测试按1张原图计费；批量最多2张并发、每次最多10次新分析，不自动重试。密钥或模型留空即关闭图片分。</p>
           <div class="image-quality-toolbar">
             <button class="button" type="button" data-ref="imageQualityTest">测试1张（计费）</button>
             <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
@@ -1289,10 +1305,15 @@
             <summary>评分规则与缓存</summary>
             <div class="settings-detail-content">
               <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-              <p>任务40 + 结构40 + 完成度20。按原图MD5长期复用，最多保存1000条；模型、任务或规则变化才重新评分。测试1张会主动重新请求并计费。</p>
+              <p>严格规则v2：任务40 + 结构40 + 完成度20，9项分别取零分、半分或满分；严重缺陷封顶。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
               <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
             </div>
           </details>
+          <div class="image-quality-records">
+            <div class="section-head"><h3>当前图片评价</h3></div>
+            <p data-ref="imageQualityListSummary" role="status"></p>
+            <div class="image-quality-record-list" data-ref="imageQualityList"></div>
+          </div>
         </section>
         <section class="section settings-group settings-protection" aria-labelledby="kf-protection-title">
           <div class="section-head"><h2 class="section-title" id="kf-protection-title">保护与判定</h2><span class="section-meta">消费与故障保护</span></div>
@@ -1397,6 +1418,7 @@
           <button data-ref="isolationToastUndo" type="button">撤销</button>
         </div>
       </section>
+      <div id="kf-image-quality-tooltip" class="image-quality-tooltip" data-ref="imageQualityTooltip" role="tooltip" hidden></div>
       <dialog class="manual-dialog" data-ref="manualDialog" aria-labelledby="kf-manual-title">
         <form class="dialog-form" method="dialog">
           <div class="dialog-header">
@@ -1429,7 +1451,7 @@
     `;
 
     const refNames = [
-      "imageQualityClearCache", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
+      "imageQualityTooltip", "imageQualityList", "imageQualityListSummary", "imageQualityClearCache", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
       "imageQualityKey", "imageQualityModel", "imageQualityTask", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",

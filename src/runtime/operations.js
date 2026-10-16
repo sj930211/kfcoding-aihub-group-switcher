@@ -469,13 +469,7 @@
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
         pricingCache = buildAihubModelCatalog(monitorPayload.summary);
-        const sample = monitorPayload.summary.apis.find((api) => api.detectionMedia?.status === "successful");
-        imageQuality.catalog = monitorPayload.summary.apis.map((api) => ({
-          group: api.planType, groupId: Number(api.id), detectionMedia: api.detectionMedia,
-        }));
-        imageQuality.sample = sample ? {
-          group: sample.planType, groupId: Number(sample.id), detectionMedia: sample.detectionMedia,
-        } : null;
+        updateImageQualityCatalog(monitorPayload.summary);
       }
       renderOptions();
       render();
@@ -971,6 +965,7 @@
         aihubGroupsCache = normalizeAihubGroups(groups);
         aihubRatesCache = normalizeAihubRates(rates);
         pricingCache = buildAihubModelCatalog(summary);
+        updateImageQualityCatalog(summary);
         candidates = mergeTargetModelCandidates(models.map((model) => ({
           model,
           candidates: evaluateAihubCandidates(
@@ -1599,23 +1594,7 @@
         media.className = "candidate-media";
         media.append(thumbnail);
         if (imageQualityEnabled(config)) {
-          const entry = candidateImageQuality(candidate);
-          const score = document.createElement("button");
-          score.type = "button";
-          score.className = "candidate-image-score";
-          score.textContent = entry ? String(entry.score) : "—";
-          score.title = `${entry ? "MD5缓存结果 · " : ""}${imageQualityDescription(entry)}`;
-          score.setAttribute("aria-label", `${candidate.group}：${score.title}`);
-          score.disabled = !candidate.detectionMedia?.url;
-          score.addEventListener("click", () => openDetectionImage(candidate, thumbnail));
-          const metric = document.createElement("div");
-          metric.className = "candidate-metric candidate-quality-metric";
-          const term = document.createElement("dt");
-          term.textContent = "效果";
-          const value = document.createElement("dd");
-          value.append(score);
-          metric.append(term, value);
-          metrics.append(metric);
+          heading.insertBefore(createImageQualityScore(candidate), verdict);
         }
         row.append(media, heading, metrics);
       } else {

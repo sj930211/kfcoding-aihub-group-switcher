@@ -34,16 +34,20 @@ function write(relativePath, content) {
 }
 
 function buildDistribution() {
+  const version = JSON.parse(read("package.json")).version;
+  if (typeof version !== "string" || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+    throw new Error("package.json version must be a stable MAJOR.MINOR.PATCH without v, leading zeros or suffixes");
+  }
   const [metadataPath] = modulePaths;
-  const metadata = read(metadataPath).trimEnd();
+  const metadata = read(metadataPath).trimEnd().replace("__SCRIPT_VERSION__", version);
   const body = modulePaths
     .slice(1)
-    .map((relativePath) => read(relativePath).trimEnd())
+    .map((relativePath) => read(relativePath).trimEnd().replace("__SCRIPT_VERSION__", version))
     .join("\n\n");
   const output = `${metadata}\n\n(function () {\n  "use strict";\n\n${body}\n})();\n`;
   const metadataVersion = output.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
   const runtimeVersion = output.match(/const\s+SCRIPT_VERSION\s*=\s*"([^"]+)";/)?.[1] || "";
-  if (!metadataVersion || metadataVersion !== runtimeVersion) {
+  if (metadataVersion !== version || runtimeVersion !== version) {
     throw new Error(`Version mismatch: metadata=${metadataVersion || "missing"}, runtime=${runtimeVersion || "missing"}`);
   }
   write("kfcoding-group-switcher.user.js", output);

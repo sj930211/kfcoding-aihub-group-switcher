@@ -402,6 +402,7 @@
 
   function render() {
     if (!root) return;
+    if (refs.imageQualityTooltip?.trigger && !refs.imageQualityTooltip.trigger.isConnected) refs.imageQualityTooltip.hidden = true;
     root.host.dataset.imageQuality = String(imageQualityEnabled(config));
     if (refs.panel) refs.panel.hidden = state.collapsed;
     if (refs.launcher) refs.launcher.hidden = !state.collapsed;
@@ -543,7 +544,10 @@
       });
     }
     if (refs.manualSwitch) refs.manualSwitch.disabled = running;
-    if (!state.collapsed && state.activeView === "settings") renderIsolations();
+    if (!state.collapsed && state.activeView === "settings") {
+      renderIsolations();
+      renderImageQualityList();
+    }
     if (refs.isolationToast) {
       const undoAvailable = state.isolationUndo.entries.length > 0 && state.isolationUndo.expiresAt > Date.now();
       refs.isolationToast.hidden = !undoAvailable;
@@ -697,6 +701,7 @@
 
   function setActiveView(view, options) {
     state.activeView = normalizeActiveView(view);
+    if (IS_AIHUB) syncImageQualityStore();
     scheduleStatisticsRefresh();
     persistUiState();
     setTokenMenuOpen(false);
@@ -722,7 +727,36 @@
     });
   }
 
+  function bindImageQualityTooltip() {
+    let trigger = null;
+    const hide = () => { refs.imageQualityTooltip.hidden = true; trigger = null; };
+    const show = (target) => {
+      const score = target.closest?.(".candidate-image-score");
+      if (!score || score === trigger) return;
+      trigger = score;
+      const tooltip = refs.imageQualityTooltip;
+      tooltip.trigger = score;
+      tooltip.textContent = score.dataset.qualityDetail;
+      tooltip.hidden = false;
+      const bounds = score.getBoundingClientRect();
+      const tip = tooltip.getBoundingClientRect();
+      tooltip.style.left = `${Math.max(8, Math.min(window.innerWidth - tip.width - 8, bounds.right - tip.width))}px`;
+      tooltip.style.top = `${Math.max(8, bounds.top >= tip.height + 8 ? bounds.top - tip.height - 6
+        : Math.min(window.innerHeight - tip.height - 8, bounds.bottom + 6))}px`;
+    };
+    root.addEventListener("pointerover", (event) => show(event.target));
+    root.addEventListener("focusin", (event) => show(event.target));
+    root.addEventListener("pointerout", (event) => {
+      if (trigger && event.target.closest?.(".candidate-image-score") === trigger
+        && !trigger.contains(event.relatedTarget)) hide();
+    });
+    root.addEventListener("focusout", hide);
+    root.addEventListener("scroll", hide, true);
+    root.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
+  }
+
   function bindUi() {
+    bindImageQualityTooltip();
     bindDrag(refs.launcher, refs.launcher, "launcher");
     bindDrag(refs.header, refs.panel, "panel");
     refs.collapse.addEventListener("click", () => {
