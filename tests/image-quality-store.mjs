@@ -1,3 +1,4 @@
+import { qualityCriteria } from "./fixtures/image-quality.mjs";
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
@@ -10,9 +11,9 @@ const stateSource = fs.readFileSync(root + '/src/runtime/state.js', 'utf8');
 const startup = stateSource.slice(stateSource.indexOf('  // Isolate strict scores'), stateSource.indexOf('  const imageQuality = {'));
 assert(startup.includes('GM_setValue(STORAGE_IMAGE_QUALITY, {})'));
 const storagePrefix = 'aihub-group-switcher';
-const strictStorage = `${storagePrefix}:image-quality:content:v3`;
-const legacyStorage = `${storagePrefix}:image-quality:content:v2`;
-const migrationStore = { [legacyStorage]: { old: 'legacy result' }, config: { keyId: 7 } };
+const strictStorage = `${storagePrefix}:image-quality:content:v4`;
+const legacyStorage = `${storagePrefix}:image-quality:content:v3`;
+const migrationStore = { [legacyStorage]: { old: 'legacy result' }, [`${storagePrefix}:image-quality:content:v2`]: { older: 'legacy v2' }, config: { keyId: 7 } };
 const migration = {
   IS_AIHUB: true, STORAGE_IMAGE_QUALITY: strictStorage, STORAGE_PREFIX: storagePrefix,
   GM_getValue: (key, fallback) => Object.hasOwn(migrationStore, key) ? migrationStore[key] : fallback,
@@ -21,6 +22,7 @@ const migration = {
 vm.createContext(migration);
 vm.runInContext(startup, migration);
 assert.equal(Object.keys(migrationStore[legacyStorage]).length, 0);
+assert.equal(Object.keys(migrationStore[`${storagePrefix}:image-quality:content:v2`]).length, 0);
 assert.equal(Object.keys(migrationStore[strictStorage]).length, 0);
 assert.deepEqual(migrationStore.config, { keyId: 7 });
 migrationStore[strictStorage] = { new: 'strict result' };
@@ -32,9 +34,8 @@ const otherSite = { ...migration, IS_AIHUB: false, GM_setValue() { assert.fail('
 vm.runInNewContext(startup, otherSite);
 console.log('PASS strict storage migration retires legacy results once, preserves configuration and isolates old-tab writes');
 const now = Date.now();
-const criteria80 = Object.fromEntries([
-  ["subject",20],["object",10],["relation",10],["anatomy",5],["frame",5],["wheels",5],["contact",5],["composition",10],["coherence",10],
-].map(([key,score])=>[key,{score,evidence:"valid visible evidence"}]));
+const criteria80 = qualityCriteria();
+criteria80.proportion.score = 6; criteria80.posture.score = 6; criteria80.integration.score = 3;
 const old = { groupId: 1, group: 'g', detectionMedia: { status: 'successful', url: 'https://aihub.top/api/v1/public/model-detection-artifacts/old', publishedAt: '2026-10-15' } };
 const fresh = { ...old, detectionMedia: { ...old.detectionMedia, url: 'https://aihub.top/api/v1/public/model-detection-artifacts/new', publishedAt: '2026-10-16' } };
 const sourceB = { source: JSON.stringify([fresh.detectionMedia.url, fresh.detectionMedia.publishedAt]), md5: 'b'.repeat(32), byteLength: 100, observedAt: now - 1000, catalogAt: now - 2000 };
@@ -62,7 +63,7 @@ const s = {
 vm.createContext(s);
 vm.runInContext(code, s);
 const keyB = s.imageQualityContentKey(sourceB.md5, 100, s.config);
-store.cache[keyB] = { task: 40, structure: 20, finish: 20, score: 80, criteria: criteria80, confidence: 'high', reasons: ['valid'], assessedAt: now - 1000 };
+store.cache[keyB] = { task: 20, structure: 30, harmony: 15, finish: 15, score: 80, criteria: criteria80, confidence: 'high', reasons: ['valid'], assessedAt: now - 1000 };
 await s.rememberImageQualitySource(old, { md5: 'a'.repeat(32), byteLength: 100 }, now);
 assert.equal(store.sources[1].md5, sourceB.md5, 'an older catalog tab must not replace the newer binding after a later download');
 vm.runInContext('readImageQualityImage = async () => ({md5:"a".repeat(32),byteLength:100,bytes:new Uint8Array([1])})', s);
@@ -126,7 +127,7 @@ console.log('PASS rejected stale source stops worker before credential access an
 s.imageQuality.catalog = [old, { ...old, groupId: 2 }];
 s.imageQuality.sources = { 2: { ...sourceB, source: s.imageQualityIdentity(old) } };
 s.imageQuality.hashes.set(s.imageQualityIdentity(old), { md5: sourceB.md5, byteLength: 100 });
-s.imageQuality.cache = { [keyB]: { task: 40, structure: 20, finish: 20, score: 80, criteria: criteria80, confidence: 'high', reasons: ['valid'], assessedAt: now - 1000 } };
+s.imageQuality.cache = { [keyB]: { task: 20, structure: 30, harmony: 15, finish: 15, score: 80, criteria: criteria80, confidence: 'high', reasons: ['valid'], assessedAt: now - 1000 } };
 assert.equal(s.candidateImageQuality(old), null, 'a removed group binding must hide its score even if another group retains identical content');
 assert.equal(s.candidateImageQuality({ ...old, groupId: 2 }).score, 80, 'the remaining group must keep its valid shared score');
 console.log('PASS removed group does not borrow a surviving shared-content score');

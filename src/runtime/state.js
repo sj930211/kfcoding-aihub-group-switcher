@@ -44,7 +44,7 @@
   // Isolate strict scores from open tabs running the old rubric and retire its stored results once.
   if (IS_AIHUB && GM_getValue(STORAGE_IMAGE_QUALITY, null) === null) {
     GM_setValue(STORAGE_IMAGE_QUALITY, {});
-    GM_setValue(`${STORAGE_PREFIX}:image-quality:content:v2`, {});
+    for (const version of [2, 3]) GM_setValue(`${STORAGE_PREFIX}:image-quality:content:v${version}`, {});
   }
   const imageQuality = {
     cache: normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {})),

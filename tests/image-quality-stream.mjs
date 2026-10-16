@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { qualityCriteria } from "./fixtures/image-quality.mjs";
 
 const sandbox = { __KFCODING_GROUP_SWITCHER_TEST__: true, AbortController, DOMException,
   TextDecoder, setTimeout, clearTimeout, console };
@@ -10,7 +11,7 @@ const candidate = { detectionMedia: { status: "successful", url: "https://aihub.
 const request = api.buildImageQualityRequest(candidate, { imageQualityModel: "gpt-6.1-sol", imageQualityTask: "鹈鹕骑自行车" }, "data:image/png;base64,iVBORw0KGgo=");
 const actual400 = { error: { code: "stream_required", message: "This group only accepts streaming conversation requests. Set stream to true.", param: "stream", type: "invalid_request_error" } };
 assert.equal(request.stream, true, "stream_required groups reject the existing stream:false scoring request with HTTP400");
-const criteria = Object.fromEntries([["subject",20],["object",10],["relation",10],["anatomy",5],["frame",5],["wheels",5],["contact",10],["composition",10],["coherence",10]].map(([key,score])=>[key,{score,evidence:"流式测试中文可见依据"}]));
+const criteria = qualityCriteria();
 const completed = { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ unable_to_assess: false, criteria, confidence: "high", reasons: ["测试评分"] }) }] }] };
 const event = (type, fields = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
 const end = event("response.completed", { response: completed });

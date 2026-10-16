@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { qualityCriteria, fullQualityCriteria } from "./tests/fixtures/image-quality.mjs";
 
 const source = fs.readFileSync(new URL("./kfcoding-group-switcher.user.js", import.meta.url), "utf8");
 const metadataVersion = source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || "";
@@ -3118,11 +3119,8 @@ await assert.rejects(
 console.log("selection tests passed");
 
 // Optional image quality: unknown is not zero; only validated Responses output is accepted.
-const strictCriteria = Object.fromEntries([
-  ["subject", 20], ["object", 10], ["relation", 10], ["anatomy", 5], ["frame", 5], ["wheels", 5],
-  ["contact", 10], ["composition", 10], ["coherence", 10],
-].map(([key, score]) => [key, { score, evidence: "测试可见依据" }]));
-const qualityResult = { unable_to_assess: false, criteria: strictCriteria, task: 40, structure: 25, finish: 20,
+const strictCriteria = qualityCriteria();
+const qualityResult = { unable_to_assess: false, criteria: strictCriteria, task: 20, structure: 30, harmony: 20, finish: 15,
   confidence: "high", reasons: ["主体完整，车轮连接略有错位"] };
 const qualityPayload = (value) => ({ status: "completed", output: [{ type: "message", role: "assistant",
   content: [{ type: "output_text", text: JSON.stringify(value) }] }] });
@@ -3131,7 +3129,7 @@ assert.equal(parsedQuality.score, 85);
 const unexpectedDetail = api.parseImageQualityResponse(qualityPayload({ ...qualityResult,
   criteria: { ...strictCriteria, subject: { ...strictCriteria.subject, unexpected: "discard this response field" } } }));
 assert.equal(unexpectedDetail.criteria.subject.unexpected, undefined, "only scores and evidence may enter stored criteria");
-assert.equal(api.parseImageQualityResponse(qualityPayload({ ...qualityResult, criteria: Object.fromEntries(Object.keys(strictCriteria).map(key=>[key,{score:0,evidence:"不满足该项"}])), task: 0, structure: 0, finish: 0 })).score, 0);
+assert.equal(api.parseImageQualityResponse(qualityPayload({ ...qualityResult, criteria: Object.fromEntries(Object.keys(strictCriteria).map(key=>[key,{...strictCriteria[key],...(["support","pedal","control"].includes(key)?{connection:"broken"}:{}),score:0,evidence:"不满足该项"}])), task: 0, structure: 0, harmony: 0, finish: 0 })).score, 0);
 for (const changed of [{ task: 41 }, { structure: -1 }, { finish: "18" }, { task: 1.5 },
   { confidence: "certain" }, { unable_to_assess: true }, { reasons: null }, { reasons: [] }, { reasons: ["  "] }, { reasons: ["x".repeat(181)] }]) {
   assert.throws(() => api.parseImageQualityResponse(qualityPayload({ ...qualityResult, ...changed })));
@@ -3356,22 +3354,20 @@ assert.equal(Object.keys(api.pruneImageQualityCache(sanitizedQuality, sharedSour
 console.log('image-source index validation and shared-content cleanup tests passed');
 
 
-const allFullCriteria = Object.fromEntries(Object.entries(strictCriteria).map(([key, item]) => [key, {
-  ...item, score: key === "subject" ? 20 : 10,
-}]));
+const allFullCriteria = fullQualityCriteria();
 const strictScore = changes => api.imageQualityScores({ ...allFullCriteria, ...Object.fromEntries(Object.entries(changes)
-  .map(([key, score]) => [key, { score, evidence: "用于验证明确缺陷的测试依据" }])) });
+  .map(([key, score]) => [key, { ...allFullCriteria[key], ...(["support","pedal","control"].includes(key) && score === 0 ? {connection:"broken"} : {}), score, evidence: "用于验证明确缺陷的测试依据" }])) });
 assert.equal(strictScore({}).score, 100);
-assert.equal(strictScore({ anatomy: 5 }).score, 95);
+assert.equal(strictScore({ anatomy: 4 }).score, 99);
 assert.equal(strictScore({ anatomy: 0 }).score, 69, "a severe structural defect cannot receive a near-perfect aggregate");
 assert.equal(strictScore({ relation: 0 }).score, 59);
 assert.equal(strictScore({ object: 0 }).score, 49);
 assert.equal(strictScore({ subject: 0 }).score, 39);
-assert.equal(strictScore({ subject: 0, object: 0, relation: 0, anatomy: 0, frame: 0, wheels: 0, contact: 0 }).score, 20, "caps must never increase a genuinely low score");
-assert.equal(strictScore({ anatomy: 0 }).rawScore, 90);
+assert.equal(strictScore(Object.fromEntries(Object.keys(allFullCriteria).map(key=>[key,0]))).score, 0, "caps must never increase a genuinely low score");
+assert.equal(strictScore({ anatomy: 0 }).rawScore, 95);
 assert.match(strictScore({ anatomy: 0 }).capReason, /结构/);
-assert.equal(strictScore({ anatomy: 7 }), null, "impression grades between anchors must be rejected");
-assert.equal(api.imageQualityScores({ ...allFullCriteria, frame: { score: 10, evidence: " " } }), null);
+assert.equal(strictScore({ posture: 7 }), null, "scores between anchors must be rejected");
+assert.equal(api.imageQualityScores({ ...allFullCriteria, frame: { score: 5, evidence: " " } }), null);
 assert.throws(() => api.parseImageQualityResponse(qualityPayload({ unable_to_assess: false,
   task: 36, structure: 31, finish: 18, confidence: "high", reasons: ["old-style scores"] })), /细项/);
 const legacyRubricKey = JSON.stringify(["pelican-v1", qualitySettings.imageQualityModel, qualitySettings.imageQualityTask, fixtureMd5, 3]);

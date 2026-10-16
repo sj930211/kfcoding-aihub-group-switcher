@@ -1305,7 +1305,7 @@
             <summary>评分规则与缓存</summary>
             <div class="settings-detail-content">
               <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-              <p>严格规则v2：任务40 + 结构40 + 完成度20，9项分别取零分、半分或满分；严重缺陷封顶。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
+              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不参与排序。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
               <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
             </div>
           </details>

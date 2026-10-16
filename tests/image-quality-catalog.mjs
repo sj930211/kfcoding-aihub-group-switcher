@@ -1,3 +1,4 @@
+import { qualityCriteria } from "./fixtures/image-quality.mjs";
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -9,9 +10,8 @@ const imageModule = fs.readFileSync(path.join(repo, 'src/providers/image-quality
 const monitorModule = fs.readFileSync(path.join(repo, 'src/providers/monitor.js'), 'utf8');
 const oldMd5 = '900150983cd24fb0d6963f7d28e17f72';
 const urlBase = 'https://aihub.top/api/v1/public/model-detection-artifacts/';
-const criteria80 = Object.fromEntries([
-  ["subject",20],["object",10],["relation",10],["anatomy",5],["frame",5],["wheels",5],["contact",5],["composition",10],["coherence",10],
-].map(([key,score])=>[key,{score,evidence:"valid visible evidence"}]));
+const criteria80 = qualityCriteria();
+criteria80.proportion.score = 6; criteria80.posture.score = 6; criteria80.integration.score = 3;
 const reports = [];
 
 for (const sameBytes of [true, false]) {
@@ -43,7 +43,7 @@ for (const sameBytes of [true, false]) {
   vm.runInContext(`
     updateImageQualityCatalog({ apis: [{ id: 1, planType: 'A', detectionMedia: old.detectionMedia }] });
     globalThis.contentKey = imageQualityContentKey(oldMd5, 3, config);
-    imageQuality.cache = { [contentKey]: { task: 40, structure: 20, finish: 20, score: 80, criteria: criteria80,
+    imageQuality.cache = { [contentKey]: { task: 20, structure: 30, harmony: 15, finish: 15, score: 80, criteria: criteria80,
       confidence: 'high', reasons: ['valid visible evidence'], assessedAt: Date.now() - 10000 } };
     imageQuality.sources = { 1: { source: imageQualityIdentity(old), md5: oldMd5,
       byteLength: 3, observedAt: Date.now() - 10000, catalogAt: imageQuality.catalogAt } };
