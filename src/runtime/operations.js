@@ -473,7 +473,6 @@
       }
       renderOptions();
       render();
-      if (IS_AIHUB) void refreshImageQualityHashes();
       return;
     }
     const [pricing, tokenList, userGroups] = await Promise.all([
@@ -679,6 +678,17 @@
   }
 
   async function switchTokenGroup(token, candidate, options) {
+    if (IS_AIHUB) {
+      return withImageQualityKeyLock(token.id, false, async () => {
+        const latest = await getTokenDetail(token.id);
+        if (Number(latest.groupId) !== Number(token.groupId)) throw new Error("密钥分组已在其他操作中改变，本次取消切换");
+        return switchTokenGroupUnlocked(token, candidate, options);
+      });
+    }
+    return switchTokenGroupUnlocked(token, candidate, options);
+  }
+
+  async function switchTokenGroupUnlocked(token, candidate, options) {
     const switchOptions = options || {};
     if (IS_AIHUB_API) {
       if (!Number.isFinite(Number(candidate.groupId)) || Number(candidate.groupId) <= 0) {
@@ -732,7 +742,7 @@
   }
 
   function createImageAdmissionContext() {
-    return { remaining: 10, configKey: JSON.stringify(config), catalogRevision: imageQuality.catalogRevision,
+    return { remaining: 10, unavailableGroups: new Set(), scorerFailure: null, configKey: JSON.stringify(config), catalogRevision: imageQuality.catalogRevision,
       cancelRevision: imageQuality.cancelRevision || 0 };
   }
 
@@ -746,7 +756,7 @@
 
   async function waitForImageAdmissionIdle(context) {
     const deadline = Date.now() + 90000;
-    while (imageQuality.controller || imageQuality.modelsController || imageQuality.hashController || imageQuality.clearing) {
+    while (imageQuality.controller || imageQuality.modelsController) {
       assertImageAdmissionCurrent(context);
       if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未拉黑");
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -759,22 +769,22 @@
     if (!imageQualityIdentity(candidate)) return { pass: false, reason: "没有可用图片" };
     if (!imageQualityEnabled(config)) return { pass: false, reason: "未配置评分密钥或模型，没有有效评价" };
     await waitForImageAdmissionIdle(context);
-    syncImageQualityStore();
-    let entry = candidateImageQuality(candidate);
-    if (!entry) {
-      setStatus(`切换前评价 ${candidate.group} 的图片（无缓存时计费）…`, "running");
-      try {
-        await runImageQuality({ candidate, budget: context });
-      } catch (error) {
-        assertImageAdmissionCurrent(context);
-        if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续拉黑");
-        // A shared per-check budget is an operational limit, not a failed picture.
-        if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次新分析上限，保持当前分组；未继续拉黑");
-        return { pass: false, reason: "图片读取或评分失败，没有有效评价" };
-      }
+    if (context.scorerFailure) throw context.scorerFailure;
+    setStatus(`切换前重新评价 ${candidate.group} 的图片（计费）…`, "running");
+    let entry;
+    try {
+      entry = await runImageQuality({ candidate, budget: context });
+    } catch (error) {
       assertImageAdmissionCurrent(context);
-      entry = candidateImageQuality(candidate);
+      if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续拉黑");
+      if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次请求上限，保持当前分组；未继续拉黑");
+      if (error?.code === "IMAGE_SCORER_UNAVAILABLE") {
+        context.scorerFailure = new Error(imageQualityFailureMessage(error, new AbortController()));
+        throw context.scorerFailure;
+      }
+      return { pass: false, reason: "图片读取或评分失败，没有有效评价" };
     }
+    assertImageAdmissionCurrent(context);
     return imageQualityAdmissionVerdict(entry, config.imageQualityMinScore);
   }
 
@@ -792,6 +802,7 @@
 
   async function admittedSwitchCandidate(token, candidates, preferred, context) {
     if (!IS_AIHUB) return preferred;
+    if (context.scorerFailure) throw context.scorerFailure;
     const candidate = await selectImageQualifiedCandidate(candidates, token.group, {
       mode: config.selectionMode, preferred,
       assertCurrent: () => assertImageAdmissionCurrent(context),
@@ -1128,7 +1139,6 @@
       if (manual) renderOptions(true);
       const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
       state.candidates = candidates;
-      if (IS_AIHUB) void refreshImageQualityHashes();
       state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (targetGroup) {
@@ -1358,6 +1368,7 @@
     });
     renderTokenSelectionCount();
     renderImageQualityKeyOptions();
+    renderImageQualityGroupOptions();
 
     refs.modelList.replaceChildren();
     const models = [...new Set([

@@ -10,6 +10,8 @@ const entry = (criteria = qualityCriteria(), confidence = 'high') => ({ ...api.i
 assert.equal(api.sanitizeConfig({}).imageQualityMinScore, 80);
 assert.equal(api.sanitizeConfig({ imageQualityMinScore: -1 }).imageQualityMinScore, 0);
 assert.equal(api.sanitizeConfig({ imageQualityMinScore: 200 }).imageQualityMinScore, 100);
+assert.deepEqual(Array.from(api.sanitizeConfig({ imageQualityFallbackGroupIds: ['2',2,0,-1,3,4] }).imageQualityFallbackGroupIds),[2,3]);
+assert.deepEqual(Array.from(api.sanitizeConfig({ imageQualityFallbackModels: ['old-model'] }).imageQualityFallbackGroupIds),[],'old model names must not migrate to group IDs');
 for (const [value, minimum, pass] of [[entry(),84,true],[entry(),85,false],[entry(),86,false],[entry(fullQualityCriteria()),100,false],[entry(qualityCriteria(),'low'),80,false],[null,0,false],[{score:100},80,false]]) {
   assert.equal(api.imageQualityAdmissionVerdict(value,minimum).pass,pass);
 }
@@ -41,8 +43,8 @@ function runtime(overrides = {}) {
     validImageQuality:value=>!!api.imageQualityAdmissionVerdict(value,-1).pass,
     imageQualityEnabled:settings=>settings.imageQualityKeyId>0&&!!settings.imageQualityModel,
     imageQualityIdentity:api.imageQualityIdentity,
-    syncImageQualityStore(){},candidateImageQuality:row=>ctx.scores[row.group]||null,
-    scores:{},runImageQuality:async({candidate,budget})=>{checked.push(candidate.group);if(budget.remaining<=0)throw Object.assign(Error('cap'),{code:'IMAGE_ADMISSION_BUDGET'});budget.remaining--;ctx.scores[candidate.group]=entry();},
+    imageQualityFailureMessage:()=>"图片评分请求失败：评价模型不可用，本轮停止自动切换",
+    scores:{},runImageQuality:async({candidate,budget})=>{checked.push(candidate.group);if(budget.remaining<=0)throw Object.assign(Error('cap'),{code:'IMAGE_ADMISSION_BUDGET'});budget.remaining--;return ctx.scores[candidate.group]||entry();},
     summarizeFailures:()=>'',
   };
   vm.createContext(ctx);vm.runInContext(read('src/runtime/operations.js'),ctx);
@@ -56,7 +58,7 @@ function runtime(overrides = {}) {
 }
 {
   const {ctx,switched,checked,isolated}=runtime();ctx.scores.A=entry();
-  assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'switched');assert.deepEqual(switched,['A']);assert.deepEqual(checked,[]);assert.equal(isolated.length,0);
+  assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'switched');assert.deepEqual(switched,['A']);assert.deepEqual(checked,['A']);assert.equal(isolated.length,0);
 }
 {
   const {ctx,checked,switched}=runtime();await ctx.process(ctx.token,rows,{});assert.deepEqual(checked,['A']);assert.deepEqual(switched,['A']);
@@ -73,8 +75,11 @@ function runtime(overrides = {}) {
   await ctx.process(ctx.token,rows,{});assert.equal(isolated[0][0],'A');assert.deepEqual(switched,['B']);
 }
 {
-  const {ctx,isolated,checked,switched}=runtime();ctx.runImageQuality=async()=>{throw Error('HTTP 400 private upstream');};
-  assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'image-blocked');assert.equal(isolated.length,3);assert.equal(switched.length,0);
+  const {ctx,isolated,checked,switched}=runtime();ctx.runImageQuality=async()=>{checked.push('failed');throw Object.assign(Error('图片评分请求失败：已配置模型均不可用'),{code:'IMAGE_SCORER_UNAVAILABLE'});};
+  const admission=ctx.context();
+  await assert.rejects(ctx.process(ctx.token,rows,{admission}),/不可用/);
+  await assert.rejects(ctx.process({...ctx.token,id:2},rows,{admission}),/不可用/);
+  assert.deepEqual(checked,['failed']);assert.equal(isolated.length,0);assert.equal(switched.length,0);
   assert(!JSON.stringify(ctx.state.logs).includes('private upstream'));
 }
 {
@@ -99,7 +104,7 @@ function runtime(overrides = {}) {
   assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'holding');assert.equal(checked.length,0);
 }
 for(const invalidate of [ctx=>{ctx.config={...ctx.config,imageQualityMinScore:90};},ctx=>{ctx.imageQuality.cancelRevision++;},ctx=>{ctx.imageQuality.catalogRevision++;},ctx=>{ctx.actualGroup='changed-in-other-tab';}]) {
-  const {ctx,isolated,switched}=runtime();ctx.runImageQuality=async({candidate})=>{ctx.scores[candidate.group]=entry();invalidate(ctx);};
+  const {ctx,isolated,switched}=runtime();ctx.runImageQuality=async({candidate})=>{ctx.scores[candidate.group]=entry();invalidate(ctx);return entry();};
   await assert.rejects(()=>ctx.process(ctx.token,rows,{}),/取消切换/);assert.equal(isolated.length,0);assert.equal(switched.length,0);
 }
 {
@@ -113,7 +118,7 @@ for(const invalidate of [ctx=>{ctx.config={...ctx.config,imageQualityMinScore:90
   const failed=rows.map(row=>row.group==='C'?{...row,available:false,reasons:['recent-success-low']}:row);
   assert.equal((await ctx.process(ctx.token,failed,{})).outcome,'rolled-back');assert.deepEqual(switched,['B']);assert.equal(isolated[0][0],'A');
 }
-console.log('image admission: strict thresholds, all strategies, cache, fallback, isolation/expiry, manual bypass, hold/confirmation, rollback, cancellation and shared budget passed');
+console.log('image admission: strict thresholds, all strategies, fresh scoring, fallback, isolation/expiry, manual bypass, hold/confirmation, rollback, cancellation and shared budget passed');
 
 {
  const {ctx,isolated,switched,storage}=runtime();ctx.runImageQuality=async()=>{storage['catalog-at']=2;throw Object.assign(Error('stale'),{code:'IMAGE_CATALOG_STALE'});};
@@ -136,3 +141,11 @@ console.log('PASS shared directory watermark, stale-source errors and manual set
  assert.equal(calls,10);assert.equal(isolated.length,10,'the tenth failed request still isolates its group; unanalysed groups do not');assert.equal(switched.length,0);
 }
 console.log('PASS automatic candidate loop makes at most10 paid attempts and never isolates an unanalysed budget-blocked candidate');
+
+{
+  const {ctx,checked,switched}=runtime();ctx.scores.A=entry();
+  await ctx.process(ctx.token,rows,{});await ctx.process(ctx.token,rows,{});
+  assert.deepEqual(checked,['A','A'],'a visible earlier evaluation must never skip a later switch evaluation');
+  assert.deepEqual(switched,['A','A']);
+}
+console.log('PASS each actual switch evaluates afresh; scoring infrastructure failure stops the entire round without image blacklisting');

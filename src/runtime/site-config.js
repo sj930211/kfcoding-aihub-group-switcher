@@ -83,6 +83,7 @@
     selectionMode: "saving",
     imageQualityKeyId: 0,
     imageQualityModel: "",
+    imageQualityFallbackGroupIds: [],
     imageQualityTask: "鹈鹕骑自行车",
     imageQualityMinScore: 80,
     groupFilterMode: "whitelist",
@@ -106,8 +107,6 @@
   });
 
   const STORAGE_PREFIX = storagePrefixForSite(SITE_ID);
-  const STORAGE_IMAGE_QUALITY = `${STORAGE_PREFIX}:image-quality:content:v4`;
-  const STORAGE_IMAGE_QUALITY_SOURCES = `${STORAGE_PREFIX}:image-quality:sources:v1`;
   const STORAGE_IMAGE_QUALITY_CATALOG_AT = `${STORAGE_PREFIX}:image-quality:catalog-at:v1`;
   const STORAGE_CONFIG = `${STORAGE_PREFIX}:config:v1`;
   const STORAGE_LAST_SWITCH = `${STORAGE_PREFIX}:last-switch:v1`;

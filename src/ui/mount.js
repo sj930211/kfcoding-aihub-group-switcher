@@ -1140,11 +1140,11 @@
           <div class="candidate-head" ${IS_AIHUB ? "hidden" : ""}><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div class="image-quality-actions" data-ref="imageQualityActions" hidden>
             <div class="image-quality-toolbar">
-              <button class="text-button" type="button" data-ref="imageQualityRun">评分新图（计费）</button>
+              <button class="text-button" type="button" data-ref="imageQualityRun">评价当前图片（计费）</button>
               <button class="text-button" type="button" data-ref="imageQualityStop" hidden>停止</button>
               <p data-ref="imageQualityStatus" role="status"></p>
             </div>
-            <p title="图片分不参与策略或列表排序；自动切换前必须严格超过配置门槛，无缓存时评分计费。手动指定目标跳过图片检查。">图片分仅用于自动切换准入；手动切换跳过检查</p>
+            <p title="图片分不参与策略或列表排序；每次自动切换前重新评价并计费，必须严格超过配置门槛。手动指定目标跳过图片检查。">图片分仅用于自动切换准入；手动切换跳过检查</p>
           </div>
           ${IS_AIHUB ? '<div class="candidate-column-labels" aria-hidden="true"><span>倍率/预估</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span class="candidate-quality-column">效果</span></div>' : ""}
           <div data-ref="candidateRows"></div>
@@ -1292,29 +1292,34 @@
               <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">未配置评分密钥</option></select>
             </div>
             <div class="field">
-              <div class="settings-label-row"><label for="kf-image-quality-model">评分模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
+              <div class="settings-label-row"><label for="kf-image-quality-model">评价模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
               <input id="kf-image-quality-model" data-ref="imageQualityModel" type="text" maxlength="120" list="kf-image-quality-models" placeholder="选择或输入支持图片的模型" autocomplete="off" aria-describedby="kf-image-quality-models-status">
               <datalist id="kf-image-quality-models" data-ref="imageQualityModels"></datalist>
             </div>
           </div>
+          <div class="settings-fields">
+            <div class="field"><label for="kf-image-quality-fallback-1">备用评分分组 1（可选）</label><select id="kf-image-quality-fallback-1" data-ref="imageQualityFallback1" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
+            <div class="field"><label for="kf-image-quality-fallback-2">备用评分分组 2（可选）</label><select id="kf-image-quality-fallback-2" data-ref="imageQualityFallback2" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
+          </div>
+          <p id="kf-image-quality-fallback-help">评分服务不可用时，依次临时切换评分密钥的分组，评价模型保持不变；结束后恢复原组。有效低分不换组重评。</p>
           <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
           <div class="field">
             <label for="kf-image-quality-min-score">自动切换图片门槛（必须大于）</label>
             <input id="kf-image-quality-min-score" data-ref="imageQualityMinScore" type="number" min="0" max="100" step="1" aria-describedby="kf-image-admission-help">
           </div>
-          <p id="kf-image-admission-help" class="settings-billing-note">先按策略选组，再检查图片分，必须严格超过门槛。无缓存时自动调用所选模型（计费），每轮最多10次新分析，不自动重试。无图、评分失败、证据不足或未达标按“临时拉黑”时长隔离；未配置密钥/模型也无法通过。列表手动切换跳过图片检查。</p>
+          <p id="kf-image-admission-help" class="settings-billing-note">先按策略选组，满足连续确认与保持时间后重新评价图片（计费），必须严格超过门槛。所有评分分组合计每轮最多10次请求；同轮跳过已失败分组。无图、图片读取失败、证据不足或未达标按“临时拉黑”时长隔离；评价服务不可用则停止本轮切换。列表手动切换跳过图片检查。</p>
           <div class="image-quality-toolbar">
-            <button class="button" type="button" data-ref="imageQualityTest">测试1张（计费）</button>
+            <button class="button" type="button" data-ref="imageQualityTest">测试当前分组1张（计费）</button>
             <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
           </div>
           <p data-ref="imageQualityTestStatus" role="status"></p>
           <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
           <details class="settings-disclosure">
-            <summary>评分规则与缓存</summary>
+            <summary>评分规则与计算时机</summary>
             <div class="settings-detail-content">
               <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不通过自动准入。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
-              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
+              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不通过自动准入。每次切换重新评价，不保存或读取评分缓存。页面刷新、普通轮询不请求评价模型。单张测试仅请求当前评分分组1次，不切组。配置备用分组时串行评分，避免同一密钥并发切组；未配置时批量最多2并发。</p>
+              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearPage">清除本页评价</button></div>
             </div>
           </details>
           <div class="image-quality-records">
@@ -1459,8 +1464,8 @@
     `;
 
     const refNames = [
-      "imageQualityTooltip", "imageQualityList", "imageQualityListSummary", "imageQualityClearCache", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
-      "imageQualityKey", "imageQualityModel", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
+      "imageQualityTooltip", "imageQualityList", "imageQualityListSummary", "imageQualityClearPage", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
+      "imageQualityKey", "imageQualityModel", "imageQualityFallback1", "imageQualityFallback2", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",

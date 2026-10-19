@@ -72,64 +72,20 @@
       && value.reasons.every((reason) => typeof reason === "string" && Boolean(reason.trim()) && reason.length <= 180);
   }
 
-  function imageQualityContentKey(md5, byteLength, settings) {
-    if (!/^[a-f0-9]{32}$/.test(md5) || !Number.isInteger(byteLength) || byteLength <= 0
-      || byteLength > IMAGE_QUALITY_MAX_BYTES) return "";
-    return JSON.stringify([IMAGE_QUALITY_RUBRIC, settings.imageQualityModel,
-      settings.imageQualityTask, md5, byteLength]);
+  function imageQualityAvailabilityCode(code) {
+    return ["SUPPLIER_UPSTREAM_BLOCKED", "model_not_found", "model_not_available", "model_not_supported",
+      "unsupported_model", "unsupported_image", "image_input_not_supported", "no_available_channel",
+      "upstream_error", "rate_limit_exceeded"].includes(code);
   }
 
-  function normalizeImageQualityCache(value, now = Date.now()) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return Object.fromEntries(Object.entries(value).filter(([key, entry]) => {
-      let identity;
-      try { identity = JSON.parse(key); } catch { return false; }
-      return Array.isArray(identity) && identity.length === 5 && identity[0] === IMAGE_QUALITY_RUBRIC
-        && typeof identity[1] === "string" && identity[1].length > 0 && identity[1].length <= 120
-        && typeof identity[2] === "string" && identity[2].length > 0 && identity[2].length <= 300
-        && imageQualityContentKey(identity[3], identity[4], { imageQualityModel: identity[1], imageQualityTask: identity[2] }) === key
-        && validImageQuality(entry) && Number.isFinite(entry.assessedAt) && entry.assessedAt <= now;
-    }).sort((a, b) => (b[1].lastUsedAt || b[1].assessedAt) - (a[1].lastUsedAt || a[1].assessedAt)).slice(0, 1000)
-      .map(([key, entry]) => [key, {
-        task: entry.task, structure: entry.structure, harmony: entry.harmony, finish: entry.finish, score: entry.score,
-        criteria: imageQualityCriteriaDetails(entry.criteria),
-        confidence: entry.confidence, reasons: entry.reasons, assessedAt: entry.assessedAt,
-        lastUsedAt: Number.isFinite(entry.lastUsedAt) && entry.lastUsedAt <= now ? entry.lastUsedAt : entry.assessedAt,
-      }]));
-  }
-
-  function normalizeImageQualitySources(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return Object.fromEntries(Object.entries(value).filter(([id, entry]) => {
-      let source;
-      try { source = JSON.parse(entry?.source); } catch { return false; }
-      return /^[1-9]\d*$/.test(id) && Array.isArray(source) && source.length === 2
-        && aihubDetectionImageUrl(source[0]) && typeof source[1] === "string"
-        && Boolean(imageQualityContentKey(entry.md5, entry.byteLength, { imageQualityModel: "check", imageQualityTask: "check" }))
-        && Number.isFinite(entry.observedAt)
-        && (entry.catalogAt === undefined || Number.isFinite(entry.catalogAt));
-    }).slice(0, 2000).map(([id, entry]) => [id, {
-      source: entry.source, md5: entry.md5, byteLength: entry.byteLength, observedAt: entry.observedAt,
-      catalogAt: entry.catalogAt ?? entry.observedAt,
-    }]));
-  }
-
-  function pruneImageQualityCache(cache, sources) {
-    const live = new Set(Object.values(sources).map((entry) => `${entry.md5}:${entry.byteLength}`));
-    return Object.fromEntries(Object.entries(cache).filter(([key]) => {
-      const identity = JSON.parse(key);
-      return live.has(`${identity[3]}:${identity[4]}`);
-    }));
+  function imageQualitySettingsKey(settings) {
+    return JSON.stringify([settings.imageQualityKeyId, settings.imageQualityModel,
+      settings.imageQualityFallbackGroupIds || [], settings.imageQualityTask]);
   }
 
   function imageQualityRows() {
     return [...new Map((imageQuality.catalogReady ? imageQuality.catalog : state.candidates)
       .map((row) => [Number(row.groupId), row])).values()];
-  }
-
-  function syncImageQualityStore() {
-    imageQuality.cache = normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {}));
-    imageQuality.sources = normalizeImageQualitySources(GM_getValue(STORAGE_IMAGE_QUALITY_SOURCES, {}));
   }
 
   function updateImageQualityCatalog(summary) {
@@ -140,46 +96,13 @@
       group: api.planType, groupId: Number(api.id), detectionMedia: api.detectionMedia,
     }));
     imageQuality.sample = imageQuality.catalog.find((row) => imageQualityIdentity(row)) || null;
-    // Catalog is authoritative; never carry a previous image into a new group snapshot.
-    const live = new Set(imageQuality.catalog.map(imageQualityIdentity).filter(Boolean));
-    for (const source of imageQuality.hashes.keys()) if (!live.has(source)) imageQuality.hashes.delete(source);
-    imageQuality.testResult = "";
-    imageQuality.testStatus = "";
-  }
-
-  async function updateImageQualityStore(update) {
-    const mutate = () => {
-      const store = {
-        cache: normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {})),
-        sources: normalizeImageQualitySources(GM_getValue(STORAGE_IMAGE_QUALITY_SOURCES, {})),
-        catalogAt: Math.max(0, Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) || 0),
-      };
-      update(store);
-      GM_setValue(STORAGE_IMAGE_QUALITY, store.cache);
-      GM_setValue(STORAGE_IMAGE_QUALITY_SOURCES, store.sources);
-      GM_setValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, store.catalogAt);
-      imageQuality.cache = store.cache;
-      imageQuality.sources = store.sources;
-    };
-    // Content locks protect billing; this separate short lock protects cache merges and cleanup.
-    if (navigator.locks?.request) await navigator.locks.request(`${STORAGE_IMAGE_QUALITY}:store`, mutate);
-    else mutate();
-  }
-
-  async function rememberImageQualitySource(candidate, image, observedAt) {
-    let accepted = false;
-    await updateImageQualityStore((store) => {
-      const id = Number(candidate.groupId);
-      const source = imageQualityIdentity(candidate);
-      const current = imageQualityRows().find((row) => Number(row.groupId) === id);
-      const catalogAt = imageQuality.catalogAt;
-      const previous = store.sources[id];
-      if (store.catalogAt > catalogAt || !current || imageQualityIdentity(current) !== source || (previous?.catalogAt || 0) > catalogAt
-        || (previous?.catalogAt === catalogAt && previous.observedAt > observedAt)) return;
-      store.sources[id] = { source, md5: image.md5, byteLength: image.byteLength, observedAt, catalogAt };
-      accepted = true;
-    });
-    return accepted;
+    const current = new Map(imageQuality.catalog.map((row) => [Number(row.groupId), imageQualityIdentity(row)]));
+    for (const [id, record] of imageQuality.records) {
+      if (!current.get(id) || current.get(id) !== record.source) imageQuality.records.delete(id);
+    }
+    // Only a directory watermark is shared between tabs, never scores or image data.
+    GM_setValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, Math.max(imageQuality.catalogAt,
+      Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) || 0));
   }
 
   function parseImageQualityResponse(payload) {
@@ -191,7 +114,8 @@
     let result;
     try { result = JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "")); }
     catch { throw new Error("评分格式无效，未采用图片分"); }
-    if (result?.unable_to_assess !== false) throw new Error("模型未能识别图片，未采用图片分");
+    if (result?.unable_to_assess === true) throw Object.assign(new Error("模型未能识别图片，未采用图片分"), { code: "IMAGE_UNASSESSABLE" });
+    if (result?.unable_to_assess !== false) throw new Error("评分格式缺少有效图片识别状态，未采用图片分");
     const scores = imageQualityScores(result.criteria);
     if (!scores || ["task", "structure", "harmony", "finish"].some((key) => result[key] !== undefined && result[key] !== scores[key])) {
       throw new Error("评分格式缺少有效细项或分项不一致，未采用图片分");
@@ -242,15 +166,10 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
   function candidateImageQuality(candidate) {
     if (!imageQualityEnabled(config)) return null;
-    if (imageQuality.catalogReady && !imageQuality.catalog.some((row) => Number(row.groupId) === Number(candidate.groupId)
-      && imageQualityIdentity(row) === imageQualityIdentity(candidate))) return null;
-    const fingerprint = imageQuality.hashes.get(imageQualityIdentity(candidate));
-    if (!fingerprint) return null;
-    const binding = imageQuality.sources[candidate.groupId];
-    if (!binding || binding.source !== imageQualityIdentity(candidate) || binding.md5 !== fingerprint.md5
-      || binding.byteLength !== fingerprint.byteLength) return null;
-    const entry = imageQuality.cache[imageQualityContentKey(fingerprint.md5, fingerprint.byteLength, config)];
-    return validImageQuality(entry) ? entry : null;
+    const record = imageQuality.records.get(Number(candidate.groupId));
+    if (!record || record.source !== imageQualityIdentity(candidate)
+      || record.settingsKey !== imageQualitySettingsKey(config)) return null;
+    return validImageQuality(record.entry) ? record.entry : null;
   }
 
   function imageQualityDescription(entry, compact = false) {
@@ -259,7 +178,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     return `效果 ${entry.score}/100 · 任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15\n`
       + `协调规则 v3${scores.capReason ? ` · 分项合计${scores.rawScore}，${scores.capReason}封顶${scores.score}` : ""}\n`
       + IMAGE_QUALITY_CRITERIA.map(([name, label, max]) => `${label} ${entry.criteria[name].score}/${max}${compact ? "" : `：${entry.criteria[name].evidence}${IMAGE_QUALITY_CONNECTIONS.includes(name) ? `（${entry.criteria[name].from} → ${entry.criteria[name].to}；${{verified:"成立",occluded:"遮挡",unclear:"含糊",broken:"不成立"}[entry.criteria[name].connection]}）` : ""}`}`).join("\n") + "\n"
-      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${config.imageQualityModel}\n`
+      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${entry.model || config.imageQualityModel}${entry.scoringGroup ? ` · 评分分组 ${entry.scoringGroup}` : ""} · 本页上次评价，下次切换重新计算\n`
       + `${new Date(entry.assessedAt).toLocaleString()}\n${compact ? "完整可见依据见图片或设置列表" : entry.reasons.join("；")}`;
   }
 
@@ -282,11 +201,11 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     if (!container) return;
     const rows = imageQualityRows().filter(imageQualityIdentity);
     const enabled = imageQualityEnabled(config);
-    if (!sectionNeedsRender(container, [enabled, imageQuality.hashController, imageQuality.controller,
+    if (!sectionNeedsRender(container, [enabled, imageQuality.controller,
       ...rows.flatMap((row) => [row.groupId, row.group, imageQualityIdentity(row), candidateImageQuality(row)])])) return;
     container.replaceChildren();
     refs.imageQualityListSummary.textContent = enabled
-      ? `${rows.filter(candidateImageQuality).length} 已评分 / ${rows.length} 张当前图片 · 缓存 ${Math.ceil(new Blob([JSON.stringify(imageQuality.cache), JSON.stringify(imageQuality.sources)]).size / 1024)} KB`
+      ? `${rows.filter(candidateImageQuality).length} 已评分 / ${rows.length} 张当前图片 · 仅本页展示，切换时重新评价`
       : "选择评分密钥和模型后展示当前图片评价";
     if (!enabled || !rows.length) {
       const empty = document.createElement("p");
@@ -323,7 +242,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       summary.textContent = entry ? "评价依据与时间" : "评分状态";
       const detail = document.createElement("p");
       detail.textContent = entry ? imageQualityDescription(entry)
-        : "等待原图校验或手动评分；换图后不会沿用旧图评价。";
+        : "自动切换前或点击手动评价时计算；刷新页面后不保留。";
       details.append(summary, detail);
       copy.append(heading, breakdown, details);
       row.append(image, copy);
@@ -334,30 +253,29 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   function renderImageQualityControls() {
     if (!refs.imageQualityActions) return;
     const enabled = imageQualityEnabled(config);
-    const busy = Boolean(imageQuality.controller || imageQuality.modelsController || imageQuality.hashController || imageQuality.clearing);
+    const busy = Boolean(imageQuality.controller || imageQuality.modelsController);
     refs.imageQualityLoadModels.disabled = !IS_AIHUB || !config.imageQualityKeyId || busy;
     refs.imageQualityLoadModels.textContent = imageQuality.modelsController ? "正在读取模型…" : "读取模型列表";
     refs.imageQualityModelsStatus.textContent = imageQuality.modelsStatus
       || "读取所选密钥的模型列表；图片输入能力需测试确认。也可手动输入模型名。";
     refs.imageQualityTest.disabled = !enabled || busy || !imageQualityTestCandidate();
-    refs.imageQualityTestStop.hidden = !imageQuality.controller && !imageQuality.hashController;
-    refs.imageQualityClearCache.disabled = busy || !Object.keys(imageQuality.cache).length;
+    refs.imageQualityTestStop.hidden = !imageQuality.controller;
+    refs.imageQualityClearPage.disabled = busy || !imageQuality.records.size;
     refs.imageQualityTestStatus.textContent = imageQuality.testStatus
       || (!config.imageQualityKeyId ? "请选择评分密钥。" : !config.imageQualityModel ? "请选择或输入评分模型。"
         : !imageQualityTestCandidate() ? "暂无可用测试原图，请点击监控页的立即检查。"
-          : "每次测试调用1张原图并计费，结果可供后续列表评分复用。");
+          : "仅测试当前评分分组：1张、1次请求并计费，不切组；结果不用于自动切换。");
     refs.imageQualityTestResult.hidden = !imageQuality.testResult;
     refs.imageQualityTestResult.textContent = imageQuality.testResult;
     refs.imageQualityActions.hidden = !enabled;
     const rows = imageQualityRows();
-    const pending = rows.filter((candidate) => imageQualityIdentity(candidate, config)
-      && !candidateImageQuality(candidate)).length;
-    refs.imageQualityRun.disabled = busy || !pending;
-    refs.imageQualityRun.textContent = pending ? "评分新图（计费）"
-      : rows.some((candidate) => imageQualityIdentity(candidate, config)) ? "图片已评分" : "暂无图片";
-    refs.imageQualityStop.hidden = !imageQuality.controller && !imageQuality.hashController;
-    refs.imageQualityStatus.textContent = imageQuality.status || `已复用 ${rows.filter(candidateImageQuality).length} · 待校验/评分 ${pending}`;
+    const available = rows.filter(imageQualityIdentity).length;
+    refs.imageQualityRun.disabled = busy || !available;
+    refs.imageQualityRun.textContent = available ? "评价当前图片（计费）" : "暂无图片";
+    refs.imageQualityStop.hidden = !imageQuality.controller;
+    refs.imageQualityStatus.textContent = imageQuality.status || `本页已评价 ${rows.filter(candidateImageQuality).length} · 刷新列表不调用模型`;
   }
+
 
   function renderImageQualityKeyOptions() {
     if (!refs.imageQualityKey) return;
@@ -368,6 +286,116 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       refs.imageQualityKey.add(new Option("已选密钥暂不可用", String(config.imageQualityKeyId)));
     }
     refs.imageQualityKey.value = String(config.imageQualityKeyId);
+  }
+
+  function renderImageQualityGroupOptions() {
+    [refs.imageQualityFallback1, refs.imageQualityFallback2].forEach((select, index) => {
+      if (!select) return;
+      const selected = Number(config.imageQualityFallbackGroupIds[index]) || 0;
+      select.replaceChildren(new Option("不使用备用分组", "0"));
+      aihubGroupsCache.forEach((group) => select.add(new Option(group.name || `#${group.id}`, String(group.id))));
+      if (selected && !aihubGroupsCache.some((group) => Number(group.id) === selected)) {
+        select.add(new Option(`分组 #${selected} 暂不可用`, String(selected)));
+      }
+      select.value = String(selected);
+    });
+  }
+
+  async function withImageQualityKeyLock(keyId, requiresLock, action) {
+    if (!navigator.locks?.request) {
+      if (requiresLock) throw Object.assign(new Error("图片评分请求失败：浏览器不支持密钥切组互斥，本轮未切换评分分组"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+      return action();
+    }
+    return navigator.locks.request(`aihub-key-group-${keyId}`, { ifAvailable: true }, (lock) => {
+      if (!lock) throw Object.assign(new Error("图片评分请求失败：该密钥正在其他任务中评分或切组，请稍后重试"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+      return action();
+    });
+  }
+
+  async function imageQualityKeyDetail(keyId, controller) {
+    const payload = await imageQualityFetchJson(`/api/v1/keys/${keyId}`, {
+      credentials: "include", headers: requestHeaders(false),
+    }, controller, 15000);
+    const detail = imageQualityGroupPayload(payload);
+    if (Number(detail?.id) !== keyId) throw new Error("图片评分请求失败：无法确认评分密钥详情，本轮停止");
+    return detail;
+  }
+
+  function imageQualityGroupPayload(payload) {
+    // Management endpoints can echo request data in errors; never surface their message.
+    if (payload?.code !== undefined && Number(payload.code) !== 0) throw new Error("图片评分请求失败：密钥或分组管理接口拒绝请求，本轮停止");
+    return payload?.data || payload;
+  }
+
+  function imageQualityGroupId(detail) {
+    return Number(detail.group_id ?? detail.group?.id) || 0;
+  }
+
+  function imageQualityGroupName(detail) {
+    return typeof detail.group === "string" ? detail.group : detail.group?.name || `#${imageQualityGroupId(detail)}`;
+  }
+
+  async function createImageQualityGroupSession(settings, controller, current) {
+    const original = await imageQualityKeyDetail(settings.imageQualityKeyId, controller);
+    current();
+    const originalId = imageQualityGroupId(original);
+    const configured = settings.imageQualityFallbackGroupIds || [];
+    let groups = [];
+    if (configured.length) {
+      if (!Number.isSafeInteger(originalId) || originalId <= 0) throw new Error("图片评分请求失败：评分密钥没有可恢复的原分组，请先为其指定分组");
+      const payload = await imageQualityFetchJson("/api/v1/groups/available", {
+        credentials: "include", headers: requestHeaders(false),
+      }, controller, 15000);
+      groups = imageQualityGroupPayload(payload);
+      current();
+      if (!Array.isArray(groups) || !groups.some((group) => Number(group.id) === originalId)) {
+        throw new Error("图片评分请求失败：评分密钥原分组已不可选，无法确认可恢复，本轮未切组");
+      }
+      if (configured.some((id) => !groups.some((group) => Number(group.id) === id))) {
+        throw new Error("图片评分请求失败：备用评分分组已不可选，请重新选择");
+      }
+    }
+    let expectedId = originalId;
+    let pendingId = null;
+    let changed = false;
+    const read = () => imageQualityKeyDetail(settings.imageQualityKeyId, new AbortController());
+    const put = async (id) => {
+      imageQualityGroupPayload(await imageQualityFetchJson(`/api/v1/keys/${settings.imageQualityKeyId}`, {
+        method: "PUT", credentials: "include", headers: requestHeaders(true), body: JSON.stringify({ group_id: id }),
+      }, new AbortController(), 15000));
+    };
+    const session = {
+      credential: original.key,
+      routes: [{ id: originalId, name: imageQualityGroupName(original) },
+        ...configured.filter((id) => id !== originalId).map((id) => ({ id, name: groups.find((group) => Number(group.id) === id).name }))],
+      async check() {
+        current();
+        if (imageQualityGroupId(await read()) !== expectedId) throw new Error("图片评分请求失败：评分密钥分组已被其他操作改变，本轮停止且不覆盖外部修改");
+        current();
+      },
+      async move(route) {
+        await session.check();
+        if (expectedId === route.id) return;
+        // A write may have succeeded even if its response is lost. Cleanup must inspect it.
+        changed = true;
+        pendingId = route.id;
+        await put(route.id);
+        if (imageQualityGroupId(await read()) !== route.id) throw new Error("图片评分请求失败：评分密钥切组校验失败，本轮停止");
+        expectedId = route.id;
+        pendingId = null;
+        current();
+      },
+      async restore() {
+        if (!changed) return;
+        const latestId = imageQualityGroupId(await read());
+        if (latestId === originalId) return;
+        if (latestId !== expectedId && latestId !== pendingId) throw new Error("图片评分请求失败：评分密钥分组已被其他操作改变，未覆盖；请检查评分密钥当前分组");
+        await put(originalId);
+        if (imageQualityGroupId(await read()) !== originalId) throw new Error("图片评分请求失败：评分密钥原分组恢复校验失败，请手动检查；本轮不切换业务分组");
+      },
+    };
+    if (typeof session.credential !== "string" || !/^[A-Za-z0-9_-]{16,512}$/.test(session.credential)) throw new Error("无法读取完整评分密钥，请重新登录或更换密钥");
+    return session;
   }
 
   function normalizeImageQualityModels(payload) {
@@ -406,7 +434,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   async function loadImageQualityModels() {
-    if (!IS_AIHUB || !config.imageQualityKeyId || imageQuality.controller || imageQuality.modelsController || imageQuality.hashController || imageQuality.clearing) return;
+    if (!IS_AIHUB || !config.imageQualityKeyId || imageQuality.controller || imageQuality.modelsController) return;
     const keyId = config.imageQualityKeyId;
     const controller = new AbortController();
     imageQuality.modelsController = controller;
@@ -434,14 +462,12 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       credential = "";
       imageQuality.modelsController = null;
       renderImageQualityControls();
-      if (imageQuality.refreshPending) { imageQuality.refreshPending = false; void refreshImageQualityHashes(); }
     }
   }
 
   function cancelImageQuality() {
     imageQuality.cancelRevision = (imageQuality.cancelRevision || 0) + 1;
     imageQuality.controller?.abort();
-    imageQuality.hashController?.abort();
     imageQuality.modelsController?.abort();
   }
 
@@ -500,7 +526,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         const error = event.error || event.response?.error || event;
         const reason = error.code === "SUPPLIER_UPSTREAM_BLOCKED" || error.message === "SUPPLIER_UPSTREAM_BLOCKED"
           ? "供应商上游拒绝请求（SUPPLIER_UPSTREAM_BLOCKED）" : "评分流失败或未完整完成";
-        throw new Error(`图片评分请求失败：${reason}；未自动重试，未采用图片分。`);
+        const unavailable = imageQualityAvailabilityCode(error.code)
+          || error.message === "SUPPLIER_UPSTREAM_BLOCKED";
+        throw Object.assign(new Error(`图片评分请求失败：${reason}；未采用图片分。`), { modelUnavailable: unavailable });
       }
       if (type !== "response.completed") return null;
       if (event.response?.status !== "completed" || !Array.isArray(event.response.output)) {
@@ -539,10 +567,15 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     }
   }
 
-  async function imageQualityFetchJson(path, options, controller) {
-    const timer = setTimeout(() => controller.abort(), 60000);
+  async function imageQualityFetchJson(path, options, controller, timeoutMs = 60000) {
+    const attempt = new AbortController();
+    const stop = () => attempt.abort();
+    controller.signal.addEventListener("abort", stop, { once: true });
+    if (controller.signal.aborted) attempt.abort();
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; attempt.abort(); }, timeoutMs);
     try {
-      const response = await fetch(path, { ...options, signal: controller.signal, cache: "no-store", redirect: "error" });
+      const response = await fetch(path, { ...options, signal: attempt.signal, cache: "no-store", redirect: "error" });
       if (!response.ok) {
         const prefix = await readImageQualityErrorPrefix(response);
         // Match only an allowlisted marker, including AIHub's JSON + SSE error shape.
@@ -559,14 +592,28 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
               : response.status === 429 ? "接口限流或配额受限，请核对额度后手动重试"
                 : response.status >= 500 ? "服务端或上游异常，请稍后手动重试"
                   : "接口未接受请求，请核对模型与请求参数";
-        throw new Error(`${stage}失败（HTTP ${response.status}）：${reason}；未自动重试，未采用图片分。`);
+        const modelCode = [...prefix.matchAll(/"code"\s*:\s*"([A-Za-z0-9_]+)"/g)].some((match) => imageQualityAvailabilityCode(match[1]));
+        throw Object.assign(new Error(`${stage}失败（HTTP ${response.status}）：${reason}；未采用图片分。`), {
+          modelUnavailable: path === "/v1/responses" && (supplierBlocked || modelCode || [404, 408, 429].includes(response.status) || response.status >= 500),
+        });
       }
       if (path === "/v1/responses" && /\btext\/event-stream\b/i.test(response.headers.get("content-type") || "")) {
-        return await readImageQualityStream(response, controller);
+        return await readImageQualityStream(response, attempt);
       }
       try { return await response.json(); }
       catch { throw new Error("接口未返回有效JSON，未采用图片分"); }
-    } finally { clearTimeout(timer); }
+    } catch (error) {
+      if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+      if (timedOut || error?.name === "TypeError") {
+        throw Object.assign(new Error(timedOut ? "图片评分请求失败：请求超时，未采用图片分" : "图片评分请求失败：网络连接失败，未采用图片分"), {
+          modelUnavailable: path === "/v1/responses",
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener("abort", stop);
+    }
   }
 
   function imageQualityMime(bytes) {
@@ -582,8 +629,6 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const identity = imageQualityIdentity(candidate);
     const url = aihubDetectionImageUrl(candidate.detectionMedia?.url);
     if (!identity || !url) throw new Error("图片地址无效");
-    // Never render a stale score if revalidation fails or the content changed in place.
-    imageQuality.hashes.delete(identity);
     const timer = setTimeout(() => controller.abort(), 25000);
     try {
       const response = await fetch(url, { credentials: "omit", redirect: "error", cache: "no-cache", signal: controller.signal });
@@ -611,9 +656,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       }
       if (!bytes.length || bytes.length > IMAGE_QUALITY_MAX_BYTES || !imageQualityMime(bytes)) throw new Error("图片内容不是支持的有效图片，未调用模型");
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const fingerprint = { md5: await imageBytesMd5Async(bytes, controller.signal), byteLength: bytes.length };
-      imageQuality.hashes.set(identity, fingerprint);
-      return { ...fingerprint, bytes };
+      return { bytes };
     } finally { clearTimeout(timer); }
   }
 
@@ -626,185 +669,154 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     });
   }
 
-  async function refreshImageQualityHashes() {
-    if (imageQuality.controller || imageQuality.modelsController || imageQuality.hashController || imageQuality.clearing) {
-      imageQuality.refreshPending = true;
-      return;
-    }
-    if (!imageQualityEnabled(config)) return;
-    const controller = new AbortController();
-    imageQuality.hashController = controller;
-    const observedAt = Date.now();
-    const catalogRevision = imageQuality.catalogRevision;
-    const catalogAt = imageQuality.catalogAt;
-    const previouslyManaged = new Set(Object.values(imageQuality.sources).map((entry) => `${entry.md5}:${entry.byteLength}`));
-    const rows = imageQualityRows();
-    const unique = [...new Map(rows.filter(imageQualityIdentity).map((row) => [imageQualityIdentity(row), row])).values()];
-    imageQuality.hashes.clear();
+  function clearImageQualityPage() {
+    if (imageQuality.controller || imageQuality.modelsController) return;
+    imageQuality.records.clear();
+    imageQuality.testResult = "";
+    imageQuality.testStatus = "";
+    imageQuality.status = "本页评价已清除；自动切换仍会重新评价";
     render();
-    let failures = 0;
-    try {
-      await updateImageQualityStore((store) => { store.catalogAt = Math.max(store.catalogAt, catalogAt); });
-      for (const row of unique) {
-        if (controller.signal.aborted) break;
-        try {
-          const image = await readImageQualityImage(row, controller);
-          // All groups sharing this source refer to the same verified bytes.
-          for (const group of rows.filter((item) => imageQualityIdentity(item) === imageQualityIdentity(row))) {
-            await rememberImageQualitySource(group, image, observedAt);
-          }
-        } catch { if (!controller.signal.aborted) failures += 1; }
-      }
-      if (!controller.signal.aborted && catalogRevision === imageQuality.catalogRevision) await updateImageQualityStore((store) => {
-        if (catalogRevision !== imageQuality.catalogRevision || store.catalogAt > catalogAt) return;
-        const current = new Map(imageQualityRows().map((row) => [String(row.groupId), imageQualityIdentity(row)]));
-        for (const [id, entry] of Object.entries(store.sources)) {
-          if (entry.catalogAt <= catalogAt && current.get(id) !== entry.source) delete store.sources[id];
-        }
-        // Full successful validation can also collect unindexed legacy cache entries.
-        const live = pruneImageQualityCache(store.cache, store.sources);
-        for (const key of Object.keys(store.cache)) {
-          const identity = JSON.parse(key);
-          if (!live[key] && (previouslyManaged.has(`${identity[3]}:${identity[4]}`) || (!failures && rows.length))) delete store.cache[key];
-        }
-        if (!failures && rows.length) {
-          for (const [key, entry] of Object.entries(store.cache)) store.cache[key] = { ...entry, lastUsedAt: Date.now() };
-        }
-      });
-      imageQuality.status = controller.signal.aborted ? "图片校验已停止，未调用模型"
-        : `缓存复用 ${rows.filter(candidateImageQuality).length} · ${failures ? `${failures}张读取失败` : "原图已校验，已清理失效评价"}`;
-    } finally {
-      imageQuality.hashController = null;
-      render();
-      if (imageQuality.refreshPending) { imageQuality.refreshPending = false; void refreshImageQualityHashes(); }
-    }
   }
 
-  async function clearImageQualityCache() {
-    if (imageQuality.controller || imageQuality.hashController || imageQuality.modelsController || imageQuality.clearing) return;
-    imageQuality.clearing = true;
-    render();
-    try {
-      await updateImageQualityStore((store) => { store.cache = {}; store.sources = {}; });
-      imageQuality.testResult = "";
-      imageQuality.testStatus = "";
-      imageQuality.status = "评分缓存已清空，下次评分将重新调用模型";
-    } finally {
-      imageQuality.clearing = false;
-      render();
-      if (imageQuality.refreshPending) { imageQuality.refreshPending = false; void refreshImageQualityHashes(); }
+  function assertImageQualityRunCurrent(settingsKey, revision, controller) {
+    if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+    if (imageQualitySettingsKey(config) !== settingsKey || imageQuality.catalogRevision !== revision
+      || Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) > imageQuality.catalogAt) {
+      throw Object.assign(new Error("图片目录已更新或设置已变更，本次评价已取消"), { code: "IMAGE_CATALOG_STALE" });
     }
   }
 
   async function runImageQuality(options) {
-    if (!imageQualityEnabled(config) || imageQuality.controller || imageQuality.modelsController || imageQuality.hashController || imageQuality.clearing) return;
+    if (!imageQualityEnabled(config) || imageQuality.controller || imageQuality.modelsController) return;
     const test = options?.test === true;
     const settings = { ...config };
-    const catalogRevision = imageQuality.catalogRevision;
+    const settingsKey = imageQualitySettingsKey(settings);
+    const revision = imageQuality.catalogRevision;
     const sample = test ? imageQualityTestCandidate() : null;
     const batch = test ? (sample ? [sample] : []) : options?.candidate ? [options.candidate] : imageQualityRows().filter(imageQualityIdentity);
     if (!batch.length) return;
+    const useFallback = !test && Boolean(settings.imageQualityFallbackGroupIds?.length);
+    const budget = options?.budget || { remaining: test ? 1 : 10, unavailableGroups: new Set() };
+    budget.unavailableGroups ||= new Set();
     const controller = new AbortController();
     imageQuality.controller = controller;
-    imageQuality.status = "正在校验原图MD5；最多2张并发，每批最多10次新分析";
-    if (test) { imageQuality.testStatus = `正在测试 ${settings.imageQualityModel}（1张，计费）…`; imageQuality.testResult = ""; }
+    imageQuality.status = useFallback ? "正在评价当前图片；临时切组期间串行执行，每批最多10次模型请求"
+      : "正在评价当前图片；最多2张并发，每批最多10次模型请求";
+    if (test) { imageQuality.testStatus = `正在测试 ${settings.imageQualityModel}（当前分组、1张1次，计费）…`; imageQuality.testResult = ""; }
     render();
-    let credential = "";
-    let credentialPromise;
+    let session;
     let analyzed = 0;
-    let started = 0;
-    let reused = 0;
     let next = 0;
     let failure = null;
-    const localLocks = new Map();
-    const score = async (candidate, image) => {
-      const contentKey = imageQualityContentKey(image.md5, image.byteLength, settings);
-      const scoreOrReuse = async () => {
-        if (controller.signal.aborted || failure) return;
-        let entry = normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {}))[contentKey];
-        if (!test && entry) reused += 1;
-        else {
-          if (started >= 10) return;
-          if (options?.budget && options.budget.remaining <= 0) {
-            throw Object.assign(new Error("本轮已达10次新分析上限，保持当前分组；未继续请求"), { code: "IMAGE_ADMISSION_BUDGET" });
-          }
-          const dataUrl = await imageQualityDataUrl(image.bytes);
-          if (controller.signal.aborted || failure) return;
-          credentialPromise ||= readImageQualityCredential(settings.imageQualityKeyId, controller);
-          credential = await credentialPromise;
-          if (controller.signal.aborted || failure || started >= 10) return;
-          // Reserve synchronously before fetch: two workers cannot exceed the paid-call cap.
-          started += 1;
-          if (options?.budget) options.budget.remaining -= 1;
-          const payload = await imageQualityFetchJson("/v1/responses", {
+    let selectedEntry = null;
+    const published = [];
+    const current = () => assertImageQualityRunCurrent(settingsKey, revision, controller);
+    const evaluate = async (candidate, image) => {
+      const dataUrl = await imageQualityDataUrl(image.bytes);
+      const routes = useFallback ? session.routes : session.routes.slice(0, 1);
+      for (const route of routes) {
+        current();
+        if (failure) return null;
+        const routeKey = JSON.stringify([settings.imageQualityKeyId, settings.imageQualityModel, route.id]);
+        if (!test && budget.unavailableGroups.has(routeKey)) continue;
+        if (budget.remaining <= 0) throw Object.assign(new Error("图片评分请求失败：本轮已达10次请求上限，保持当前分组"), { code: "IMAGE_ADMISSION_BUDGET" });
+        await session.move(route);
+        current();
+        if (failure) return null;
+        if (budget.remaining <= 0) throw Object.assign(new Error("图片评分请求失败：本轮已达10次请求上限，保持当前分组"), { code: "IMAGE_ADMISSION_BUDGET" });
+        budget.remaining -= 1;
+        let payload;
+        try {
+          payload = await imageQualityFetchJson("/v1/responses", {
             method: "POST", credentials: "omit",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` },
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.credential}` },
             body: JSON.stringify(buildImageQualityRequest(candidate, settings, dataUrl)),
           }, controller);
-          if (controller.signal.aborted) return;
-          entry = { ...parseImageQualityResponse(payload), assessedAt: Date.now() };
-          analyzed += 1;
+        } catch (error) {
+          current();
+          if (!error.modelUnavailable) throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_SCORER_UNAVAILABLE" });
+          budget.unavailableGroups.add(routeKey);
+          imageQuality.status = test ? `当前评分分组 ${route.name} 暂不可用；单张测试不切组`
+            : `评分分组 ${route.name} 暂不可用，将尝试已配置的备用分组；评价模型保持不变`;
+          render();
+          continue;
         }
-        if (controller.signal.aborted) return;
-        let stored = false;
-        await updateImageQualityStore((store) => {
-          // A group can change images while a model request is still in flight.
-          const current = new Map(imageQualityRows().map((row) => [String(row.groupId), imageQualityIdentity(row)]));
-          if (!Object.entries(store.sources).some(([id, source]) => current.get(id) === source.source
-            && source.md5 === image.md5 && source.byteLength === image.byteLength)) return;
-          store.cache = normalizeImageQualityCache({ ...store.cache, [contentKey]: { ...entry, lastUsedAt: Date.now() } });
-          stored = true;
-        });
-        imageQuality.status = `新分析 ${analyzed} · 缓存复用 ${reused} · 最多2张并发；图片分仅用于自动切换准入`;
-        if (test && stored) {
-          imageQuality.testStatus = entry.confidence === "low" ? "接口与格式测试通过；证据不足，不通过自动切换准入。"
-            : "接口与格式测试通过；模型返回有效分项和依据。";
-          imageQuality.testResult = `${candidate.group} · ${imageQualityDescription(entry)}\nMD5 ${image.md5}`;
+        await session.check();
+        let parsed;
+        try { parsed = parseImageQualityResponse(payload); }
+        catch (error) {
+          if (error?.code === "IMAGE_UNASSESSABLE") throw error;
+          throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_SCORER_UNAVAILABLE" });
         }
-      };
-      if (navigator.locks?.request) await navigator.locks.request(`${STORAGE_IMAGE_QUALITY}:${contentKey}`,
-        { signal: controller.signal }, scoreOrReuse);
-      else {
-        const previous = localLocks.get(contentKey) || Promise.resolve();
-        const pending = previous.then(scoreOrReuse);
-        localLocks.set(contentKey, pending);
-        await pending;
+        const entry = { ...parsed, model: settings.imageQualityModel, scoringGroupId: route.id,
+          scoringGroup: route.name, assessedAt: Date.now() };
+        imageQuality.records.set(Number(candidate.groupId), { source: imageQualityIdentity(candidate), settingsKey, entry });
+        published.push(Number(candidate.groupId));
+        analyzed += 1;
+        imageQuality.status = `本次已评价 ${analyzed} 张 · 评分分组 ${route.name} · 模型 ${settings.imageQualityModel} · 结果仅本页展示`;
+        if (test) {
+          imageQuality.testStatus = entry.confidence === "low" ? "模型测试通过；证据不足，不通过自动准入。" : "模型测试通过；返回有效分项和依据，未切组。";
+          imageQuality.testResult = `${candidate.group} · ${imageQualityDescription(entry)}`;
+        }
+        return entry;
       }
+      throw Object.assign(new Error(test
+        ? "图片评分请求失败：当前评分分组暂不可用；本次仅请求1次，未切换分组或模型"
+        : "图片评分请求失败：当前及备用评分分组均不可用，本轮停止自动切换；未拉黑图片分组"), { code: "IMAGE_SCORER_UNAVAILABLE" });
     };
     const worker = async () => {
       while (!controller.signal.aborted && !failure && next < batch.length) {
         const candidate = batch[next++];
         try {
-          const observedAt = Date.now();
-          const image = await readImageQualityImage(candidate, controller);
-          if (!await rememberImageQualitySource(candidate, image, observedAt)) {
-            throw Object.assign(new Error("图片目录已更新，请刷新页面后再评分；未自动重试"), { code: "IMAGE_CATALOG_STALE" });
+          current();
+          imageQuality.records.delete(Number(candidate.groupId));
+          let image;
+          try { image = await readImageQualityImage(candidate, controller); }
+          catch (error) {
+            current();
+            throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_READ_FAILED" });
           }
-          await score(candidate, image);
+          current();
+          const entry = await evaluate(candidate, image);
+          if (options?.candidate) selectedEntry = entry;
           render();
         } catch (error) { failure ||= error; }
       }
     };
     try {
-      // At most two originals/base64 payloads are retained, never an unbounded Promise.all.
-      await Promise.all(Array.from({ length: test ? 1 : 2 }, worker));
-      if (!failure && !controller.signal.aborted && catalogRevision === imageQuality.catalogRevision) await updateImageQualityStore((store) => {
-        if (catalogRevision === imageQuality.catalogRevision && store.catalogAt <= imageQuality.catalogAt) store.cache = pruneImageQualityCache(store.cache, store.sources);
+      await withImageQualityKeyLock(settings.imageQualityKeyId, useFallback, async () => {
+        try {
+          session = await createImageQualityGroupSession(test ? { ...settings, imageQualityFallbackGroupIds: [] } : settings, controller, current);
+          await Promise.all(Array.from({ length: test || options?.candidate || useFallback ? 1 : 2 }, worker));
+        } catch (error) { failure ||= error; }
+        finally {
+          try { await session?.restore(); }
+          catch {
+            failure = Object.assign(new Error("图片评分请求失败：未能确认评分密钥已恢复原分组，请手动检查；本轮停止自动切换"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+            published.forEach((id) => imageQuality.records.delete(id));
+            selectedEntry = null;
+          }
+          if (session) session.credential = "";
+        }
       });
-      if (options?.candidate && failure) throw failure;
+    } catch (error) { failure ||= error; }
+    finally {
       if (failure) {
-        imageQuality.status = imageQualityFailureMessage(failure, controller);
-        if (test && !controller.signal.aborted) imageQuality.testStatus = imageQuality.status;
+        if (!["IMAGE_READ_FAILED", "IMAGE_UNASSESSABLE", "IMAGE_CATALOG_STALE", "IMAGE_ADMISSION_BUDGET"].includes(failure.code)
+          && !controller.signal.aborted) {
+          // Key/group coordination failures are infrastructure failures, never bad pictures.
+          failure = Object.assign(new Error(imageQualityFailureMessage(failure, controller)), { code: "IMAGE_SCORER_UNAVAILABLE" });
+        }
+        imageQuality.status = imageQualityFailureMessage(failure, failure.code === "IMAGE_SCORER_UNAVAILABLE" ? new AbortController() : controller);
+        if (test) imageQuality.testStatus = imageQuality.status;
       }
-    } finally {
-      credential = "";
-      credentialPromise = null;
-      if (controller.signal.aborted) {
-        imageQuality.status = "评分已停止；已发出的请求可能已计费";
-        if (test) imageQuality.testStatus = "测试已停止或配置已变更；已发出的请求可能已计费。";
+      if (controller.signal.aborted && failure?.code !== "IMAGE_SCORER_UNAVAILABLE") {
+        imageQuality.status = "评价已停止；已发出的请求可能已计费，已完成必要的评分分组恢复";
+        if (test) imageQuality.testStatus = imageQuality.status;
       }
       imageQuality.controller = null;
       render();
-      if (imageQuality.refreshPending) { imageQuality.refreshPending = false; void refreshImageQualityHashes(); }
     }
+    if (options?.candidate && failure) throw failure;
+    return selectedEntry;
   }

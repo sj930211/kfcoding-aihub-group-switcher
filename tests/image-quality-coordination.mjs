@@ -36,13 +36,8 @@ const coordinated=fullQualityCriteria();coordinated.proportion.score=8;coordinat
 assert(api.imageQualityScores(awkward).score<api.imageQualityScores(coordinated).score);
 assert.equal(api.imageQualityScores(awkward).score,69);assert.equal(api.imageQualityScores(coordinated).score,96);
 const settings={imageQualityModel:"vision",imageQualityTask:"鹈鹕骑自行车"};
-const key=api.imageQualityContentKey("a".repeat(32),100,settings);
-assert.equal(JSON.parse(key)[0],"pelican-v3-coordination");
-const entry={...api.parseImageQualityResponse(payload(qualityCriteria())),assessedAt:Date.now()};
-assert.equal(Object.keys(api.normalizeImageQualityCache({[key]:entry})).length,1);
-assert.equal(Object.keys(api.normalizeImageQualityCache({[key.replace("pelican-v3-coordination","pelican-v2-strict")]:entry})).length,0);
 const req=api.buildImageQualityRequest({detectionMedia:{status:"successful",url:"https://aihub.top/api/v1/public/model-detection-artifacts/fixture-1"}},settings,"data:image/png;base64,iVBORw0KGgo=");
 assert.equal(req.stream,true);assert(req.input[0].content[0].text.includes("整体协调25"));
 assert(req.input[0].content[0].text.includes("不能把靠近"));
 assert(req.input[0].content[0].text.includes("不比较分组身份"));
-console.log("PASS coordination weights, six anchors, contact evidence gates, confidence, caps and old-cache isolation; illustrative observations only");
+console.log("PASS coordination weights, six anchors, contact evidence gates, confidence, caps and request rubric; illustrative observations only");

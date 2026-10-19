@@ -101,6 +101,11 @@
     )];
   }
 
+  function normalizeImageQualityFallbackGroups(value) {
+    return [...new Set((Array.isArray(value) ? value : []).map(Number)
+      .filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, 2);
+  }
+
   function normalizeTargetModels(value, legacyModel) {
     const source = Array.isArray(value) && value.length ? value : [legacyModel];
     return [...new Set(source.map((item) => String(item || "").trim()).filter(Boolean))];
@@ -360,6 +365,7 @@
       selectionMode: normalizeSelectionMode(source.selectionMode),
       imageQualityKeyId: Math.max(0, Math.trunc(Number(source.imageQualityKeyId) || 0)),
       imageQualityModel: String(source.imageQualityModel || "").trim().slice(0, 120),
+      imageQualityFallbackGroupIds: normalizeImageQualityFallbackGroups(source.imageQualityFallbackGroupIds),
       imageQualityTask: String(source.imageQualityTask || DEFAULT_CONFIG.imageQualityTask).trim().slice(0, 300),
       imageQualityMinScore: clampNumber(source.imageQualityMinScore, DEFAULT_CONFIG.imageQualityMinScore, 0, 100),
       groupFilterMode,

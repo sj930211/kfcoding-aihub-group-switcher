@@ -3140,38 +3140,15 @@ const qualityNow = Date.now();
 const qualityEntry = { ...parsedQuality, assessedAt: qualityNow };
 const qualitySettings = { imageQualityKeyId: 5, imageQualityModel: "vision-example", imageQualityTask: "鹈鹕骑自行车" };
 const fixtureMd5 = "900150983cd24fb0d6963f7d28e17f72";
-const qualityContentKey = api.imageQualityContentKey(fixtureMd5, 3, qualitySettings);
-const oldContentKey = api.imageQualityContentKey(fixtureMd5, 4, qualitySettings);
-const futureContentKey = api.imageQualityContentKey(fixtureMd5, 5, qualitySettings);
-const brokenContentKey = api.imageQualityContentKey(fixtureMd5, 6, qualitySettings);
-const sanitizedQuality = api.normalizeImageQualityCache({
-  [qualityContentKey]: { ...qualityEntry, key: "must-not-persist", bytes: "must-not-persist" },
-  [oldContentKey]: { ...qualityEntry, assessedAt: qualityNow - 365 * 24 * 3600000 },
-  [futureContentKey]: { ...qualityEntry, assessedAt: qualityNow + 1 },
-  [brokenContentKey]: { ...qualityEntry, score: 100 },
-  malformed: qualityEntry,
-}, qualityNow);
-assert.equal(Object.keys(sanitizedQuality).length, 2, "valid content results must not expire with time");
-assert.ok(sanitizedQuality[oldContentKey], "year-old analysis remains reusable");
-assert.equal("key" in sanitizedQuality[qualityContentKey], false, "cache must whitelist score metadata only");
-assert.equal("bytes" in sanitizedQuality[qualityContentKey], false);
 const qualityCandidate = { groupId: 1, detectionMedia: { status: "successful", url: "https://aihub.top/api/v1/public/model-detection-artifacts/fixture-1", publishedAt: "2026-10-15" } };
 const fixtureImageData = "data:image/png;base64,iVBORw0KGgo=";
 const qualityRequest = api.buildImageQualityRequest(qualityCandidate, qualitySettings, fixtureImageData);
 assert.equal(qualityRequest.model, "vision-example");
 assert.equal(qualityRequest.store, false);
-assert.equal(qualityRequest.input[0].content[1].image_url, fixtureImageData, "model must analyze exactly the locally hashed bytes");
+assert.equal(qualityRequest.input[0].content[1].image_url, fixtureImageData, "model must analyze exactly the downloaded bytes");
 assert.throws(() => api.buildImageQualityRequest({ detectionMedia: { url: "https://other.example/image.png" } }, qualitySettings, fixtureImageData));
 assert.throws(() => api.buildImageQualityRequest(qualityCandidate, qualitySettings));
 assert.throws(() => api.buildImageQualityRequest(qualityCandidate, qualitySettings, "data:text/html;base64,aGVsbG8="));
-for (const change of [{ imageQualityModel: "other" }, { imageQualityTask: "different" }]) {
-  assert.notEqual(api.imageQualityContentKey(fixtureMd5, 3, { ...qualitySettings, ...change }), qualityContentKey);
-}
-assert.equal(api.imageQualityContentKey(fixtureMd5, 3, { ...qualitySettings, imageQualityKeyId: 6 }), qualityContentKey,
-  "changing billing key alone must reuse the same image analysis");
-assert.equal(api.imageQualityContentKey("invalid", 3, qualitySettings), "");
-assert.equal(api.imageQualityContentKey(fixtureMd5, 0, qualitySettings), "");
-assert.equal(api.imageQualityContentKey(fixtureMd5, 8 * 1024 * 1024 + 1, qualitySettings), "");
 assert.equal(api.imageQualityIdentity({ detectionMedia: { status: "failed" } }, qualitySettings), "");
 assert.equal(api.imageQualityIdentity({ ...qualityCandidate, groupId: 2 }), api.imageQualityIdentity(qualityCandidate),
   "source indexing must not duplicate identical URL/version across groups");
@@ -3194,12 +3171,7 @@ assert.equal(api.imageQualityMime(Uint8Array.from([255,216,255,224])), "image/jp
 assert.equal(api.imageQualityMime(new TextEncoder().encode("GIF89a")), "image/gif");
 assert.equal(api.imageQualityMime(new TextEncoder().encode("RIFF1234WEBP")), "image/webp");
 assert.equal(api.imageQualityMime(new TextEncoder().encode("<html>error</html>")), "");
-const manyContent = Object.fromEntries(Array.from({ length: 1002 }, (_, index) => [
-  api.imageQualityContentKey(index.toString(16).padStart(32, "0"), 10, qualitySettings),
-  { ...qualityEntry, assessedAt: qualityNow - index },
-]));
-assert.equal(Object.keys(api.normalizeImageQualityCache(manyContent, qualityNow)).length, 1000);
-console.log("MD5 vectors, content-cache isolation, persistence, and image-byte checks passed");
+console.log("MD5 utilities and image-byte checks passed; runtime evaluations do not hash or persist images");
 const qualitySortRows = [
   { group: "first", available: true, ratio: 1, successRate: 100, latestSuccessRate: 100, firstTokenLatencyMs: 1000, outputTokensPerSecond: 50, cacheHitRate: 100 },
   { group: "second", available: true, ratio: 1, successRate: 100, latestSuccessRate: 100, firstTokenLatencyMs: 1000, outputTokensPerSecond: 50, cacheHitRate: 100 },
@@ -3285,13 +3257,6 @@ assert.throws(() => api.normalizeImageQualityModels({ data: { id: "invalid" } })
 assert.throws(() => api.normalizeImageQualityModels(null), /模型列表格式/);
 console.log("image-quality model-choice tests passed");
 
-const recentlyReusedKey = api.imageQualityContentKey("f".repeat(32), 100, qualitySettings);
-const recentlyReusedCache = api.normalizeImageQualityCache({ ...manyContent,
-  [recentlyReusedKey]: { ...qualityEntry, assessedAt: qualityNow - 365 * 86400000, lastUsedAt: qualityNow },
-}, qualityNow);
-assert.ok(recentlyReusedCache[recentlyReusedKey], "recently reused old results must survive LRU eviction");
-assert.equal(Object.keys(recentlyReusedCache).length, 1000);
-
 // AIHub can append a response.failed SSE event to a JSON HTTP error.
 // Replay the observed shape at the real fetch boundary; never echo arbitrary bodies.
 const supplierBlockedBody = '{"error":{"message":"SUPPLIER_UPSTREAM_BLOCKED","type":"invalid_request_error"}}'
@@ -3314,7 +3279,7 @@ for (const [path, status, body, expected] of [
     const message = api.imageQualityFailureMessage(error, controller);
     assert.match(message, expected);
     assert.equal(message.includes("private-fixture-credential"), false);
-    assert.match(message, /未自动重试/);
+    assert.match(message, /未采用图片分/);
     return true;
   });
   assert.equal(failureCalls, 1, "HTTP failures must never trigger an automatic retry");
@@ -3337,23 +3302,6 @@ md5AlreadyAborted.abort();
 await assert.rejects(api.imageBytesMd5Async(asyncMd5Bytes, md5AlreadyAborted.signal), (error) => error.name === "AbortError");
 console.log("cooperative MD5 correctness, event-loop yielding, and cancellation tests passed");
 
-const sourceBinding = { source: api.imageQualityIdentity(qualityCandidate), md5: fixtureMd5, byteLength: 3, observedAt: qualityNow };
-const normalizedSources = api.normalizeImageQualitySources({
-  1: { ...sourceBinding, secret: 'must-not-persist' },
-  2: { ...sourceBinding, source: JSON.stringify(['https://other.example/private', '']) },
-  3: { ...sourceBinding, md5: 'invalid' },
-});
-assert.deepEqual(Object.keys(normalizedSources), ['1']);
-assert.equal('secret' in normalizedSources[1], false);
-const sharedSources = { 1: sourceBinding, 2: { ...sourceBinding } };
-assert.ok(api.pruneImageQualityCache(sanitizedQuality, sharedSources)[qualityContentKey], 'live shared image survives cleanup');
-delete sharedSources[1];
-assert.ok(api.pruneImageQualityCache(sanitizedQuality, sharedSources)[qualityContentKey], 'one changed group cannot remove another group shared score');
-delete sharedSources[2];
-assert.equal(Object.keys(api.pruneImageQualityCache(sanitizedQuality, sharedSources)).length, 0, 'last reference removed collects retired scores');
-console.log('image-source index validation and shared-content cleanup tests passed');
-
-
 const allFullCriteria = fullQualityCriteria();
 const strictScore = changes => api.imageQualityScores({ ...allFullCriteria, ...Object.fromEntries(Object.entries(changes)
   .map(([key, score]) => [key, { ...allFullCriteria[key], ...(["support","pedal","control"].includes(key) && score === 0 ? {connection:"broken"} : {}), score, evidence: "用于验证明确缺陷的测试依据" }])) });
@@ -3370,9 +3318,4 @@ assert.equal(strictScore({ posture: 7 }), null, "scores between anchors must be 
 assert.equal(api.imageQualityScores({ ...allFullCriteria, frame: { score: 5, evidence: " " } }), null);
 assert.throws(() => api.parseImageQualityResponse(qualityPayload({ unable_to_assess: false,
   task: 36, structure: 31, finish: 18, confidence: "high", reasons: ["old-style scores"] })), /细项/);
-const legacyRubricKey = JSON.stringify(["pelican-v1", qualitySettings.imageQualityModel, qualitySettings.imageQualityTask, fixtureMd5, 3]);
-assert.equal(api.normalizeImageQualityCache({ [legacyRubricKey]: qualityEntry })[legacyRubricKey], undefined,
-  "strict grading must not reuse a result produced with the lenient rubric");
-const lenientLabelsOnly = { task: 40, structure: 25, finish: 20, score: 85, confidence: "high", reasons: ["no details"], assessedAt: qualityNow };
-assert.equal(api.normalizeImageQualityCache({ [qualityContentKey]: lenientLabelsOnly })[qualityContentKey], undefined);
-console.log("strict rubric anchors, defect caps, evidence validation, and old-rule cache isolation passed");
+console.log("strict rubric anchors, defect caps and evidence validation passed");

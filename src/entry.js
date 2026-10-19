@@ -23,7 +23,7 @@
 
   mountUi();
   window.addEventListener("focus", () => {
-    if (IS_AIHUB && !state.collapsed) { syncImageQualityStore(); render(); }
+    if (IS_AIHUB && !state.collapsed) render();
   });
   window.addEventListener("resize", () => {
     positionElement(state.collapsed ? refs.launcher : refs.panel, state.collapsed ? "launcher" : "panel", true);

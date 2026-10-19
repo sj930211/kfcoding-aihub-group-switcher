@@ -595,6 +595,7 @@
       imageQualityKeyId: refs.imageQualityKey.value,
       imageQualityModel: refs.imageQualityModel.value,
       imageQualityTask: refs.imageQualityTask.value,
+      imageQualityFallbackGroupIds: [refs.imageQualityFallback1.value, refs.imageQualityFallback2.value],
       imageQualityMinScore: refs.imageQualityMinScore.value,
       groupFilterMode: config.groupFilterMode,
       groupWhitelist: config.groupWhitelist,
@@ -625,6 +626,7 @@
     refs.selectionMode.value = config.selectionMode;
     refs.imageQualityModel.value = config.imageQualityModel;
     refs.imageQualityTask.value = config.imageQualityTask;
+    renderImageQualityGroupOptions();
     refs.imageQualityMinScore.value = String(config.imageQualityMinScore);
     refs.requireModelDetection.checked = config.requireModelDetection;
     refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
@@ -647,10 +649,10 @@
   function persistFormConfig() {
     const previousIdentity = `${config.tokenIds.join(",")}:${targetModelIdentity(config)}`;
     const previousQualityKey = config.imageQualityKeyId;
-    const previousQuality = JSON.stringify([config.imageQualityKeyId, config.imageQualityModel, config.imageQualityTask]);
+    const previousQuality = imageQualitySettingsKey(config);
     const wasEnabled = config.enabled;
     config = readFormConfig();
-    if (previousQuality !== JSON.stringify([config.imageQualityKeyId, config.imageQualityModel, config.imageQualityTask])) {
+    if (previousQuality !== imageQualitySettingsKey(config)) {
       cancelImageQuality();
       imageQuality.status = "";
       imageQuality.testStatus = "";
@@ -703,7 +705,6 @@
 
   function setActiveView(view, options) {
     state.activeView = normalizeActiveView(view);
-    if (IS_AIHUB) syncImageQualityStore();
     scheduleStatisticsRefresh();
     persistUiState();
     setTokenMenuOpen(false);
@@ -806,10 +807,12 @@
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
     refs.imageQualityRun.addEventListener("click", () => runImageQuality());
     refs.imageQualityModel.addEventListener("input", persistFormConfig);
+    refs.imageQualityFallback1.addEventListener("change", persistFormConfig);
+    refs.imageQualityFallback2.addEventListener("change", persistFormConfig);
     refs.imageQualityLoadModels.addEventListener("click", loadImageQualityModels);
     refs.imageQualityTest.addEventListener("click", () => runImageQuality({ test: true }));
     refs.imageQualityTestStop.addEventListener("click", cancelImageQuality);
-    refs.imageQualityClearCache.addEventListener("click", clearImageQualityCache);
+    refs.imageQualityClearPage.addEventListener("click", clearImageQualityPage);
     refs.imageQualityStop.addEventListener("click", cancelImageQuality);
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
     refs.resetSpendProtection.addEventListener("click", resetSpendProtection);
