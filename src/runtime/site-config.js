@@ -84,6 +84,7 @@
     imageQualityKeyId: 0,
     imageQualityModel: "",
     imageQualityTask: "鹈鹕骑自行车",
+    imageQualityMinScore: 80,
     groupFilterMode: "whitelist",
     groupWhitelist: [],
     groupBlacklist: [],

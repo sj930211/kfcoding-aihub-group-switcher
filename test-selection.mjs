@@ -3206,7 +3206,7 @@ const qualitySortRows = [
   { group: "off", available: false, ratio: 0.01, successRate: 100, latestSuccessRate: 100 },
 ];
 const qualityRowsBefore = JSON.stringify(qualitySortRows);
-assert.equal(api.sortRowsWithImageQuality(qualitySortRows, "stable", row => ({ ...qualityEntry, score: row.group === "first" ? 0 : 100 }))[0].group, "second");
+assert.equal(api.sortRowsWithImageQuality(qualitySortRows, "stable", row => ({ ...qualityEntry, score: row.group === "first" ? 0 : 100 }))[0].group, "first");
 assert.equal(api.sortRowsWithImageQuality(qualitySortRows, "stable", row => ({ ...qualityEntry, confidence: "low", score: row.group === "first" ? 0 : 100 }))[0].group, "first");
 assert.equal(api.sortRowsWithImageQuality(qualitySortRows, "stable", () => qualityEntry).at(-1).group, "off");
 assert.equal(JSON.stringify(api.sortRowsWithImageQuality(qualitySortRows, "saving", null)), JSON.stringify(api.sortCandidateRowsForMode(qualitySortRows, "saving")));
@@ -3264,7 +3264,7 @@ for (const mode of ["saving", "stable", "balanced"]) {
   ];
   assert.deepEqual(Array.from(api.sortRowsWithImageQuality(equalStrategyRows, mode,
     row => ({ score: row.group === "poor-image" ? 0 : 100, confidence: "high" })), row => row.group),
-  ["good-image", "poor-image", "unavailable-image"], `${mode}: image quality must break real strategy ties without reviving unavailable rows`);
+  ["poor-image", "good-image", "unavailable-image"], `${mode}: image quality must never change strategy ties or revive unavailable rows`);
   assert.equal(api.selectBestCandidate(equalStrategyRows, "", mode).group, "poor-image",
     `${mode}: image display sorting must not mutate automatic routing order`);
   assert.equal(api.selectBestCandidate([], "", mode), null);

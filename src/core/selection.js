@@ -374,3 +374,29 @@
       cross_group_retry: group === "auto" && Boolean(token.cross_group_retry),
     };
   }
+
+  async function selectImageQualifiedCandidate(candidates, currentGroup, options) {
+    const tried = new Set();
+    let preferred = options.preferred;
+    while (true) {
+      options.assertCurrent();
+      const eligible = options.eligible(candidates).filter((candidate) => !tried.has(candidate.group));
+      const candidate = preferred && eligible.find((item) => item.group === preferred.group)
+        || selectBestCandidate(eligible, currentGroup, options.mode);
+      preferred = null;
+      // Keeping the current group is not a switch and does not require a paid check.
+      if (!candidate || candidate.group === currentGroup) return candidate;
+      tried.add(candidate.group);
+      const verdict = await options.check(candidate);
+      options.assertCurrent();
+      if (verdict.pass) return candidate;
+      await options.isolate(candidate, verdict.reason);
+    }
+  }
+
+  function imageQualityAdmissionVerdict(entry, minimum) {
+    if (!validImageQuality(entry)) return { pass: false, reason: "没有有效图片评价" };
+    if (entry.confidence === "low") return { pass: false, reason: "图片评价证据不足" };
+    return entry.score > minimum ? { pass: true, reason: "" }
+      : { pass: false, reason: `图片分${entry.score}未超过门槛${minimum}` };
+  }

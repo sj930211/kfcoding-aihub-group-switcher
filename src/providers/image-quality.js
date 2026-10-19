@@ -235,22 +235,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     };
   }
 
-  function sortRowsWithImageQuality(candidates, mode, scoreFor) {
-    const baseline = sortCandidateRowsForMode(candidates, mode);
-    if (!scoreFor) return baseline;
-    return [true, false].flatMap((available) => {
-      const population = baseline.filter((candidate) => Boolean(candidate.available) === available);
-      return population.map((candidate, index) => {
-        const quality = scoreFor(candidate);
-        const strategy = candidateStrategyScore(candidate, population, mode);
-        return { candidate, index, score: quality && quality.confidence !== "low"
-          ? strategy * 0.85 + quality.score * 0.15 : strategy };
-      }).sort((left, right) => {
-        const difference = right.score - left.score;
-        return Math.abs(difference) > 0.0001 ? difference : left.index - right.index;
-      })
-        .map((item) => item.candidate);
-    });
+  function sortRowsWithImageQuality(candidates, mode) {
+    // Kept as a compatibility alias: image scores never alter strategy ordering.
+    return sortCandidateRowsForMode(candidates, mode);
   }
 
   function candidateImageQuality(candidate) {
@@ -267,12 +254,12 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   function imageQualityDescription(entry, compact = false) {
-    if (!entry) return "尚无有效效果分，沿用策略分排序";
+    if (!entry) return "尚无有效效果分，自动切换前需评分";
     const scores = imageQualityScores(entry.criteria);
     return `效果 ${entry.score}/100 · 任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15\n`
       + `协调规则 v3${scores.capReason ? ` · 分项合计${scores.rawScore}，${scores.capReason}封顶${scores.score}` : ""}\n`
       + IMAGE_QUALITY_CRITERIA.map(([name, label, max]) => `${label} ${entry.criteria[name].score}/${max}${compact ? "" : `：${entry.criteria[name].evidence}${IMAGE_QUALITY_CONNECTIONS.includes(name) ? `（${entry.criteria[name].from} → ${entry.criteria[name].to}；${{verified:"成立",occluded:"遮挡",unclear:"含糊",broken:"不成立"}[entry.criteria[name].connection]}）` : ""}`}`).join("\n") + "\n"
-      + `证据充分性：${{ high: "高", medium: "中", low: "低（不参与排序）" }[entry.confidence]} · ${config.imageQualityModel}\n`
+      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${config.imageQualityModel}\n`
       + `${new Date(entry.assessedAt).toLocaleString()}\n${compact ? "完整可见依据见图片或设置列表" : entry.reasons.join("；")}`;
   }
 
@@ -374,7 +361,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
   function renderImageQualityKeyOptions() {
     if (!refs.imageQualityKey) return;
-    refs.imageQualityKey.replaceChildren(new Option("不使用图片评分", "0"));
+    refs.imageQualityKey.replaceChildren(new Option("未配置评分密钥", "0"));
     tokensCache.forEach((token) => refs.imageQualityKey.add(new Option(
       `${token.name || `#${token.id}`} · ${token.group || "未分组"}`, String(token.id))));
     if (config.imageQualityKeyId && !tokensCache.some((token) => Number(token.id) === config.imageQualityKeyId)) {
@@ -452,6 +439,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   function cancelImageQuality() {
+    imageQuality.cancelRevision = (imageQuality.cancelRevision || 0) + 1;
     imageQuality.controller?.abort();
     imageQuality.hashController?.abort();
     imageQuality.modelsController?.abort();
@@ -714,7 +702,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const settings = { ...config };
     const catalogRevision = imageQuality.catalogRevision;
     const sample = test ? imageQualityTestCandidate() : null;
-    const batch = test ? (sample ? [sample] : []) : imageQualityRows().filter(imageQualityIdentity);
+    const batch = test ? (sample ? [sample] : []) : options?.candidate ? [options.candidate] : imageQualityRows().filter(imageQualityIdentity);
     if (!batch.length) return;
     const controller = new AbortController();
     imageQuality.controller = controller;
@@ -737,6 +725,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         if (!test && entry) reused += 1;
         else {
           if (started >= 10) return;
+          if (options?.budget && options.budget.remaining <= 0) {
+            throw Object.assign(new Error("本轮已达10次新分析上限，保持当前分组；未继续请求"), { code: "IMAGE_ADMISSION_BUDGET" });
+          }
           const dataUrl = await imageQualityDataUrl(image.bytes);
           if (controller.signal.aborted || failure) return;
           credentialPromise ||= readImageQualityCredential(settings.imageQualityKeyId, controller);
@@ -744,6 +735,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           if (controller.signal.aborted || failure || started >= 10) return;
           // Reserve synchronously before fetch: two workers cannot exceed the paid-call cap.
           started += 1;
+          if (options?.budget) options.budget.remaining -= 1;
           const payload = await imageQualityFetchJson("/v1/responses", {
             method: "POST", credentials: "omit",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` },
@@ -763,9 +755,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           store.cache = normalizeImageQualityCache({ ...store.cache, [contentKey]: { ...entry, lastUsedAt: Date.now() } });
           stored = true;
         });
-        imageQuality.status = `新分析 ${analyzed} · 缓存复用 ${reused} · 最多2张并发；图片分仅影响列表排序`;
+        imageQuality.status = `新分析 ${analyzed} · 缓存复用 ${reused} · 最多2张并发；图片分仅用于自动切换准入`;
         if (test && stored) {
-          imageQuality.testStatus = entry.confidence === "low" ? "接口与格式测试通过；证据不足，图片分不参与排序。"
+          imageQuality.testStatus = entry.confidence === "low" ? "接口与格式测试通过；证据不足，不通过自动切换准入。"
             : "接口与格式测试通过；模型返回有效分项和依据。";
           imageQuality.testResult = `${candidate.group} · ${imageQualityDescription(entry)}\nMD5 ${image.md5}`;
         }
@@ -786,7 +778,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           const observedAt = Date.now();
           const image = await readImageQualityImage(candidate, controller);
           if (!await rememberImageQualitySource(candidate, image, observedAt)) {
-            throw new Error("图片目录已更新，请刷新页面后再评分；未自动重试");
+            throw Object.assign(new Error("图片目录已更新，请刷新页面后再评分；未自动重试"), { code: "IMAGE_CATALOG_STALE" });
           }
           await score(candidate, image);
           render();
@@ -799,6 +791,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       if (!failure && !controller.signal.aborted && catalogRevision === imageQuality.catalogRevision) await updateImageQualityStore((store) => {
         if (catalogRevision === imageQuality.catalogRevision && store.catalogAt <= imageQuality.catalogAt) store.cache = pruneImageQualityCache(store.cache, store.sources);
       });
+      if (options?.candidate && failure) throw failure;
       if (failure) {
         imageQuality.status = imageQualityFailureMessage(failure, controller);
         if (test && !controller.signal.aborted) imageQuality.testStatus = imageQuality.status;

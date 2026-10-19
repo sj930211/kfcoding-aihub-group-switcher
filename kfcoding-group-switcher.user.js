@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.17.0
+// @version      0.18.0
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -91,7 +91,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.17.0";
+  const SCRIPT_VERSION = "0.18.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -112,6 +112,7 @@
     imageQualityKeyId: 0,
     imageQualityModel: "",
     imageQualityTask: "鹈鹕骑自行车",
+    imageQualityMinScore: 80,
     groupFilterMode: "whitelist",
     groupWhitelist: [],
     groupBlacklist: [],
@@ -523,6 +524,7 @@
       imageQualityKeyId: Math.max(0, Math.trunc(Number(source.imageQualityKeyId) || 0)),
       imageQualityModel: String(source.imageQualityModel || "").trim().slice(0, 120),
       imageQualityTask: String(source.imageQualityTask || DEFAULT_CONFIG.imageQualityTask).trim().slice(0, 300),
+      imageQualityMinScore: clampNumber(source.imageQualityMinScore, DEFAULT_CONFIG.imageQualityMinScore, 0, 100),
       groupFilterMode,
       groupWhitelist,
       groupBlacklist,
@@ -1991,6 +1993,32 @@
     };
   }
 
+  async function selectImageQualifiedCandidate(candidates, currentGroup, options) {
+    const tried = new Set();
+    let preferred = options.preferred;
+    while (true) {
+      options.assertCurrent();
+      const eligible = options.eligible(candidates).filter((candidate) => !tried.has(candidate.group));
+      const candidate = preferred && eligible.find((item) => item.group === preferred.group)
+        || selectBestCandidate(eligible, currentGroup, options.mode);
+      preferred = null;
+      // Keeping the current group is not a switch and does not require a paid check.
+      if (!candidate || candidate.group === currentGroup) return candidate;
+      tried.add(candidate.group);
+      const verdict = await options.check(candidate);
+      options.assertCurrent();
+      if (verdict.pass) return candidate;
+      await options.isolate(candidate, verdict.reason);
+    }
+  }
+
+  function imageQualityAdmissionVerdict(entry, minimum) {
+    if (!validImageQuality(entry)) return { pass: false, reason: "没有有效图片评价" };
+    if (entry.confidence === "low") return { pass: false, reason: "图片评价证据不足" };
+    return entry.score > minimum ? { pass: true, reason: "" }
+      : { pass: false, reason: `图片分${entry.score}未超过门槛${minimum}` };
+  }
+
   // RFC 1321 byte-oriented MD5, used only as a content cache fingerprint.
   function* imageMd5Steps(input) {
     const bytes = input instanceof Uint8Array ? input : ArrayBuffer.isView(input)
@@ -2282,22 +2310,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     };
   }
 
-  function sortRowsWithImageQuality(candidates, mode, scoreFor) {
-    const baseline = sortCandidateRowsForMode(candidates, mode);
-    if (!scoreFor) return baseline;
-    return [true, false].flatMap((available) => {
-      const population = baseline.filter((candidate) => Boolean(candidate.available) === available);
-      return population.map((candidate, index) => {
-        const quality = scoreFor(candidate);
-        const strategy = candidateStrategyScore(candidate, population, mode);
-        return { candidate, index, score: quality && quality.confidence !== "low"
-          ? strategy * 0.85 + quality.score * 0.15 : strategy };
-      }).sort((left, right) => {
-        const difference = right.score - left.score;
-        return Math.abs(difference) > 0.0001 ? difference : left.index - right.index;
-      })
-        .map((item) => item.candidate);
-    });
+  function sortRowsWithImageQuality(candidates, mode) {
+    // Kept as a compatibility alias: image scores never alter strategy ordering.
+    return sortCandidateRowsForMode(candidates, mode);
   }
 
   function candidateImageQuality(candidate) {
@@ -2314,12 +2329,12 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   function imageQualityDescription(entry, compact = false) {
-    if (!entry) return "尚无有效效果分，沿用策略分排序";
+    if (!entry) return "尚无有效效果分，自动切换前需评分";
     const scores = imageQualityScores(entry.criteria);
     return `效果 ${entry.score}/100 · 任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15\n`
       + `协调规则 v3${scores.capReason ? ` · 分项合计${scores.rawScore}，${scores.capReason}封顶${scores.score}` : ""}\n`
       + IMAGE_QUALITY_CRITERIA.map(([name, label, max]) => `${label} ${entry.criteria[name].score}/${max}${compact ? "" : `：${entry.criteria[name].evidence}${IMAGE_QUALITY_CONNECTIONS.includes(name) ? `（${entry.criteria[name].from} → ${entry.criteria[name].to}；${{verified:"成立",occluded:"遮挡",unclear:"含糊",broken:"不成立"}[entry.criteria[name].connection]}）` : ""}`}`).join("\n") + "\n"
-      + `证据充分性：${{ high: "高", medium: "中", low: "低（不参与排序）" }[entry.confidence]} · ${config.imageQualityModel}\n`
+      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${config.imageQualityModel}\n`
       + `${new Date(entry.assessedAt).toLocaleString()}\n${compact ? "完整可见依据见图片或设置列表" : entry.reasons.join("；")}`;
   }
 
@@ -2421,7 +2436,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
   function renderImageQualityKeyOptions() {
     if (!refs.imageQualityKey) return;
-    refs.imageQualityKey.replaceChildren(new Option("不使用图片评分", "0"));
+    refs.imageQualityKey.replaceChildren(new Option("未配置评分密钥", "0"));
     tokensCache.forEach((token) => refs.imageQualityKey.add(new Option(
       `${token.name || `#${token.id}`} · ${token.group || "未分组"}`, String(token.id))));
     if (config.imageQualityKeyId && !tokensCache.some((token) => Number(token.id) === config.imageQualityKeyId)) {
@@ -2499,6 +2514,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   function cancelImageQuality() {
+    imageQuality.cancelRevision = (imageQuality.cancelRevision || 0) + 1;
     imageQuality.controller?.abort();
     imageQuality.hashController?.abort();
     imageQuality.modelsController?.abort();
@@ -2761,7 +2777,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const settings = { ...config };
     const catalogRevision = imageQuality.catalogRevision;
     const sample = test ? imageQualityTestCandidate() : null;
-    const batch = test ? (sample ? [sample] : []) : imageQualityRows().filter(imageQualityIdentity);
+    const batch = test ? (sample ? [sample] : []) : options?.candidate ? [options.candidate] : imageQualityRows().filter(imageQualityIdentity);
     if (!batch.length) return;
     const controller = new AbortController();
     imageQuality.controller = controller;
@@ -2784,6 +2800,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         if (!test && entry) reused += 1;
         else {
           if (started >= 10) return;
+          if (options?.budget && options.budget.remaining <= 0) {
+            throw Object.assign(new Error("本轮已达10次新分析上限，保持当前分组；未继续请求"), { code: "IMAGE_ADMISSION_BUDGET" });
+          }
           const dataUrl = await imageQualityDataUrl(image.bytes);
           if (controller.signal.aborted || failure) return;
           credentialPromise ||= readImageQualityCredential(settings.imageQualityKeyId, controller);
@@ -2791,6 +2810,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           if (controller.signal.aborted || failure || started >= 10) return;
           // Reserve synchronously before fetch: two workers cannot exceed the paid-call cap.
           started += 1;
+          if (options?.budget) options.budget.remaining -= 1;
           const payload = await imageQualityFetchJson("/v1/responses", {
             method: "POST", credentials: "omit",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` },
@@ -2810,9 +2830,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           store.cache = normalizeImageQualityCache({ ...store.cache, [contentKey]: { ...entry, lastUsedAt: Date.now() } });
           stored = true;
         });
-        imageQuality.status = `新分析 ${analyzed} · 缓存复用 ${reused} · 最多2张并发；图片分仅影响列表排序`;
+        imageQuality.status = `新分析 ${analyzed} · 缓存复用 ${reused} · 最多2张并发；图片分仅用于自动切换准入`;
         if (test && stored) {
-          imageQuality.testStatus = entry.confidence === "low" ? "接口与格式测试通过；证据不足，图片分不参与排序。"
+          imageQuality.testStatus = entry.confidence === "low" ? "接口与格式测试通过；证据不足，不通过自动切换准入。"
             : "接口与格式测试通过；模型返回有效分项和依据。";
           imageQuality.testResult = `${candidate.group} · ${imageQualityDescription(entry)}\nMD5 ${image.md5}`;
         }
@@ -2833,7 +2853,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           const observedAt = Date.now();
           const image = await readImageQualityImage(candidate, controller);
           if (!await rememberImageQualitySource(candidate, image, observedAt)) {
-            throw new Error("图片目录已更新，请刷新页面后再评分；未自动重试");
+            throw Object.assign(new Error("图片目录已更新，请刷新页面后再评分；未自动重试"), { code: "IMAGE_CATALOG_STALE" });
           }
           await score(candidate, image);
           render();
@@ -2846,6 +2866,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       if (!failure && !controller.signal.aborted && catalogRevision === imageQuality.catalogRevision) await updateImageQualityStore((store) => {
         if (catalogRevision === imageQuality.catalogRevision && store.catalogAt <= imageQuality.catalogAt) store.cache = pruneImageQualityCache(store.cache, store.sources);
       });
+      if (options?.candidate && failure) throw failure;
       if (failure) {
         imageQuality.status = imageQualityFailureMessage(failure, controller);
         if (test && !controller.signal.aborted) imageQuality.testStatus = imageQuality.status;
@@ -3560,6 +3581,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     parseImageQualityResponse,
     buildImageQualityRequest,
     sortRowsWithImageQuality,
+    selectImageQualifiedCandidate,
+    imageQualityAdmissionVerdict,
     SITE_METADATA,
     activeGroupFilter,
     aihubMonitorRange,
@@ -3726,7 +3749,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   const imageQuality = {
     cache: normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {})),
     sources: normalizeImageQualitySources(GM_getValue(STORAGE_IMAGE_QUALITY_SOURCES, {})), refreshPending: false,
-    catalogAt: 0, catalogRevision: 0, clearing: false,
+    catalogAt: 0, catalogRevision: 0, clearing: false, cancelRevision: 0,
     controller: null, hashController: null, hashes: new Map(), catalog: [], catalogReady: false, status: "",
     modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
     sample: null, testStatus: "", testResult: "",
@@ -4527,7 +4550,91 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     }
   }
 
-  async function handleRollbackGuard(token, candidates) {
+  function createImageAdmissionContext() {
+    return { remaining: 10, configKey: JSON.stringify(config), catalogRevision: imageQuality.catalogRevision,
+      cancelRevision: imageQuality.cancelRevision || 0 };
+  }
+
+  function assertImageAdmissionCurrent(context) {
+    if (context.configKey !== JSON.stringify(config) || context.catalogRevision !== imageQuality.catalogRevision
+      || context.cancelRevision !== (imageQuality.cancelRevision || 0)
+      || Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) > imageQuality.catalogAt) {
+      throw new Error("设置、图片目录已变更或评分已停止，本轮取消切换；未继续拉黑");
+    }
+  }
+
+  async function waitForImageAdmissionIdle(context) {
+    const deadline = Date.now() + 90000;
+    while (imageQuality.controller || imageQuality.modelsController || imageQuality.hashController || imageQuality.clearing) {
+      assertImageAdmissionCurrent(context);
+      if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未拉黑");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assertImageAdmissionCurrent(context);
+  }
+
+  async function checkCandidateImageAdmission(candidate, context) {
+    assertImageAdmissionCurrent(context);
+    if (!imageQualityIdentity(candidate)) return { pass: false, reason: "没有可用图片" };
+    if (!imageQualityEnabled(config)) return { pass: false, reason: "未配置评分密钥或模型，没有有效评价" };
+    await waitForImageAdmissionIdle(context);
+    syncImageQualityStore();
+    let entry = candidateImageQuality(candidate);
+    if (!entry) {
+      setStatus(`切换前评价 ${candidate.group} 的图片（无缓存时计费）…`, "running");
+      try {
+        await runImageQuality({ candidate, budget: context });
+      } catch (error) {
+        assertImageAdmissionCurrent(context);
+        if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续拉黑");
+        // A shared per-check budget is an operational limit, not a failed picture.
+        if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次新分析上限，保持当前分组；未继续拉黑");
+        return { pass: false, reason: "图片读取或评分失败，没有有效评价" };
+      }
+      assertImageAdmissionCurrent(context);
+      entry = candidateImageQuality(candidate);
+    }
+    return imageQualityAdmissionVerdict(entry, config.imageQualityMinScore);
+  }
+
+  function isolateImageCandidate(candidate, reason) {
+    const now = Date.now();
+    const model = targetModelIdentity(config);
+    const guard = getSwitchGuardState(now);
+    guard.blacklist = guard.blacklist.filter((entry) => entry.model !== model || entry.group !== candidate.group);
+    guard.blacklist.push({ model, group: candidate.group, until: now + config.blacklistMinutes * 60000 });
+    saveSwitchGuardState(guard);
+    refreshCandidateIsolationState();
+    addLog(`${candidate.group}：${reason}，临时拉黑 ${config.blacklistMinutes} 分钟`, "warning");
+    render();
+  }
+
+  async function admittedSwitchCandidate(token, candidates, preferred, context) {
+    if (!IS_AIHUB) return preferred;
+    const candidate = await selectImageQualifiedCandidate(candidates, token.group, {
+      mode: config.selectionMode, preferred,
+      assertCurrent: () => assertImageAdmissionCurrent(context),
+      eligible: (rows) => applyTemporaryBlacklist(rows, getSwitchGuardState(), targetModelIdentity(config), Date.now())
+        .filter((row) => row.available),
+      check: (row) => checkCandidateImageAdmission(row, context),
+      isolate: isolateImageCandidate,
+    });
+    assertImageAdmissionCurrent(context);
+    if (candidate && candidate.group !== token.group) {
+      const latest = await getTokenDetail(token.id);
+      assertImageAdmissionCurrent(context);
+      if (latest.group !== token.group) throw new Error("密钥分组已在其他页面改变，本轮取消切换");
+    }
+    return candidate;
+  }
+
+  function imageAdmissionHoldResult(token) {
+    pendingCandidates.delete(Number(token.id));
+    return { outcome: "image-blocked", group: token.group || "未设置", tone: "warning",
+      message: "没有需要切换且通过图片准入的分组，保持当前分组" };
+  }
+
+  async function handleRollbackGuard(token, candidates, admission) {
     const tokenId = Number(token.id);
     const now = Date.now();
     const guardState = getSwitchGuardState(now);
@@ -4582,10 +4689,12 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
     const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now);
     const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup, config.selectionMode);
-    const fallback = rollbackTarget.candidate;
-    if (!fallback) return null;
+    let fallback = rollbackTarget.candidate;
+    if (!fallback) return IS_AIHUB ? imageAdmissionHoldResult(token) : null;
+    fallback = await admittedSwitchCandidate(token, eligible, fallback, admission);
+    if (!fallback || fallback.group === token.group) return imageAdmissionHoldResult(token);
 
-    const destination = rollbackTarget.usedPrevious ? "原分组" : "其他可用分组";
+    const destination = fallback.group === guard.fromGroup ? "原分组" : "其他可用分组";
     await switchTokenGroup(token, fallback, {
       trackRollback: false,
       logTone: "warning",
@@ -4603,12 +4712,16 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const forceSwitch = Boolean(options && options.forceSwitch);
     const targetGroup = String((options && options.targetGroup) || "").trim();
     const tokenId = Number(token.id);
+    const admission = options?.admission || createImageAdmissionContext();
+    if (admission.configKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
     validateToken(token);
     if (config.enabled && !forceSwitch) {
-      const rollback = await handleRollbackGuard(token, candidates);
+      const rollback = await handleRollbackGuard(token, candidates, admission);
       if (rollback) return rollback;
     }
-    const selected = selectSwitchCandidate(candidates, token.group, targetGroup, {
+    // Previous tokens in this check may already have isolated an image candidate.
+    candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
+    let selected = selectSwitchCandidate(candidates, token.group, targetGroup, {
       mode: config.selectionMode,
       allowUnavailable: Boolean(targetGroup),
     });
@@ -4623,6 +4736,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     );
 
     if (!selected) {
+      if (IS_AIHUB && !targetGroup) return imageAdmissionHoldResult(token);
       const reasonSummary = summarizeFailures(candidates);
       throw new Error(`没有满足条件的分组${reasonSummary ? `：${reasonSummary}` : ""}`);
     }
@@ -4645,6 +4759,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       };
     }
     if (forceSwitch) {
+      // An explicit manual destination bypasses image admission, including list buttons.
+      if (!targetGroup) selected = await admittedSwitchCandidate(token, candidates, selected, admission);
+      if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
       await switchTokenGroup(token, selected);
       return {
         outcome: "switched",
@@ -4663,6 +4780,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       };
     }
     if (!current || !current.available) {
+      selected = await admittedSwitchCandidate(token, candidates, selected, admission);
+      if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
       await switchTokenGroup(token, selected);
       return {
         outcome: "switched",
@@ -4695,6 +4814,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       };
     }
 
+    selected = await admittedSwitchCandidate(token, candidates, selected, admission);
+    if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
     await switchTokenGroup(token, selected);
     return {
       outcome: "switched",
@@ -4724,6 +4845,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       return;
     }
     const selectedTokenIds = config.tokenIds.slice();
+    const checkConfigKey = JSON.stringify(config);
+    const checkCancelRevision = imageQuality.cancelRevision || 0;
 
     running = true;
     const usageRefresh = manualUsageRefresh || refreshTodayUsage();
@@ -4849,6 +4972,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       }
 
       if (IS_AIHUB) await tokenCatalogRefresh;
+      if (checkConfigKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
+      const admission = { ...createImageAdmissionContext(), cancelRevision: checkCancelRevision };
       const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => getTokenDetail(tokenId)));
       state.tokenResults = [];
       for (let index = 0; index < details.length; index += 1) {
@@ -4866,7 +4991,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
         const token = detail.value;
         try {
-          const result = await processToken(token, candidates, { forceSwitch, targetGroup });
+          const result = await processToken(token, candidates, { forceSwitch, targetGroup, admission });
           state.tokenResults.push({ id: tokenId, name: tokenLabel(token), ...result });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -5223,11 +5348,10 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const qualityEnabled = imageQualityEnabled(config);
     if (!sectionNeedsRender(refs.candidateRows, [state.candidates, config.selectionMode,
       tokensCache, ...tokensCache.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
-      config.tokenIds.join(","), qualityEnabled, config.imageQualityModel, config.imageQualityTask,
+      config.tokenIds.join(","), running, qualityEnabled, config.imageQualityModel, config.imageQualityTask,
       ...(qualityEnabled ? state.candidates.map(candidateImageQuality) : [])])) return;
     refs.candidateRows.replaceChildren();
-    const rows = IS_AIHUB ? sortRowsWithImageQuality(state.candidates, config.selectionMode,
-      imageQualityEnabled(config) ? candidateImageQuality : null) : state.candidates
+    const rows = IS_AIHUB ? sortCandidateRowsForMode(state.candidates, config.selectionMode) : state.candidates
       .slice()
       .sort((left, right) => {
         if (left.available !== right.available) return left.available ? -1 : 1;
@@ -5367,6 +5491,17 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         }
         heading.prepend(name);
         heading.append(verdict);
+        const switchButton = document.createElement("button");
+        switchButton.type = "button";
+        switchButton.className = "candidate-row-switch";
+        const allCurrent = config.tokenIds.length > 0 && currentTokens.length === config.tokenIds.length;
+        switchButton.textContent = allCurrent ? "使用中" : "切换";
+        switchButton.disabled = running || !config.tokenIds.length || allCurrent || candidate.reasons.includes("not-user-selectable");
+        switchButton.title = allCurrent ? "全部已选密钥正在使用此分组" : !config.tokenIds.length ? "请先选择需要切换的 API 密钥"
+          : `将已选密钥手动切换到 ${candidate.group}；跳过图片检查`;
+        switchButton.setAttribute("aria-label", switchButton.title);
+        switchButton.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true, targetGroup: candidate.group }));
+        heading.append(switchButton);
         const metrics = document.createElement("dl");
         metrics.className = "candidate-metrics";
         ratio.textContent = `${formatRatio(candidate.ratio).replace(/x$/, "")}/${hasEffectiveEstimate ? formatRatio(candidateEffectiveRatio(candidate)) : "—"}`;
@@ -6168,6 +6303,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       imageQualityKeyId: refs.imageQualityKey.value,
       imageQualityModel: refs.imageQualityModel.value,
       imageQualityTask: refs.imageQualityTask.value,
+      imageQualityMinScore: refs.imageQualityMinScore.value,
       groupFilterMode: config.groupFilterMode,
       groupWhitelist: config.groupWhitelist,
       groupBlacklist: config.groupBlacklist,
@@ -6197,6 +6333,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     refs.selectionMode.value = config.selectionMode;
     refs.imageQualityModel.value = config.imageQualityModel;
     refs.imageQualityTask.value = config.imageQualityTask;
+    refs.imageQualityMinScore.value = String(config.imageQualityMinScore);
     refs.requireModelDetection.checked = config.requireModelDetection;
     refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
     refs.dailySpendLimit.value = String(config.dailySpendLimit);
@@ -7537,6 +7674,10 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           font: inherit; font-size: 12px; font-weight: 650; line-height: 17px; cursor: copy;
         }
         .candidate-heading .candidate-name-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .candidate-row-switch { flex: 0 0 34px; width: 34px; height: 20px; padding: 0; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--accent); font: inherit; font-size: 10px; line-height: 18px; cursor: pointer; }
+        .candidate-row-switch:hover:not(:disabled) { background: var(--accent-soft); }
+        .candidate-row-switch:disabled { color: var(--text-soft); cursor: default; }
+        .candidate-row-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
         .candidate-current-tag { flex: 0 0 auto; padding: 1px 3px; border: 1px solid var(--accent); border-radius: 3px; color: var(--text); font-size: 8px; line-height: 1.2; }
         .candidate-heading .verdict { flex: 0 0 auto; max-width: 29%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 10px; }
         .candidate-metrics, .candidate-column-labels {
@@ -7708,7 +7849,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
               <button class="text-button" type="button" data-ref="imageQualityStop" hidden>停止</button>
               <p data-ref="imageQualityStatus" role="status"></p>
             </div>
-            <p title="列表参考分为策略85% + 有效图片分15%；无分沿用策略，低证据分不参与。策略推荐与自动切换仍按原策略。">图片分占15%，仅影响列表排序；无分沿用策略</p>
+            <p title="图片分不参与策略或列表排序；自动切换前必须严格超过配置门槛，无缓存时评分计费。手动指定目标跳过图片检查。">图片分仅用于自动切换准入；手动切换跳过检查</p>
           </div>
           ${IS_AIHUB ? '<div class="candidate-column-labels" aria-hidden="true"><span>倍率/预估</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span class="candidate-quality-column">效果</span></div>' : ""}
           <div data-ref="candidateRows"></div>
@@ -7849,11 +7990,11 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           </div>
         </section>
         <section class="section settings-group image-quality-settings" aria-labelledby="kf-image-quality-title" ${IS_AIHUB ? "" : "hidden"}>
-          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">可选 · 手动调用</span></div>
+          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">自动切换准入</span></div>
           <div class="settings-fields">
             <div class="field">
               <label for="kf-image-quality-key">评分密钥</label>
-              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">不使用图片评分</option></select>
+              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">未配置评分密钥</option></select>
             </div>
             <div class="field">
               <div class="settings-label-row"><label for="kf-image-quality-model">评分模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
@@ -7862,7 +8003,11 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
             </div>
           </div>
           <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
-          <p class="settings-billing-note">测试按1张原图计费；批量最多2张并发、每次最多10次新分析，不自动重试。密钥或模型留空即关闭图片分。</p>
+          <div class="field">
+            <label for="kf-image-quality-min-score">自动切换图片门槛（必须大于）</label>
+            <input id="kf-image-quality-min-score" data-ref="imageQualityMinScore" type="number" min="0" max="100" step="1" aria-describedby="kf-image-admission-help">
+          </div>
+          <p id="kf-image-admission-help" class="settings-billing-note">先按策略选组，再检查图片分，必须严格超过门槛。无缓存时自动调用所选模型（计费），每轮最多10次新分析，不自动重试。无图、评分失败、证据不足或未达标按“临时拉黑”时长隔离；未配置密钥/模型也无法通过。列表手动切换跳过图片检查。</p>
           <div class="image-quality-toolbar">
             <button class="button" type="button" data-ref="imageQualityTest">测试1张（计费）</button>
             <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
@@ -7873,7 +8018,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
             <summary>评分规则与缓存</summary>
             <div class="settings-detail-content">
               <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不参与排序。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
+              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不通过自动准入。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
               <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
             </div>
           </details>
@@ -7916,7 +8061,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
               <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
               <div class="field"><label title="保持期间继续检测；当前渠道不可用时立即切换，到期后恢复策略择优">切换后保持（分钟）</label><input data-ref="switchHoldMinutes" type="number" min="0"></div>
               <div class="field"><label>回滚观察次数（0 关闭）</label><input data-ref="rollbackChecks" type="number" min="0" max="10"></div>
-              <div class="field"><label>故障拉黑（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
+              <div class="field"><label>临时拉黑（分钟，故障/图片）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
             </div>
           </details>
           <details class="settings-disclosure isolation-disclosure">
@@ -8020,7 +8165,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
     const refNames = [
       "imageQualityTooltip", "imageQualityList", "imageQualityListSummary", "imageQualityClearCache", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
-      "imageQualityKey", "imageQualityModel", "imageQualityTask", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
+      "imageQualityKey", "imageQualityModel", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",

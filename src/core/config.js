@@ -361,6 +361,7 @@
       imageQualityKeyId: Math.max(0, Math.trunc(Number(source.imageQualityKeyId) || 0)),
       imageQualityModel: String(source.imageQualityModel || "").trim().slice(0, 120),
       imageQualityTask: String(source.imageQualityTask || DEFAULT_CONFIG.imageQualityTask).trim().slice(0, 300),
+      imageQualityMinScore: clampNumber(source.imageQualityMinScore, DEFAULT_CONFIG.imageQualityMinScore, 0, 100),
       groupFilterMode,
       groupWhitelist,
       groupBlacklist,

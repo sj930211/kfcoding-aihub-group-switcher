@@ -595,6 +595,7 @@
       imageQualityKeyId: refs.imageQualityKey.value,
       imageQualityModel: refs.imageQualityModel.value,
       imageQualityTask: refs.imageQualityTask.value,
+      imageQualityMinScore: refs.imageQualityMinScore.value,
       groupFilterMode: config.groupFilterMode,
       groupWhitelist: config.groupWhitelist,
       groupBlacklist: config.groupBlacklist,
@@ -624,6 +625,7 @@
     refs.selectionMode.value = config.selectionMode;
     refs.imageQualityModel.value = config.imageQualityModel;
     refs.imageQualityTask.value = config.imageQualityTask;
+    refs.imageQualityMinScore.value = String(config.imageQualityMinScore);
     refs.requireModelDetection.checked = config.requireModelDetection;
     refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
     refs.dailySpendLimit.value = String(config.dailySpendLimit);

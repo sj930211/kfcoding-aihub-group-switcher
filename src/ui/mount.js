@@ -969,6 +969,10 @@
           font: inherit; font-size: 12px; font-weight: 650; line-height: 17px; cursor: copy;
         }
         .candidate-heading .candidate-name-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .candidate-row-switch { flex: 0 0 34px; width: 34px; height: 20px; padding: 0; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--accent); font: inherit; font-size: 10px; line-height: 18px; cursor: pointer; }
+        .candidate-row-switch:hover:not(:disabled) { background: var(--accent-soft); }
+        .candidate-row-switch:disabled { color: var(--text-soft); cursor: default; }
+        .candidate-row-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
         .candidate-current-tag { flex: 0 0 auto; padding: 1px 3px; border: 1px solid var(--accent); border-radius: 3px; color: var(--text); font-size: 8px; line-height: 1.2; }
         .candidate-heading .verdict { flex: 0 0 auto; max-width: 29%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 10px; }
         .candidate-metrics, .candidate-column-labels {
@@ -1140,7 +1144,7 @@
               <button class="text-button" type="button" data-ref="imageQualityStop" hidden>停止</button>
               <p data-ref="imageQualityStatus" role="status"></p>
             </div>
-            <p title="列表参考分为策略85% + 有效图片分15%；无分沿用策略，低证据分不参与。策略推荐与自动切换仍按原策略。">图片分占15%，仅影响列表排序；无分沿用策略</p>
+            <p title="图片分不参与策略或列表排序；自动切换前必须严格超过配置门槛，无缓存时评分计费。手动指定目标跳过图片检查。">图片分仅用于自动切换准入；手动切换跳过检查</p>
           </div>
           ${IS_AIHUB ? '<div class="candidate-column-labels" aria-hidden="true"><span>倍率/预估</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span class="candidate-quality-column">效果</span></div>' : ""}
           <div data-ref="candidateRows"></div>
@@ -1281,11 +1285,11 @@
           </div>
         </section>
         <section class="section settings-group image-quality-settings" aria-labelledby="kf-image-quality-title" ${IS_AIHUB ? "" : "hidden"}>
-          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">可选 · 手动调用</span></div>
+          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">自动切换准入</span></div>
           <div class="settings-fields">
             <div class="field">
               <label for="kf-image-quality-key">评分密钥</label>
-              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">不使用图片评分</option></select>
+              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">未配置评分密钥</option></select>
             </div>
             <div class="field">
               <div class="settings-label-row"><label for="kf-image-quality-model">评分模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
@@ -1294,7 +1298,11 @@
             </div>
           </div>
           <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
-          <p class="settings-billing-note">测试按1张原图计费；批量最多2张并发、每次最多10次新分析，不自动重试。密钥或模型留空即关闭图片分。</p>
+          <div class="field">
+            <label for="kf-image-quality-min-score">自动切换图片门槛（必须大于）</label>
+            <input id="kf-image-quality-min-score" data-ref="imageQualityMinScore" type="number" min="0" max="100" step="1" aria-describedby="kf-image-admission-help">
+          </div>
+          <p id="kf-image-admission-help" class="settings-billing-note">先按策略选组，再检查图片分，必须严格超过门槛。无缓存时自动调用所选模型（计费），每轮最多10次新分析，不自动重试。无图、评分失败、证据不足或未达标按“临时拉黑”时长隔离；未配置密钥/模型也无法通过。列表手动切换跳过图片检查。</p>
           <div class="image-quality-toolbar">
             <button class="button" type="button" data-ref="imageQualityTest">测试1张（计费）</button>
             <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
@@ -1305,7 +1313,7 @@
             <summary>评分规则与缓存</summary>
             <div class="settings-detail-content">
               <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不参与排序。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
+              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不通过自动准入。原图MD5按规则隔离复用，最多1000条；旧规则分数不混用。测试1张会主动重新请求并计费。</p>
               <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearCache">清空评分缓存</button></div>
             </div>
           </details>
@@ -1348,7 +1356,7 @@
               <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
               <div class="field"><label title="保持期间继续检测；当前渠道不可用时立即切换，到期后恢复策略择优">切换后保持（分钟）</label><input data-ref="switchHoldMinutes" type="number" min="0"></div>
               <div class="field"><label>回滚观察次数（0 关闭）</label><input data-ref="rollbackChecks" type="number" min="0" max="10"></div>
-              <div class="field"><label>故障拉黑（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
+              <div class="field"><label>临时拉黑（分钟，故障/图片）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
             </div>
           </details>
           <details class="settings-disclosure isolation-disclosure">
@@ -1452,7 +1460,7 @@
 
     const refNames = [
       "imageQualityTooltip", "imageQualityList", "imageQualityListSummary", "imageQualityClearCache", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
-      "imageQualityKey", "imageQualityModel", "imageQualityTask", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
+      "imageQualityKey", "imageQualityModel", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",

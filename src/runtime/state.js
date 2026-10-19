@@ -49,7 +49,7 @@
   const imageQuality = {
     cache: normalizeImageQualityCache(GM_getValue(STORAGE_IMAGE_QUALITY, {})),
     sources: normalizeImageQualitySources(GM_getValue(STORAGE_IMAGE_QUALITY_SOURCES, {})), refreshPending: false,
-    catalogAt: 0, catalogRevision: 0, clearing: false,
+    catalogAt: 0, catalogRevision: 0, clearing: false, cancelRevision: 0,
     controller: null, hashController: null, hashes: new Map(), catalog: [], catalogReady: false, status: "",
     modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
     sample: null, testStatus: "", testResult: "",

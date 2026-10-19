@@ -731,7 +731,91 @@
     }
   }
 
-  async function handleRollbackGuard(token, candidates) {
+  function createImageAdmissionContext() {
+    return { remaining: 10, configKey: JSON.stringify(config), catalogRevision: imageQuality.catalogRevision,
+      cancelRevision: imageQuality.cancelRevision || 0 };
+  }
+
+  function assertImageAdmissionCurrent(context) {
+    if (context.configKey !== JSON.stringify(config) || context.catalogRevision !== imageQuality.catalogRevision
+      || context.cancelRevision !== (imageQuality.cancelRevision || 0)
+      || Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) > imageQuality.catalogAt) {
+      throw new Error("设置、图片目录已变更或评分已停止，本轮取消切换；未继续拉黑");
+    }
+  }
+
+  async function waitForImageAdmissionIdle(context) {
+    const deadline = Date.now() + 90000;
+    while (imageQuality.controller || imageQuality.modelsController || imageQuality.hashController || imageQuality.clearing) {
+      assertImageAdmissionCurrent(context);
+      if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未拉黑");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assertImageAdmissionCurrent(context);
+  }
+
+  async function checkCandidateImageAdmission(candidate, context) {
+    assertImageAdmissionCurrent(context);
+    if (!imageQualityIdentity(candidate)) return { pass: false, reason: "没有可用图片" };
+    if (!imageQualityEnabled(config)) return { pass: false, reason: "未配置评分密钥或模型，没有有效评价" };
+    await waitForImageAdmissionIdle(context);
+    syncImageQualityStore();
+    let entry = candidateImageQuality(candidate);
+    if (!entry) {
+      setStatus(`切换前评价 ${candidate.group} 的图片（无缓存时计费）…`, "running");
+      try {
+        await runImageQuality({ candidate, budget: context });
+      } catch (error) {
+        assertImageAdmissionCurrent(context);
+        if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续拉黑");
+        // A shared per-check budget is an operational limit, not a failed picture.
+        if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次新分析上限，保持当前分组；未继续拉黑");
+        return { pass: false, reason: "图片读取或评分失败，没有有效评价" };
+      }
+      assertImageAdmissionCurrent(context);
+      entry = candidateImageQuality(candidate);
+    }
+    return imageQualityAdmissionVerdict(entry, config.imageQualityMinScore);
+  }
+
+  function isolateImageCandidate(candidate, reason) {
+    const now = Date.now();
+    const model = targetModelIdentity(config);
+    const guard = getSwitchGuardState(now);
+    guard.blacklist = guard.blacklist.filter((entry) => entry.model !== model || entry.group !== candidate.group);
+    guard.blacklist.push({ model, group: candidate.group, until: now + config.blacklistMinutes * 60000 });
+    saveSwitchGuardState(guard);
+    refreshCandidateIsolationState();
+    addLog(`${candidate.group}：${reason}，临时拉黑 ${config.blacklistMinutes} 分钟`, "warning");
+    render();
+  }
+
+  async function admittedSwitchCandidate(token, candidates, preferred, context) {
+    if (!IS_AIHUB) return preferred;
+    const candidate = await selectImageQualifiedCandidate(candidates, token.group, {
+      mode: config.selectionMode, preferred,
+      assertCurrent: () => assertImageAdmissionCurrent(context),
+      eligible: (rows) => applyTemporaryBlacklist(rows, getSwitchGuardState(), targetModelIdentity(config), Date.now())
+        .filter((row) => row.available),
+      check: (row) => checkCandidateImageAdmission(row, context),
+      isolate: isolateImageCandidate,
+    });
+    assertImageAdmissionCurrent(context);
+    if (candidate && candidate.group !== token.group) {
+      const latest = await getTokenDetail(token.id);
+      assertImageAdmissionCurrent(context);
+      if (latest.group !== token.group) throw new Error("密钥分组已在其他页面改变，本轮取消切换");
+    }
+    return candidate;
+  }
+
+  function imageAdmissionHoldResult(token) {
+    pendingCandidates.delete(Number(token.id));
+    return { outcome: "image-blocked", group: token.group || "未设置", tone: "warning",
+      message: "没有需要切换且通过图片准入的分组，保持当前分组" };
+  }
+
+  async function handleRollbackGuard(token, candidates, admission) {
     const tokenId = Number(token.id);
     const now = Date.now();
     const guardState = getSwitchGuardState(now);
@@ -786,10 +870,12 @@
 
     const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now);
     const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup, config.selectionMode);
-    const fallback = rollbackTarget.candidate;
-    if (!fallback) return null;
+    let fallback = rollbackTarget.candidate;
+    if (!fallback) return IS_AIHUB ? imageAdmissionHoldResult(token) : null;
+    fallback = await admittedSwitchCandidate(token, eligible, fallback, admission);
+    if (!fallback || fallback.group === token.group) return imageAdmissionHoldResult(token);
 
-    const destination = rollbackTarget.usedPrevious ? "原分组" : "其他可用分组";
+    const destination = fallback.group === guard.fromGroup ? "原分组" : "其他可用分组";
     await switchTokenGroup(token, fallback, {
       trackRollback: false,
       logTone: "warning",
@@ -807,12 +893,16 @@
     const forceSwitch = Boolean(options && options.forceSwitch);
     const targetGroup = String((options && options.targetGroup) || "").trim();
     const tokenId = Number(token.id);
+    const admission = options?.admission || createImageAdmissionContext();
+    if (admission.configKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
     validateToken(token);
     if (config.enabled && !forceSwitch) {
-      const rollback = await handleRollbackGuard(token, candidates);
+      const rollback = await handleRollbackGuard(token, candidates, admission);
       if (rollback) return rollback;
     }
-    const selected = selectSwitchCandidate(candidates, token.group, targetGroup, {
+    // Previous tokens in this check may already have isolated an image candidate.
+    candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
+    let selected = selectSwitchCandidate(candidates, token.group, targetGroup, {
       mode: config.selectionMode,
       allowUnavailable: Boolean(targetGroup),
     });
@@ -827,6 +917,7 @@
     );
 
     if (!selected) {
+      if (IS_AIHUB && !targetGroup) return imageAdmissionHoldResult(token);
       const reasonSummary = summarizeFailures(candidates);
       throw new Error(`没有满足条件的分组${reasonSummary ? `：${reasonSummary}` : ""}`);
     }
@@ -849,6 +940,9 @@
       };
     }
     if (forceSwitch) {
+      // An explicit manual destination bypasses image admission, including list buttons.
+      if (!targetGroup) selected = await admittedSwitchCandidate(token, candidates, selected, admission);
+      if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
       await switchTokenGroup(token, selected);
       return {
         outcome: "switched",
@@ -867,6 +961,8 @@
       };
     }
     if (!current || !current.available) {
+      selected = await admittedSwitchCandidate(token, candidates, selected, admission);
+      if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
       await switchTokenGroup(token, selected);
       return {
         outcome: "switched",
@@ -899,6 +995,8 @@
       };
     }
 
+    selected = await admittedSwitchCandidate(token, candidates, selected, admission);
+    if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
     await switchTokenGroup(token, selected);
     return {
       outcome: "switched",
@@ -928,6 +1026,8 @@
       return;
     }
     const selectedTokenIds = config.tokenIds.slice();
+    const checkConfigKey = JSON.stringify(config);
+    const checkCancelRevision = imageQuality.cancelRevision || 0;
 
     running = true;
     const usageRefresh = manualUsageRefresh || refreshTodayUsage();
@@ -1053,6 +1153,8 @@
       }
 
       if (IS_AIHUB) await tokenCatalogRefresh;
+      if (checkConfigKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
+      const admission = { ...createImageAdmissionContext(), cancelRevision: checkCancelRevision };
       const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => getTokenDetail(tokenId)));
       state.tokenResults = [];
       for (let index = 0; index < details.length; index += 1) {
@@ -1070,7 +1172,7 @@
 
         const token = detail.value;
         try {
-          const result = await processToken(token, candidates, { forceSwitch, targetGroup });
+          const result = await processToken(token, candidates, { forceSwitch, targetGroup, admission });
           state.tokenResults.push({ id: tokenId, name: tokenLabel(token), ...result });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1427,11 +1529,10 @@
     const qualityEnabled = imageQualityEnabled(config);
     if (!sectionNeedsRender(refs.candidateRows, [state.candidates, config.selectionMode,
       tokensCache, ...tokensCache.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
-      config.tokenIds.join(","), qualityEnabled, config.imageQualityModel, config.imageQualityTask,
+      config.tokenIds.join(","), running, qualityEnabled, config.imageQualityModel, config.imageQualityTask,
       ...(qualityEnabled ? state.candidates.map(candidateImageQuality) : [])])) return;
     refs.candidateRows.replaceChildren();
-    const rows = IS_AIHUB ? sortRowsWithImageQuality(state.candidates, config.selectionMode,
-      imageQualityEnabled(config) ? candidateImageQuality : null) : state.candidates
+    const rows = IS_AIHUB ? sortCandidateRowsForMode(state.candidates, config.selectionMode) : state.candidates
       .slice()
       .sort((left, right) => {
         if (left.available !== right.available) return left.available ? -1 : 1;
@@ -1571,6 +1672,17 @@
         }
         heading.prepend(name);
         heading.append(verdict);
+        const switchButton = document.createElement("button");
+        switchButton.type = "button";
+        switchButton.className = "candidate-row-switch";
+        const allCurrent = config.tokenIds.length > 0 && currentTokens.length === config.tokenIds.length;
+        switchButton.textContent = allCurrent ? "使用中" : "切换";
+        switchButton.disabled = running || !config.tokenIds.length || allCurrent || candidate.reasons.includes("not-user-selectable");
+        switchButton.title = allCurrent ? "全部已选密钥正在使用此分组" : !config.tokenIds.length ? "请先选择需要切换的 API 密钥"
+          : `将已选密钥手动切换到 ${candidate.group}；跳过图片检查`;
+        switchButton.setAttribute("aria-label", switchButton.title);
+        switchButton.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true, targetGroup: candidate.group }));
+        heading.append(switchButton);
         const metrics = document.createElement("dl");
         metrics.className = "candidate-metrics";
         ratio.textContent = `${formatRatio(candidate.ratio).replace(/x$/, "")}/${hasEffectiveEstimate ? formatRatio(candidateEffectiveRatio(candidate)) : "—"}`;

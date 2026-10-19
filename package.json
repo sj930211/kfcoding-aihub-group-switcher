@@ -1,9 +1,9 @@
 {
-  "version": "0.17.0",
+  "version": "0.18.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs build",
-    "test": "npm run build && node --check kfcoding-group-switcher.user.js && node test-selection.mjs && node tests/image-quality-catalog.mjs && node tests/image-quality-store.mjs && node tests/versioning.mjs && node tests/image-quality-stream.mjs && node tests/image-quality-coordination.mjs"
+    "test": "npm run build && node --check kfcoding-group-switcher.user.js && node test-selection.mjs && node tests/image-quality-catalog.mjs && node tests/image-quality-store.mjs && node tests/versioning.mjs && node tests/image-quality-stream.mjs && node tests/image-quality-coordination.mjs && node tests/image-admission.mjs"
   }
 }
