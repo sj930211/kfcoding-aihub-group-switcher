@@ -1046,7 +1046,34 @@
           .candidate-metrics, .candidate-column-labels { gap: 2px; }
           .candidate-heading .candidate-name-label { font-size: 11px; }
         }
+        .settings-header { position: sticky; top: 0; z-index: 4; background: var(--native-option-bg); border-bottom: 1px solid var(--line); }
+        .settings-heading { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 14px 16px 8px; }
+        .settings-heading h2 { margin: 0; font-size: 15px; }
+        .settings-heading [role="status"] { min-width: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; text-align: right; }
+        .settings-heading [data-invalid="true"] { color: var(--danger); }
+        .settings-nav { display: flex; overflow-x: auto; padding: 0 12px; scrollbar-width: thin; }
+        .settings-nav button { flex: 1 0 auto; min-height: 42px; padding: 8px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-soft); font-size: 11px; font-weight: 600; white-space: nowrap; }
+        .settings-nav button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+        :host([data-resolved-theme="light"]) .settings-nav button[aria-selected="true"] { color: #126fc9; }
+        .settings-nav button:hover { background: var(--surface-active); }
+        .settings-page[hidden], .settings-nav button[hidden] { display: none; }
+        .settings-page > .section { padding: 16px; }
+        .settings-page > .section > .section-head { margin-bottom: 14px; }
+        .settings-page[data-settings-page="protection"] .settings-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .settings-subheading { margin: 24px 0 12px; font-size: 12px; }
+        .settings-hint { margin: 10px 0; color: var(--text-soft); font-size: 11px; line-height: 1.6; }
+        .settings-check-times { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 10px; }
+        .settings-check-times b { color: var(--text-soft); font-weight: 500; font-variant-numeric: tabular-nums; }
+        .settings-count { margin-left: 8px; color: var(--muted); font-size: 10px; font-weight: 500; }
+        .settings-page .field { min-width: 0; }
+        .settings-page label { line-height: 1.5; }
+        .settings-page input[aria-invalid="true"] { border-color: var(--danger); }
+        .settings-page .settings-disclosure > summary { min-height: 42px; }
+        .settings-page :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .status[data-tone="running"]::before { animation: status-breathe 2s ease-in-out infinite; }
+        @keyframes status-breathe { 0%, 100% { opacity: .65; transform: scale(.92); outline: 0 solid var(--warning-soft); } 50% { opacity: 1; transform: scale(1.08); outline: 4px solid var(--warning-soft); } }
         @media (prefers-reduced-motion: reduce) {
+          .status[data-tone="running"]::before { animation: none; }
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
         }
         @media (prefers-reduced-transparency: reduce) {
@@ -1197,10 +1224,17 @@
           </section>
         </section>
         <section class="work-view settings-view" id="kf-view-settings" data-ref="settingsSection" data-view="settings" role="tabpanel" aria-labelledby="kf-tab-settings" tabindex="0" hidden>
-          <div class="view-intro">
-            <h2>设置</h2>
-            <p>所有更改自动保存</p>
+          <div class="settings-header">
+            <div class="settings-heading"><h2>设置</h2><span data-ref="settingsSave" role="status">已保存</span></div>
+            <nav class="settings-nav" role="tablist" aria-label="设置分类">
+              <button id="kf-settings-routing" data-settings-target="routing" role="tab" aria-controls="kf-settings-page-routing" aria-selected="false" tabindex="-1" type="button">自动切换</button>
+              <button id="kf-settings-protection" data-settings-target="protection" role="tab" aria-controls="kf-settings-page-protection" aria-selected="false" tabindex="-1" type="button">检测保护</button>
+              <button id="kf-settings-quality" data-settings-target="quality" role="tab" aria-controls="kf-settings-page-quality" aria-selected="false" tabindex="-1" type="button" ${IS_AIHUB ? "" : "hidden"}>图片评价</button>
+              <button id="kf-settings-spending" data-settings-target="spending" role="tab" aria-controls="kf-settings-page-spending" aria-selected="false" tabindex="-1" type="button">消费提醒</button>
+              <button id="kf-settings-appearance" data-settings-target="appearance" role="tab" aria-controls="kf-settings-page-appearance" aria-selected="false" tabindex="-1" type="button">界面更新</button>
+            </nav>
           </div>
+          <div class="settings-page" id="kf-settings-page-routing" data-settings-page="routing" role="tabpanel" aria-labelledby="kf-settings-routing" tabindex="0" hidden>
         <section class="section control-section settings-section">
           <div class="section-head"><h2 class="section-title">自动路由</h2><span class="section-meta">密钥、模型与分组</span></div>
           <div class="automation-bar">
@@ -1273,7 +1307,36 @@
               </div>
             </div>
           </div>
-          <div class="settings-appearance model-detection-setting"${IS_AIHUB ? "" : " hidden"}>
+        </section>
+          </div>
+          <div class="settings-page" id="kf-settings-page-protection" data-settings-page="protection" role="tabpanel" aria-labelledby="kf-settings-protection" tabindex="0" hidden>
+        <section class="section settings-group settings-protection">
+          <div class="section-head"><h2 class="section-title">检测间隔</h2></div>
+          <div class="settings-fields">
+            <div class="field"><label for="kf-health-interval">故障检测间隔（秒）</label><input id="kf-health-interval" data-ref="pollSeconds" type="number" min="15" max="3600" step="any" required></div>
+            <div class="field"><label for="kf-strategy-interval">分组择优间隔（分钟）</label><input id="kf-strategy-interval" data-ref="strategyMinutes" type="number" min="0.25" max="60" step="any" required></div>
+          </div>
+          <p class="settings-hint">当前组故障时立即寻找可用组，不等待择优周期。平台监控数据的更新速度也会影响故障发现时间。</p>
+          <div class="settings-check-times"><span>故障检查 <b data-ref="lastHealthCheck">—</b></span><span>分组择优 <b data-ref="lastStrategyCheck">—</b></span></div>
+          <h3 class="settings-subheading">切换保护</h3>
+          <div class="settings-fields">
+            <div class="field"><label for="kf-confirm">连续确认次数</label><input id="kf-confirm" data-ref="confirmPolls" type="number" min="1" max="10" step="1" required></div>
+            <div class="field"><label for="kf-hold">正常切换后保持（分钟）</label><input id="kf-hold" data-ref="switchHoldMinutes" type="number" step="any" min="0" max="1440" required></div>
+            <div class="field"><label for="kf-rollback">回滚观察次数（0关闭）</label><input id="kf-rollback" data-ref="rollbackChecks" type="number" min="0" max="10" step="1" required></div>
+            <div class="field"><label for="kf-isolation">故障隔离时长（分钟）</label><input id="kf-isolation" data-ref="blacklistMinutes" type="number" step="any" min="1" max="1440" required></div>
+          </div>
+          <p class="settings-hint" data-ref="confirmationHint">连续确认按择优轮次计算，回滚观察按故障检测轮次计算。</p>
+          <details class="settings-disclosure">
+            <summary>健康判定与候选限制</summary>
+            <div class="grid advanced">
+              <div class="field"><label title="${IS_AIHUB ? "AIHub v2 整体成功率采用平台 1 小时统计；此项控制探测序列和旧接口回退窗口" : "整体性能与趋势的统计窗口"}">${IS_AIHUB ? "趋势窗口（小时）" : "统计窗口（小时）"}</label><input data-ref="metricHours" type="number" max="168" min="1" required></div>
+              <div class="field"><label>总成功率（%）</label><input data-ref="minSuccessRate" type="number" min="0" max="100" step="0.1" required></div>
+              <div class="field"><label>最新成功率（%）</label><input data-ref="minLatestSuccessRate" type="number" min="0" max="100" step="0.1" required></div>
+              <div class="field"><label>指标时效（分钟）</label><input data-ref="maxMetricAgeMinutes" type="number" max="1440" min="5" required></div>
+              <div class="field"><label>最大首字延迟（秒）</label><input data-ref="maxFirstTokenLatencySeconds" type="number" max="3600" min="0" step="0.1" required></div>
+              <div class="field"><label>最大输出耗时（秒）</label><input data-ref="maxOutputDurationSeconds" type="number" max="3600" min="0" step="0.1" required></div>
+              <div class="field"><label>最大倍率（0 不限制）</label><input data-ref="maxGroupRatio" type="number" max="100000" min="0" step="0.01" required></div>
+            </div>          <div class="settings-appearance model-detection-setting"${IS_AIHUB ? "" : " hidden"}>
             <span class="settings-appearance-copy">
               <strong id="kf-model-detection-label">模型检测参与切换</strong>
               <small id="kf-model-detection-help">开启后，匹配目标模型的检测未通过会立即切换</small>
@@ -1283,92 +1346,10 @@
               <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
             </label>
           </div>
-        </section>
-        <section class="section settings-group image-quality-settings" aria-labelledby="kf-image-quality-title" ${IS_AIHUB ? "" : "hidden"}>
-          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">自动切换准入</span></div>
-          <div class="settings-fields">
-            <div class="field">
-              <label for="kf-image-quality-key">评分密钥</label>
-              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">未配置评分密钥</option></select>
-            </div>
-            <div class="field">
-              <div class="settings-label-row"><label for="kf-image-quality-model">评价模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
-              <input id="kf-image-quality-model" data-ref="imageQualityModel" type="text" maxlength="120" list="kf-image-quality-models" placeholder="选择或输入支持图片的模型" autocomplete="off" aria-describedby="kf-image-quality-models-status">
-              <datalist id="kf-image-quality-models" data-ref="imageQualityModels"></datalist>
-            </div>
-          </div>
-          <div class="settings-fields">
-            <div class="field"><label for="kf-image-quality-fallback-1">备用评分分组 1（可选）</label><select id="kf-image-quality-fallback-1" data-ref="imageQualityFallback1" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
-            <div class="field"><label for="kf-image-quality-fallback-2">备用评分分组 2（可选）</label><select id="kf-image-quality-fallback-2" data-ref="imageQualityFallback2" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
-          </div>
-          <p id="kf-image-quality-fallback-help">评分线路不可用时依次尝试备用分组，模型不变；结束后恢复评分密钥原组。</p>
-          <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
-          <div class="field">
-            <label for="kf-image-quality-min-score">自动切换图片门槛（必须大于）</label>
-            <input id="kf-image-quality-min-score" data-ref="imageQualityMinScore" type="number" min="0" max="100" step="1" aria-describedby="kf-image-admission-help">
-          </div>
-          <p id="kf-image-admission-help" class="settings-billing-note">正常择优：后台评价通过后，结合最新健康状态切换。当前分组故障时优先恢复服务，跳过图片检查。自动评价会计费。</p>
-          <div class="image-quality-toolbar">
-            <button class="button" type="button" data-ref="imageQualityTest">测试当前分组1张（计费）</button>
-            <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
-          </div>
-          <p data-ref="imageQualityTestStatus" role="status"></p>
-          <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
-          <details class="settings-disclosure">
-            <summary>评分规则与计算时机</summary>
-            <div class="settings-detail-content">
-              <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-              <p>图片分不参与策略排序。达到倒数一次连续确认，且保持期剩余不超过一个轮询周期时，后台预评价候选图片；通过后等待新的健康检查。候选或图片变化会取消过期评价。</p>
-              <p>图片分必须严格高于门槛；无图、读取失败、无法识别、证据不足或低分进入故障隔离。评分服务异常只暂停本次择优，不隔离业务组；调整设置或重新启用自动切换后重试。故障恢复忽略图片隔离，仍遵守健康隔离。</p>
-              <p>同一次待切换决策共用最多10次模型请求，轮询不重置；不保存评分缓存。测试仅当前评分分组1次；手动指定分组不检查图片。</p>
-              <p>评分规则：任务20 + 结构40 + 协调25 + 完成15。14项按六档评分，严重缺陷封顶；座位、脚踏和车把需要可见连接依据。</p>
-              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearPage">清除本页评价</button></div>
-            </div>
+
           </details>
-          <div class="image-quality-records">
-            <div class="section-head"><h3>当前图片评价</h3></div>
-            <p data-ref="imageQualityListSummary" role="status"></p>
-            <div class="image-quality-record-list" data-ref="imageQualityList"></div>
-          </div>
-        </section>
-        <section class="section settings-group settings-protection" aria-labelledby="kf-protection-title">
-          <div class="section-head"><h2 class="section-title" id="kf-protection-title">保护与判定</h2><span class="section-meta">消费与故障保护</span></div>
-          <div class="protection-bar">
-            <span class="protection-copy">
-              <strong>消费保护</strong>
-              <small data-ref="spendProtectionStatus" data-tone="none">未启用</small>
-            </span>
-            <label class="toggle" for="kf-spend-protection" title="消费保护仅提醒，不影响任务">
-              <input id="kf-spend-protection" data-ref="spendProtectionEnabled" type="checkbox" aria-label="启用消费保护">
-              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
-            </label>
-            <label class="spend-limit-field">
-              <span>每日上限</span>
-              <input data-ref="dailySpendLimit" type="number" min="0" step="0.01" aria-label="每日消费上限">
-            </label>
-            <button class="icon-button" data-ref="resetSpendProtection" type="button" title="从当前消费重新计数" aria-label="重置消费保护计数">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 3v6h6"></path></svg>
-            </button>
-          </div>
-          <details class="route-settings-advanced">
-            <summary>判定与保护参数</summary>
-            <div class="grid advanced">
-              <div class="field"><label>轮询（秒）</label><input data-ref="pollSeconds" type="number" min="15"></div>
-              <div class="field"><label title="${IS_AIHUB ? "AIHub v2 整体成功率采用平台 1 小时统计；此项控制探测序列和旧接口回退窗口" : "整体性能与趋势的统计窗口"}">${IS_AIHUB ? "趋势窗口（小时）" : "统计窗口（小时）"}</label><input data-ref="metricHours" type="number" min="1"></div>
-              <div class="field"><label>总成功率（%）</label><input data-ref="minSuccessRate" type="number" min="0" max="100" step="0.1"></div>
-              <div class="field"><label>最新成功率（%）</label><input data-ref="minLatestSuccessRate" type="number" min="0" max="100" step="0.1"></div>
-              <div class="field"><label>指标时效（分钟）</label><input data-ref="maxMetricAgeMinutes" type="number" min="5"></div>
-              <div class="field"><label>最大首字延迟（秒）</label><input data-ref="maxFirstTokenLatencySeconds" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>最大输出耗时（秒）</label><input data-ref="maxOutputDurationSeconds" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>最大倍率（0 不限制）</label><input data-ref="maxGroupRatio" type="number" min="0" step="0.01"></div>
-              <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
-              <div class="field"><label title="保持期间继续检测；当前渠道不可用时立即切换，到期后恢复策略择优">切换后保持（分钟）</label><input data-ref="switchHoldMinutes" type="number" min="0"></div>
-              <div class="field"><label>回滚观察次数（0 关闭）</label><input data-ref="rollbackChecks" type="number" min="0" max="10"></div>
-              <div class="field"><label>故障隔离时长（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
-            </div>
-          </details>
-          <details class="settings-disclosure isolation-disclosure">
-            <summary>故障隔离</summary>
+          <details class="settings-disclosure isolation-disclosure" data-ref="isolationRecords">
+            <summary>故障隔离 <span class="settings-count" data-ref="isolationSummaryCount">0条</span></summary>
           <section class="section isolation-section" aria-labelledby="kf-isolation-title">
             <div class="section-head isolation-heading">
               <div class="isolation-heading-copy">
@@ -1384,6 +1365,86 @@
         </section>
           </details>
         </section>
+          </div>
+          <div class="settings-page" id="kf-settings-page-quality" data-settings-page="quality" role="tabpanel" aria-labelledby="kf-settings-quality" tabindex="0" hidden>
+        <section class="section settings-group image-quality-settings" aria-labelledby="kf-image-quality-title" ${IS_AIHUB ? "" : "hidden"}>
+          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">自动切换准入</span></div>
+          <div class="settings-fields">
+            <div class="field">
+              <label for="kf-image-quality-key">评分密钥</label>
+              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">未配置评分密钥</option></select>
+            </div>
+            <div class="field">
+              <div class="settings-label-row"><label for="kf-image-quality-model">评价模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
+              <input id="kf-image-quality-model" data-ref="imageQualityModel" type="text" maxlength="120" list="kf-image-quality-models" placeholder="选择或输入支持图片的模型" autocomplete="off" aria-describedby="kf-image-quality-models-status">
+              <datalist id="kf-image-quality-models" data-ref="imageQualityModels"></datalist>
+            </div>
+          </div>
+          <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
+          <div class="field">
+            <label for="kf-image-quality-min-score">自动切换图片门槛（必须大于）</label>
+            <input id="kf-image-quality-min-score" data-ref="imageQualityMinScore" type="number" min="0" max="100" step="1" aria-describedby="kf-image-admission-help" required>
+          </div>
+          <p id="kf-image-admission-help" class="settings-billing-note">正常择优：后台评价通过后，结合最新健康状态切换。当前分组故障时优先恢复服务，跳过图片检查。自动评价会计费。</p>
+          <div class="image-quality-toolbar">
+            <button class="button" type="button" data-ref="imageQualityTest">测试当前分组1张（计费）</button>
+            <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止评价</button>
+          </div>
+          <p data-ref="imageQualityTestStatus" role="status"></p>
+          <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
+          <details class="settings-disclosure">
+            <summary>备用评分线路与图片任务</summary>
+            <div class="settings-detail-content">
+          <div class="settings-fields">
+            <div class="field"><label for="kf-image-quality-fallback-1">备用评分分组 1（可选）</label><select id="kf-image-quality-fallback-1" data-ref="imageQualityFallback1" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
+            <div class="field"><label for="kf-image-quality-fallback-2">备用评分分组 2（可选）</label><select id="kf-image-quality-fallback-2" data-ref="imageQualityFallback2" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
+          </div>
+          <p id="kf-image-quality-fallback-help">评分线路不可用时依次尝试备用分组，模型不变；结束后恢复评分密钥原组。</p>
+              <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
+            </div>
+          </details>
+          <details class="settings-disclosure">
+            <summary>评分规则与计算时机</summary>
+            <div class="settings-detail-content">
+
+              <p>图片分不参与策略排序。接近择优确认及保持期结束时，后台评价候选图片；通过后须新的健康检查确认。故障检测不启动新的评价，候选或图片变化会取消过期评价。</p>
+              <p>图片分必须严格高于门槛；无图、读取失败、无法识别、证据不足或低分进入故障隔离。评分服务异常只暂停本次择优，不隔离业务组；调整设置或重新启用自动切换后重试。故障恢复忽略图片隔离，仍遵守健康隔离。</p>
+              <p>同一次待切换决策共用最多10次模型请求，检测周期不重置；不保存评分缓存。测试仅当前评分分组1次；手动指定分组不检查图片。</p>
+              <p>评分规则：任务20 + 结构40 + 协调25 + 完成15。14项按六档评分，严重缺陷封顶；座位、脚踏和车把需要可见连接依据。</p>
+              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearPage">清除本页评价</button></div>
+            </div>
+          </details>
+          <details class="settings-disclosure image-quality-records" data-ref="qualityRecords">
+            <summary>本页图片评价 <span class="settings-count" data-ref="qualityRecordCount">0条</span></summary>
+            <p data-ref="imageQualityListSummary" role="status"></p>
+            <div class="image-quality-record-list" data-ref="imageQualityList"></div>
+          </details>
+        </section>
+          </div>
+          <div class="settings-page" id="kf-settings-page-spending" data-settings-page="spending" role="tabpanel" aria-labelledby="kf-settings-spending" tabindex="0" hidden>
+        <section class="section settings-group settings-protection">
+          <div class="section-head"><h2 class="section-title">每日消费提醒</h2></div>
+          <p class="settings-hint">达到提醒额度时通知，不停止请求或自动切换。</p>
+          <div class="protection-bar">
+            <span class="protection-copy">
+              <strong>消费提醒</strong>
+              <small data-ref="spendProtectionStatus" data-tone="none">未启用</small>
+            </span>
+            <label class="toggle" for="kf-spend-protection" title="消费提醒仅提醒，不影响任务">
+              <input id="kf-spend-protection" data-ref="spendProtectionEnabled" type="checkbox" aria-label="启用消费提醒">
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </label>
+            <label class="spend-limit-field">
+              <span>提醒额度</span>
+              <input data-ref="dailySpendLimit" type="number" max="1000000000" min="0" step="0.01" aria-label="每日消费上限" required>
+            </label>
+            <button class="icon-button" data-ref="resetSpendProtection" type="button" title="从当前消费重新计数" aria-label="重新计数">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 3v6h6"></path></svg>
+            </button>
+          </div>
+        </section>
+          </div>
+          <div class="settings-page" id="kf-settings-page-appearance" data-settings-page="appearance" role="tabpanel" aria-labelledby="kf-settings-appearance" tabindex="0" hidden>
         <section class="section settings-secondary settings-group" aria-labelledby="kf-appearance-title">
           <div class="section-head"><h2 class="section-title" id="kf-appearance-title">界面与更新</h2></div>
           <div class="settings-appearance">
@@ -1409,6 +1470,7 @@
             </button>
           </div>
         </section>
+          </div>
         </section>
         <section class="work-view" id="kf-view-diagnostics" data-view="diagnostics" role="tabpanel" aria-labelledby="kf-tab-diagnostics" tabindex="0" hidden>
           <div class="view-intro">
@@ -1471,12 +1533,12 @@
       "imageQualityKey", "imageQualityModel", "imageQualityFallback1", "imageQualityFallback2", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
-      "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
+      "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "settingsSave", "strategyMinutes", "lastHealthCheck", "lastStrategyCheck", "confirmationHint", "qualityRecords", "qualityRecordCount", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
       "statisticsMetric", "statisticsDays", "statisticsRefresh", "statisticsSource", "statisticsUpdated", "statisticsSummary", "statisticsLoading", "statisticsTotal", "statisticsAssigned", "statisticsCoverage", "statisticsTrendSummary", "statisticsTrend", "statisticsKeyRows",
       "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "modelSelect", "modelSelectToggle", "modelSelectLabel", "modelCount", "modelMenu", "modelList", "selectAllModels", "clearModels", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
       "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
       "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
-      "confirmPolls", "switchHoldMinutes", "rollbackChecks", "blacklistMinutes",
+      "confirmPolls", "switchHoldMinutes", "rollbackChecks", "blacklistMinutes", "isolationRecords", "isolationSummaryCount",
       "check", "switchNow", "checkUpdate", "updateLabel", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel", "isolationCount", "isolationRows", "clearAllIsolations", "isolationToast", "isolationToastMessage", "isolationToastUndo",
       "tokenResultRows", "candidateRows", "logs",
     ];

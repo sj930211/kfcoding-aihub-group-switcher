@@ -410,6 +410,25 @@
     if (refs.status) refs.status.textContent = state.status;
     if (refs.status) refs.status.dataset.tone = state.tone;
     if (refs.statusDot) refs.statusDot.dataset.tone = state.tone;
+    if (refs.settingsSave) {
+      refs.settingsSave.textContent = state.settingsError || "已保存";
+      refs.settingsSave.dataset.invalid = String(Boolean(state.settingsError));
+    }
+    if (refs.lastHealthCheck) refs.lastHealthCheck.textContent = state.lastHealthCheck;
+    if (refs.lastStrategyCheck) refs.lastStrategyCheck.textContent = state.lastStrategyCheck;
+    if (refs.confirmationHint) {
+      const minutes = config.strategySeconds / 60;
+      refs.confirmationHint.textContent = `连续确认按每 ${minutes} 分钟一次择优计算${config.confirmPolls > 1 ? `，首次命中后至少再等 ${(config.confirmPolls - 1) * minutes} 分钟` : ""}；回滚观察按故障检测轮次计算。`;
+    }
+    if (refs.qualityRecordCount) refs.qualityRecordCount.textContent = `${imageQuality.records.size}条${automaticImageAdmission.active ? " · 评价中" : ""}`;
+    root.querySelectorAll("[data-settings-target]").forEach((button) => {
+      const active = button.dataset.settingsTarget === state.settingsPage;
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+    });
+    root.querySelectorAll("[data-settings-page]").forEach((page) => {
+      page.hidden = page.dataset.settingsPage !== state.settingsPage;
+    });
     if (refs.version) {
       refs.version.title = state.update.availableVersion
         ? `当前版本 v${SCRIPT_VERSION}，可更新至 v${state.update.availableVersion}`
@@ -488,14 +507,14 @@
       );
     }
     if (refs.todaySpend && state.spendProtection.active) {
-      refs.todaySpend.title = `消费保护计数 ${formatSpendValue(state.spendProtection.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(state.spendProtection.limit, state.todayUsage.symbol)}`;
+      refs.todaySpend.title = `消费提醒计数 ${formatSpendValue(state.spendProtection.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(state.spendProtection.limit, state.todayUsage.symbol)}`;
     }
     if (refs.spendProtectionStatus) {
       refs.spendProtectionStatus.dataset.tone = state.spendProtection.tone;
       refs.spendProtectionStatus.textContent = !config.spendProtectionEnabled
         ? "未启用"
         : config.dailySpendLimit <= 0
-          ? "请设置每日上限"
+          ? "请设置提醒额度"
           : !state.todayUsage.available
             ? "等待消费数据"
             : `${formatSpendValue(state.spendProtection.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(state.spendProtection.limit, state.todayUsage.symbol)} · ${Math.round(state.spendProtection.ratio * 100)}%`;
@@ -545,8 +564,12 @@
     }
     if (refs.manualSwitch) refs.manualSwitch.disabled = running;
     if (!state.collapsed && state.activeView === "settings") {
-      renderIsolations();
-      renderImageQualityList();
+      if (state.settingsPage === "protection") {
+        const entries = listActiveIsolations(getSwitchGuardState(), Date.now());
+        refs.isolationSummaryCount.textContent = `${entries.length}条`;
+        if (refs.isolationRecords.open) renderIsolations();
+      }
+      if (state.settingsPage === "quality" && refs.qualityRecords.open) renderImageQualityList();
     }
     if (refs.isolationToast) {
       const undoAvailable = state.isolationUndo.entries.length > 0 && state.isolationUndo.expiresAt > Date.now();
@@ -604,6 +627,7 @@
       spendProtectionEnabled: refs.spendProtectionEnabled.checked,
       dailySpendLimit: refs.dailySpendLimit.value,
       pollSeconds: refs.pollSeconds.value,
+      strategySeconds: Number(refs.strategyMinutes.value) * 60,
       metricHours: refs.metricHours.value,
       minSuccessRate: refs.minSuccessRate.value,
       minLatestSuccessRate: refs.minLatestSuccessRate.value,
@@ -633,6 +657,7 @@
     refs.dailySpendLimit.value = String(config.dailySpendLimit);
     renderGroupFilterOptions();
     refs.pollSeconds.value = String(config.pollSeconds);
+    refs.strategyMinutes.value = String(config.strategySeconds / 60);
     refs.metricHours.value = String(config.metricHours);
     refs.minSuccessRate.value = String(config.minSuccessRate);
     refs.minLatestSuccessRate.value = String(config.minLatestSuccessRate);
@@ -647,13 +672,37 @@
   }
 
   function persistFormConfig() {
+    const wasEnabled = config.enabled;
+    // Pausing must work even when an unrelated field contains an invalid, unsaved draft.
+    if (wasEnabled && !refs.enabled.checked) {
+      config = { ...config, enabled: false };
+      pendingCandidates.clear();
+      invalidateAutomaticImageAdmission();
+      GM_setValue(STORAGE_CONFIG, config);
+      scheduleNext();
+      setStatus("自动切换已暂停", "warning");
+    }
+    const invalid = [...refs.settingsSection.querySelectorAll("input,select")].filter((input) => {
+      const valid = input.checkValidity();
+      input.setAttribute("aria-invalid", String(!valid));
+      return !valid;
+    })[0];
+    if (invalid) {
+      const label = invalid.closest(".field")?.querySelector("label")?.textContent || invalid.getAttribute("aria-label") || "设置值";
+      state.settingsError = `${label}：${invalid.validationMessage}`;
+      render();
+      return;
+    }
+    state.settingsError = "";
     const previousConfigKey = JSON.stringify(config);
     const previousIdentity = `${config.tokenIds.join(",")}:${targetModelIdentity(config)}`;
     const previousQualityKey = config.imageQualityKeyId;
     const previousQuality = imageQualitySettingsKey(config);
-    const wasEnabled = config.enabled;
     config = readFormConfig();
-    if (previousConfigKey !== JSON.stringify(config)) invalidateAutomaticImageAdmission();
+    if (previousConfigKey !== JSON.stringify(config)) {
+      invalidateAutomaticImageAdmission();
+      pendingCandidates.clear();
+    }
     if (previousQuality !== imageQualitySettingsKey(config)) {
       cancelImageQuality();
       imageQuality.status = "";
@@ -681,7 +730,7 @@
       scheduleNext(config.enabled ? 250 : undefined);
       setStatus(config.enabled ? "自动切换已启用" : "自动切换已暂停", config.enabled ? "success" : "warning");
     } else {
-      scheduleNext(config.enabled ? 250 : undefined);
+      scheduleNext(config.enabled ? 250 : undefined, { immediateStrategy: false });
       setStatus("设置已自动保存", "success");
     }
     render();
@@ -706,14 +755,15 @@
   }
 
   function setActiveView(view, options) {
+    if (state.activeView === "settings" && refs.workspace) state.settingsScroll[state.settingsPage] = refs.workspace.scrollTop;
     state.activeView = normalizeActiveView(view);
     scheduleStatisticsRefresh();
     persistUiState();
     setTokenMenuOpen(false);
     setModelMenuOpen(false);
     setGroupFilterMenuOpen(false);
-    if (refs.workspace) refs.workspace.scrollTop = 0;
     render();
+    if (refs.workspace) refs.workspace.scrollTop = state.activeView === "settings" ? state.settingsScroll[state.settingsPage] || 0 : 0;
     if (state.activeView === "statistics" && IS_AIHUB && !state.statistics.loaded && !state.statistics.loading) {
       void refreshStatistics({ silent: true });
     }
@@ -726,6 +776,7 @@
   function persistUiState() {
     GM_setValue(STORAGE_UI, {
       activeView: state.activeView,
+      settingsPage: state.settingsPage,
       statisticsMetric: state.statistics.metric,
       statisticsRange: state.statistics.range,
       statisticsDays: state.statistics.range === "today" ? 1 : state.statistics.range,
@@ -764,6 +815,36 @@
     bindImageQualityTooltip();
     bindDrag(refs.launcher, refs.launcher, "launcher");
     bindDrag(refs.header, refs.panel, "panel");
+    root.querySelectorAll("[data-settings-target]").forEach((button) => {
+      const activate = (target, focus) => {
+        state.settingsScroll[state.settingsPage] = refs.workspace.scrollTop;
+        state.settingsPage = target.dataset.settingsTarget;
+        setTokenMenuOpen(false);
+        setModelMenuOpen(false);
+        setGroupFilterMenuOpen(false);
+        persistUiState();
+        render();
+        refs.workspace.scrollTop = state.settingsScroll[state.settingsPage] || 0;
+        target.scrollIntoView({ block: "nearest", inline: "nearest" });
+        if (focus) target.focus({ preventScroll: true });
+      };
+      button.addEventListener("click", () => activate(button));
+      button.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        const tabs = [...root.querySelectorAll("[data-settings-target]")].filter((tab) => !tab.hidden);
+        const index = tabs.indexOf(button);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+          : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault();
+        activate(tabs[next], true);
+      });
+    });
+    refs.qualityRecords.addEventListener("toggle", () => {
+      if (refs.qualityRecords.open) renderImageQualityList();
+    });
+    refs.isolationRecords.addEventListener("toggle", () => {
+      if (refs.isolationRecords.open) renderIsolations();
+    });
     refs.collapse.addEventListener("click", () => {
       state.collapsed = true;
       render();
@@ -954,7 +1035,7 @@
       pendingCandidates.clear();
       GM_setValue(STORAGE_CONFIG, config);
       renderGroupFilterOptions();
-      scheduleNext(config.enabled ? 250 : undefined);
+      scheduleNext(config.enabled ? 250 : undefined, { immediateStrategy: false });
       setStatus("分组名单模式已切换", "success");
     });
     refs.groupFilterList.addEventListener("change", () => {
@@ -965,7 +1046,7 @@
       pendingCandidates.clear();
       GM_setValue(STORAGE_CONFIG, config);
       updateGroupFilterSummary();
-      scheduleNext(config.enabled ? 250 : undefined);
+      scheduleNext(config.enabled ? 250 : undefined, { immediateStrategy: false });
       setStatus(`${config.groupFilterMode === "blacklist" ? "黑名单" : "白名单"}已自动保存`, "success");
     });
     refs.clearGroupFilter.addEventListener("click", () => {

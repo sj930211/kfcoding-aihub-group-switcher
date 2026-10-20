@@ -373,6 +373,7 @@
       spendProtectionEnabled: Boolean(source.spendProtectionEnabled),
       dailySpendLimit: clampNumber(source.dailySpendLimit, DEFAULT_CONFIG.dailySpendLimit, 0, 1000000000),
       pollSeconds: clampNumber(source.pollSeconds, DEFAULT_CONFIG.pollSeconds, 15, 3600),
+      strategySeconds: clampNumber(source.strategySeconds, DEFAULT_CONFIG.strategySeconds, 15, 3600),
       metricHours: clampNumber(source.metricHours, DEFAULT_CONFIG.metricHours, 1, 168),
       minSuccessRate: clampNumber(source.minSuccessRate, DEFAULT_CONFIG.minSuccessRate, 0, 100),
       minLatestSuccessRate: clampNumber(

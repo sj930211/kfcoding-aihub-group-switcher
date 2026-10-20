@@ -48,7 +48,7 @@ function runtime(overrides = {}) {
     scores:{},runImageQuality:async({candidate,budget})=>{checked.push(candidate.group);if(budget.remaining<=0)throw Object.assign(Error('cap'),{code:'IMAGE_ADMISSION_BUDGET'});budget.remaining--;return ctx.scores[candidate.group]||entry();},
   };
   vm.createContext(ctx);vm.runInContext(read('src/runtime/operations.js'),ctx);
-  vm.runInContext(`scheduleNext=()=>{};globalThis.process=processToken;globalThis.stop=stopAutomaticImageAdmission;
+  vm.runInContext(`scheduleNext=()=>{};requestHealthCheck=()=>{};globalThis.process=processToken;globalThis.stop=stopAutomaticImageAdmission;
     switchTokenGroup=async(token,candidate,options)=>{options?.beforeSwitch?.();if(imageQuality.recoveryError)throw Error(imageQuality.recoveryError);if(globalThis.actualGroup!==token.group)throw Error('外部分组改变，取消切换');globalThis.onSwitch(token,candidate);pendingCandidates.delete(Number(token.id));};
     getTokenDetail=async id=>({id,group:globalThis.actualGroup,status:'active'});
     const originalIsolation=isolateImageCandidate;isolateImageCandidate=(row,reason)=>{globalThis.onIsolate(row,reason);originalIsolation(row,reason);};`,ctx);
@@ -161,3 +161,36 @@ for(const invalidate of [r=>{r.ctx.config={...r.ctx.config,imageQualityMinScore:
   assert.equal(r.ctx.automaticImageAdmission.bindings.size,0);
 }
 console.log('PASS background polling, confirmation/hold pre-evaluation, fresh decision scores, fault isolation, emergency/rollback/manual bypass, stale cancellation, service pause, shared ten-request budget and owned cancellation');
+
+// Independent health ticks never advance normal confirmation or start paid work.
+{
+  const r=runtime({confirmPolls:2});
+  for(let i=0;i<4;i++) assert.equal((await r.poll(r.ctx.token,rows,{mode:'health'})).outcome,'healthy');
+  assert.equal(r.checked.length,0);assert.equal(r.ctx.pendingCandidates.size,0);
+  assert.equal((await r.poll()).outcome,'pending');await r.settle();
+  assert.equal(r.checked.length,1);assert.equal(r.ctx.pendingCandidates.get(1).hits,1);
+  for(let i=0;i<4;i++) await r.poll(r.ctx.token,rows,{mode:'health'});
+  assert.equal(r.ctx.pendingCandidates.get(1).hits,1);assert.equal(r.switched.length,0);
+  assert.equal((await r.poll()).outcome,'switched');
+}
+{
+  const r=runtime();await r.poll();await r.settle();
+  assert.equal((await r.poll(r.ctx.token,rows,{mode:'health'})).outcome,'switched','fresh health tick may finish already confirmed scored decision');
+}
+{
+  const r=runtime({confirmPolls:3});
+  const broken=rows.map(row=>row.group==='C'?{...row,available:false,reasons:['latest-success-low']}:row);
+  assert.equal((await r.poll(r.ctx.token,broken,{mode:'health'})).outcome,'switched');
+  assert.equal(r.checked.length,0,'emergency recovery skips inference');
+}
+{
+  const r=runtime({rollbackChecks:2});r.storage.guard={byToken:{1:{model:'fixture',fromGroup:'B',toGroup:'C',remaining:2}},blacklist:[]};
+  assert.equal((await r.poll(r.ctx.token,rows,{observeHealth:false})).outcome,'observing');
+  assert.equal(r.storage.guard.byToken[1].remaining,2,'strategy-only ticks cannot consume rollback observations');
+  await r.poll(r.ctx.token,rows,{mode:'health'});assert.equal(r.storage.guard.byToken[1].remaining,1);
+}
+{
+  const r=runtime({switchHoldMinutes:10,strategySeconds:300,pollSeconds:30});
+  r.storage.history={byToken:{1:{model:'fixture',group:'C',at:Date.now()-6*60000}}};
+  assert.equal((await r.poll()).outcome,'holding');await r.settle();assert.equal(r.checked.length,1,'pre-evaluation window follows strategy interval');
+}

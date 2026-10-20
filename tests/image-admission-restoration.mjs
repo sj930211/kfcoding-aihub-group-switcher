@@ -16,7 +16,7 @@ function setup(){
     ...Object.fromEntries(['targetModelIdentity','targetModels','normalizeSwitchHistory','normalizeSwitchGuardState','pruneSwitchGuardState','applyTemporaryBlacklist','selectRollbackCandidate','selectSwitchCandidate','selectBestCandidate','selectImageQualifiedCandidate','imageQualityAdmissionVerdict','shouldSwitchCandidate','candidateHasHealthFailure','candidateRecommendationLabel','tokenSupportsModel'].map(name=>[name,api[name]])),
     fetchJson:async(path,options={})=>ctx.unwrapSiteResponse(await(await ctx.fetch(path,{...options,body:options.body?JSON.stringify(options.body):undefined})).json()),
   });
-  vm.runInContext(read('src/runtime/operations.js'),ctx);vm.runInContext('scheduleNext=()=>{};',ctx);
+  vm.runInContext(read('src/runtime/operations.js'),ctx);vm.runInContext('scheduleNext=()=>{};requestHealthCheck=()=>{};',ctx);
   ctx.fetchJson=async(path,options={})=>ctx.unwrapSiteResponse(await(await ctx.fetch(path,{...options,body:options.body?JSON.stringify(options.body):undefined})).json());
   const token={id:1,name:'fixture',status:'active',group:'Route-1',groupId:1};
   const poll=async(candidates=rows,options={})=>{ctx.state.candidates=candidates;ctx.state.candidateRevision=++ctx.state.candidateRequestRevision;return ctx.processToken(token,candidates,options);};

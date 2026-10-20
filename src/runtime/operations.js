@@ -34,15 +34,15 @@
       guard.warnedReached = true;
       notification = {
         title: `${SITE_LABEL} 每日消费已达上限`,
-        text: `保护计数 ${formatSpendValue(result.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(result.limit, state.todayUsage.symbol)}，仅提醒，不影响任务`,
-        log: `消费保护：已达到每日上限 ${formatSpendValue(result.limit, state.todayUsage.symbol)}`,
+        text: `提醒计数 ${formatSpendValue(result.trackedSpend, state.todayUsage.symbol)} / ${formatSpendValue(result.limit, state.todayUsage.symbol)}，仅提醒，不影响任务`,
+        log: `消费提醒：已达到每日上限 ${formatSpendValue(result.limit, state.todayUsage.symbol)}`,
       };
     } else if (request.notify && result.tone === "approaching" && !guard.warnedApproaching) {
       guard.warnedApproaching = true;
       notification = {
         title: `${SITE_LABEL} 每日消费接近上限`,
-        text: `保护计数已使用 ${Math.round(result.ratio * 100)}%，剩余 ${formatSpendValue(result.remaining, state.todayUsage.symbol)}`,
-        log: `消费保护：已使用每日上限的 ${Math.round(result.ratio * 100)}%`,
+        text: `提醒计数已使用 ${Math.round(result.ratio * 100)}%，剩余 ${formatSpendValue(result.remaining, state.todayUsage.symbol)}`,
+        log: `消费提醒：已使用每日上限的 ${Math.round(result.ratio * 100)}%`,
       };
     }
     saveSpendGuardState(guard);
@@ -63,8 +63,8 @@
       warnedReached: false,
     });
     syncSpendProtection({ notify: false });
-    addLog(`消费保护计数已重置，当前基线 ${formatSpendValue(actualSpend, state.todayUsage.symbol)}`, "success");
-    setStatus("消费保护计数已从当前消费重新开始", "success");
+    addLog(`消费提醒计数已重置，当前基线 ${formatSpendValue(actualSpend, state.todayUsage.symbol)}`, "success");
+    setStatus("消费提醒计数已从当前消费重新开始", "success");
   }
 
   function setStatus(message, tone) {
@@ -576,15 +576,17 @@
     GM_setValue(STORAGE_SWITCH_GUARD, normalizeSwitchGuardState(value));
   }
 
-  function refreshCandidateIsolationState() {
+  function refreshCandidateIsolationState(updateRecommendation = true) {
     const now = Date.now();
     const candidates = state.candidates.map((candidate) => {
       const reasons = candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted");
       return { ...candidate, reasons, available: reasons.length === 0 };
     });
     state.candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(now), targetModelIdentity(config), now);
-    const recommended = selectBestCandidate(state.candidates, "", config.selectionMode);
-    state.bestGroup = candidateRecommendationLabel(recommended);
+    if (updateRecommendation) {
+      const recommended = selectBestCandidate(state.candidates, "", config.selectionMode);
+      state.bestGroup = candidateRecommendationLabel(recommended);
+    }
   }
 
   function setIsolationUndo(entries) {
@@ -819,7 +821,7 @@
     automaticImageAdmission.draining = drain().finally(() => {
       automaticImageAdmission.draining = null;
       if ([...automaticImageAdmission.jobs.values()].some((job) => !job.invalid && !job.started)) startAutomaticImageAdmissionQueue();
-      if (config.enabled) scheduleNext(250);
+      if (config.enabled) requestHealthCheck(250);
     });
   }
 
@@ -940,7 +942,7 @@
       message: "没有需要切换且通过图片准入的分组，保持当前分组" };
   }
 
-  async function handleRollbackGuard(token, candidates, admission) {
+  async function handleRollbackGuard(token, candidates, admission, observeHealth = true) {
     const tokenId = Number(token.id);
     const now = Date.now();
     const guardState = getSwitchGuardState(now);
@@ -958,7 +960,7 @@
 
     const current = candidates.find((candidate) => candidate.group === guard.toGroup);
     if (current && current.available) {
-      guard.remaining -= 1;
+      if (observeHealth) guard.remaining -= 1;
       if (guard.remaining <= 0) {
         delete guardState.byToken[tokenId];
         addLog(`${tokenLabel(token)} 的 ${guard.toGroup} 已通过切换观察`, "success");
@@ -1019,6 +1021,7 @@
 
   async function processToken(token, candidates, options) {
     const forceSwitch = Boolean(options && options.forceSwitch);
+    const healthOnly = options?.mode === "health";
     const targetGroup = String((options && options.targetGroup) || "").trim();
     const tokenId = Number(token.id);
     const admission = options?.admission || createImageAdmissionContext();
@@ -1031,7 +1034,7 @@
     }
     const recoveryCandidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now(), { ignoreImage: true });
     if (config.enabled && !forceSwitch) {
-      const rollback = await handleRollbackGuard(token, recoveryCandidates, admission);
+      const rollback = await handleRollbackGuard(token, recoveryCandidates, admission, options?.observeHealth !== false);
       if (rollback) return rollback;
     }
     const healthyCurrent = recoveryCandidates.find((candidate) => candidate.group === token.group);
@@ -1044,6 +1047,15 @@
         tone: "warning", message: "当前分组不可用，没有可恢复的健康分组" };
       await switchTokenGroup(token, recovery, { beforeSwitch: () => assertImageAdmissionCurrent(admission) });
       return { outcome: "switched", group: recovery.group, tone: "success", message: "故障恢复，已跳过图片检查" };
+    }
+    // Health ticks may finish an already confirmed decision, but never create one or add confirmations.
+    if (healthOnly && !forceSwitch) {
+      const pending = pendingCandidates.get(tokenId);
+      const bound = automaticImageAdmission.bindings.get(tokenId)?.job;
+      if (!IS_AIHUB || !bound?.verdict?.pass || bound.invalid || !pending || pending.hits < config.confirmPolls) {
+        return { outcome: "healthy", group: token.group || "未设置", tone: bound?.error ? "warning" : "success",
+          message: bound?.error || (bound && !bound.verdict ? "当前分组正常，图片后台评价中" : "当前分组正常，等待择优周期") };
+      }
     }
     // Previous tokens in this check may already have isolated an image candidate.
     candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
@@ -1070,7 +1082,7 @@
     if (!shouldSwitchCandidate(selected, token.group)) {
       pendingCandidates.delete(tokenId);
       detachAutomaticImageAdmission(tokenId);
-      if (config.enabled && !forceSwitch && !targetGroup && holdState.expired) {
+      if (config.enabled && !forceSwitch && !healthOnly && !targetGroup && holdState.expired) {
         recordSwitchHoldStart(tokenId, selected);
         return {
           outcome: "holding",
@@ -1098,6 +1110,14 @@
         message: targetGroup ? "已手动切换" : "已立即切换",
       };
     }
+    if (healthOnly) {
+      const binding = automaticImageAdmission.bindings.get(tokenId);
+      if (!binding || binding.job.candidate.group !== selected.group || binding.job.source !== imageQualityIdentity(selected)) {
+        detachAutomaticImageAdmission(tokenId);
+        pendingCandidates.delete(tokenId);
+        return { outcome: "healthy", group: token.group || "未设置", tone: "success", message: "候选已变化，等待下次择优" };
+      }
+    }
     if (!config.enabled) {
       pendingCandidates.delete(tokenId);
       detachAutomaticImageAdmission(tokenId);
@@ -1112,15 +1132,16 @@
     if (oldBinding && (oldBinding.job.candidate.group !== selected.group
       || oldBinding.job.source !== imageQualityIdentity(selected))) detachAutomaticImageAdmission(tokenId);
     const pending = pendingCandidates.get(tokenId);
-    const nextPending = pending && pending.group === selected.group
+    const nextPending = healthOnly ? pending : pending && pending.group === selected.group
       ? { group: selected.group, hits: pending.hits + 1 }
       : { group: selected.group, hits: 1 };
     pendingCandidates.set(tokenId, nextPending);
     // Start near the decision, never throughout a long hold or for a transient first hit.
     const nearHoldEnd = !shouldKeepCurrentDuringHold(current, holdState)
-      || holdState.remainingMs <= config.pollSeconds * 1000;
+      || holdState.remainingMs <= config.strategySeconds * 1000;
     const nearConfirmation = nextPending.hits >= Math.max(1, config.confirmPolls - 1);
-    const job = IS_AIHUB && nearHoldEnd && nearConfirmation ? prepareAutomaticImageAdmission(token, selected) : null;
+    const job = healthOnly ? automaticImageAdmission.bindings.get(tokenId)?.job
+      : IS_AIHUB && nearHoldEnd && nearConfirmation ? prepareAutomaticImageAdmission(token, selected) : null;
     if (!nearHoldEnd) detachAutomaticImageAdmission(tokenId);
     if (nextPending.hits < config.confirmPolls) {
       return { outcome: "pending", group: token.group || "未设置", tone: "warning",
@@ -1150,8 +1171,85 @@
     return { outcome: "switched", group: selected.group, tone: "success", message: "已自动切换" };
   }
 
+  async function loadCheckCandidates(models, healthOnly = false) {
+    let monitorFallback = false;
+    let candidates;
+    if (IS_AIHUB) {
+      const range = aihubMonitorRange(config.metricHours);
+      const { summary, series, seriesError, groups, rates } = healthOnly && aihubGroupsCache.length
+        ? { ...await loadAihubProviderData(fetchJson, range), groups: aihubGroupsCache, rates: aihubRatesCache }
+        : await loadAihubMonitorData(fetchJson, range);
+      monitorFallback = Boolean(seriesError);
+      if (seriesError && !state.aihubSeriesDegraded) {
+        const message = seriesError instanceof Error ? seriesError.message : String(seriesError);
+        addLog(`AIHub 近期柱状图暂不可用，已使用最新汇总状态：${message}`, "warning");
+      } else if (!seriesError && state.aihubSeriesDegraded) {
+        addLog("AIHub 近期柱状图接口已恢复", "success");
+      }
+      state.aihubSeriesDegraded = monitorFallback;
+      aihubGroupsCache = normalizeAihubGroups(groups);
+      aihubRatesCache = normalizeAihubRates(rates);
+      pricingCache = buildAihubModelCatalog(summary);
+      updateImageQualityCatalog(summary);
+      candidates = mergeTargetModelCandidates(models.map((model) => ({
+        model,
+        candidates: evaluateAihubCandidates(
+          summary,
+          series,
+          aihubGroupsCache,
+          aihubRatesCache,
+          { ...config, models: [model], model },
+          Date.now(),
+        ),
+      })));
+    } else if (IS_FLUXION) {
+      const [monitors, groups, rates] = await Promise.all([
+        fetchJson("/api/v1/channel-monitors"),
+        healthOnly && fluxionGroupsCache.length ? fluxionGroupsCache : fetchJson("/api/v1/groups/available"),
+        healthOnly && fluxionGroupsCache.length ? fluxionRatesCache : fetchJson("/api/v1/groups/rates"),
+      ]);
+      fluxionMonitorsCache = normalizeFluxionMonitors(monitors);
+      fluxionGroupsCache = normalizeFluxionGroups(groups);
+      fluxionRatesCache = normalizeAihubRates(rates);
+      pricingCache = buildFluxionModelCatalog(monitors, groups);
+      candidates = mergeTargetModelCandidates(models.map((model) => ({
+        model,
+        candidates: evaluateFluxionCandidates(
+          monitors,
+          groups,
+          rates,
+          { ...config, models: [model], model },
+          Date.now(),
+        ),
+      })));
+    } else {
+      const [pricing, userGroups, metricsByModel] = await Promise.all([
+        fetchJson("/api/pricing"),
+        fetchJson("/api/user/self/groups"),
+        Promise.all(models.map((model) => fetchJson(
+          `/api/perf-metrics?model=${encodeURIComponent(model)}&hours=${config.metricHours}`,
+        ))),
+      ]);
+      pricingCache = pricing;
+      userGroupsCache = unwrapUserGroups(userGroups);
+      candidates = mergeTargetModelCandidates(models.map((model, index) => ({
+        model,
+        candidates: evaluateCandidates(
+          pricing,
+          metricsByModel[index],
+          userGroups,
+          { ...config, models: [model], model },
+          Date.now() / 1000,
+        ),
+      })));
+    }
+    return { candidates, monitorFallback };
+  }
+
   async function runCheck(options) {
     const manual = Boolean(options && options.manual);
+    const healthOnly = options?.mode === "health" && !manual;
+    let updateRecommendation = !healthOnly;
     const forceSwitch = Boolean(options && options.forceSwitch);
     const targetGroup = String((options && options.targetGroup) || "").trim();
     // A manual check must refresh account-level usage even when group checks cannot start yet.
@@ -1174,7 +1272,7 @@
     const checkCancelRevision = imageQuality.cancelRevision || 0;
 
     running = true;
-    const usageRefresh = manualUsageRefresh || refreshTodayUsage();
+    const usageRefresh = manualUsageRefresh || (healthOnly ? Promise.resolve() : refreshTodayUsage());
     const tokenCatalogRefresh = manual
       ? refreshTokenCatalog()
         .then(() => true)
@@ -1189,81 +1287,15 @@
         ? `正在检查目标分组 ${targetGroup}...`
         : forceSwitch
           ? "正在检查并准备立即切换..."
-          : "正在检查分组状态...",
+          : healthOnly ? "正在检查当前分组故障..." : "正在检查分组状态...",
       "running",
     );
     let monitorFallback = false;
     try {
       if (forceSwitch) await stopAutomaticImageAdmission();
-      const candidateRequestRevision = ++state.candidateRequestRevision;
-      let candidates;
-      if (IS_AIHUB) {
-        const range = aihubMonitorRange(config.metricHours);
-        const { summary, series, seriesError, groups, rates } = await loadAihubMonitorData(fetchJson, range);
-        monitorFallback = Boolean(seriesError);
-        if (seriesError && !state.aihubSeriesDegraded) {
-          const message = seriesError instanceof Error ? seriesError.message : String(seriesError);
-          addLog(`AIHub 近期柱状图暂不可用，已使用最新汇总状态：${message}`, "warning");
-        } else if (!seriesError && state.aihubSeriesDegraded) {
-          addLog("AIHub 近期柱状图接口已恢复", "success");
-        }
-        state.aihubSeriesDegraded = monitorFallback;
-        aihubGroupsCache = normalizeAihubGroups(groups);
-        aihubRatesCache = normalizeAihubRates(rates);
-        pricingCache = buildAihubModelCatalog(summary);
-        updateImageQualityCatalog(summary);
-        candidates = mergeTargetModelCandidates(models.map((model) => ({
-          model,
-          candidates: evaluateAihubCandidates(
-            summary,
-            series,
-            aihubGroupsCache,
-            aihubRatesCache,
-            { ...config, models: [model], model },
-            Date.now(),
-          ),
-        })));
-      } else if (IS_FLUXION) {
-        const [monitors, groups, rates] = await Promise.all([
-          fetchJson("/api/v1/channel-monitors"),
-          fetchJson("/api/v1/groups/available"),
-          fetchJson("/api/v1/groups/rates"),
-        ]);
-        fluxionMonitorsCache = normalizeFluxionMonitors(monitors);
-        fluxionGroupsCache = normalizeFluxionGroups(groups);
-        fluxionRatesCache = normalizeAihubRates(rates);
-        pricingCache = buildFluxionModelCatalog(monitors, groups);
-        candidates = mergeTargetModelCandidates(models.map((model) => ({
-          model,
-          candidates: evaluateFluxionCandidates(
-            monitors,
-            groups,
-            rates,
-            { ...config, models: [model], model },
-            Date.now(),
-          ),
-        })));
-      } else {
-        const [pricing, userGroups, metricsByModel] = await Promise.all([
-          fetchJson("/api/pricing"),
-          fetchJson("/api/user/self/groups"),
-          Promise.all(models.map((model) => fetchJson(
-            `/api/perf-metrics?model=${encodeURIComponent(model)}&hours=${config.metricHours}`,
-          ))),
-        ]);
-        pricingCache = pricing;
-        userGroupsCache = unwrapUserGroups(userGroups);
-        candidates = mergeTargetModelCandidates(models.map((model, index) => ({
-          model,
-          candidates: evaluateCandidates(
-            pricing,
-            metricsByModel[index],
-            userGroups,
-            { ...config, models: [model], model },
-            Date.now() / 1000,
-          ),
-        })));
-      }
+      let candidateRequestRevision = ++state.candidateRequestRevision;
+      let { candidates, monitorFallback: degraded } = await loadCheckCandidates(models, healthOnly);
+      monitorFallback = degraded;
       const candidateTimestamp = Date.now();
       candidates = applyTemporaryBlacklist(
         candidates,
@@ -1273,10 +1305,15 @@
       );
       if (manual) renderOptions(true);
       const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
-      state.candidates = candidates;
+      const checkedAt = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      state.lastCheck = checkedAt;
+      state.lastHealthCheck = checkedAt;
       state.candidateRevision = candidateRequestRevision;
-      state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
-      state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      if (!healthOnly || !state.candidates.length) {
+        state.candidates = candidates;
+        state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
+        state.lastStrategyCheck = checkedAt;
+      }
       if (targetGroup) {
         selectSwitchCandidate(candidates, "", targetGroup, { allowUnavailable: true });
       }
@@ -1300,13 +1337,44 @@
 
       if (IS_AIHUB) await tokenCatalogRefresh;
       if (checkConfigKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
-      const admission = { ...createImageAdmissionContext(), cancelRevision: checkCancelRevision };
       const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => {
         // Do not mistake the scorer's temporary route for a business-key change.
         const scoringToken = imageQuality.scoringToken;
         return scoringToken && Number(scoringToken.id) === Number(tokenId)
           ? Promise.resolve({ ...scoringToken }) : getTokenDetail(tokenId);
       }));
+      if (healthOnly) {
+        const healthCandidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now(), { ignoreImage: true });
+        const needsRecovery = details.some((detail) => detail.status === "fulfilled"
+          && !healthCandidates.some((row) => row.group === detail.value.group && row.available));
+        const readyForAdmission = details.some((detail) => {
+          if (detail.status !== "fulfilled") return false;
+          const token = detail.value;
+          const job = automaticImageAdmission.bindings.get(Number(token.id))?.job;
+          const pending = pendingCandidates.get(Number(token.id));
+          const current = healthCandidates.find((row) => row.group === token.group);
+          const hold = switchHoldState(getSwitchHistory(), token.id, targetModelIdentity(config), token.group, config.switchHoldMinutes, Date.now());
+          return job?.verdict?.pass && !job.invalid && pending?.hits >= config.confirmPolls
+            && state.candidateRevision > job.completedRevision && !shouldKeepCurrentDuringHold(current, hold);
+        });
+        if (needsRecovery || readyForAdmission) {
+          updateRecommendation = true;
+          // Recovery never waits for the next strategy tick and never writes using an old account catalog.
+          candidateRequestRevision = ++state.candidateRequestRevision;
+          const refreshed = await loadCheckCandidates(models);
+          candidates = applyTemporaryBlacklist(refreshed.candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
+          monitorFallback = refreshed.monitorFallback;
+          state.candidates = candidates;
+          state.candidateRevision = candidateRequestRevision;
+          state.bestGroup = candidateRecommendationLabel(selectBestCandidate(candidates, "", config.selectionMode));
+        } else {
+          const currentGroups = new Set(details.filter((detail) => detail.status === "fulfilled").map((detail) => detail.value.group));
+          state.candidates = state.candidates.map((row) => currentGroups.has(row.group)
+            ? candidates.find((fresh) => fresh.group === row.group) || row : row);
+        }
+      }
+      if (checkConfigKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
+      const admission = { ...createImageAdmissionContext(), cancelRevision: checkCancelRevision };
       state.tokenResults = [];
       for (let index = 0; index < details.length; index += 1) {
         const tokenId = selectedTokenIds[index];
@@ -1324,7 +1392,7 @@
 
         const token = detail.value;
         try {
-          const result = await processToken(token, candidates, { forceSwitch, targetGroup, admission });
+          const result = await processToken(token, candidates, { forceSwitch, targetGroup, admission, mode: healthOnly ? "health" : "strategy", observeHealth: options?.observeHealth });
           state.tokenResults.push({ id: tokenId, name: tokenLabel(token), ...result });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1345,7 +1413,7 @@
       }
 
       if (!automaticImageAdmission.bindings.size && !automaticImageAdmission.active) automaticImageAdmission.context = null;
-      refreshCandidateIsolationState();
+      refreshCandidateIsolationState(updateRecommendation);
       state.currentGroup = summarizeTokenGroups(state.tokenResults);
       const failedCount = state.tokenResults.filter((result) => result.outcome === "error").length;
       const switchedCount = state.tokenResults.filter((result) => result.outcome === "switched").length;
@@ -1399,14 +1467,49 @@
       .join("，");
   }
 
-  function scheduleNext(delayMs) {
-    if (scheduler) window.clearTimeout(scheduler);
+  function armNextCheck() {
+    if (scheduler !== null) window.clearTimeout(scheduler);
     scheduler = null;
     if (!config.enabled) return;
+    const revision = checkSchedule.revision;
+    const dueAt = Math.min(checkSchedule.healthAt, checkSchedule.strategyAt);
     scheduler = window.setTimeout(async () => {
-      await runCheck({ manual: false });
-      scheduleNext(config.pollSeconds * 1000);
-    }, delayMs == null ? config.pollSeconds * 1000 : delayMs);
+      scheduler = null;
+      if (!config.enabled || revision !== checkSchedule.revision) return;
+      if (running) { armNextCheck(); return; }
+      const now = Date.now();
+      const healthDue = checkSchedule.healthAt <= now;
+      const strategyDue = checkSchedule.strategyAt <= now;
+      if (!healthDue && !strategyDue) { armNextCheck(); return; }
+      const healthDeadline = healthDue ? now + config.pollSeconds * 1000 : checkSchedule.healthAt;
+      const strategyDeadline = strategyDue ? now + config.strategySeconds * 1000 : checkSchedule.strategyAt;
+      checkSchedule.healthAt = healthDeadline;
+      checkSchedule.strategyAt = strategyDeadline;
+      try {
+        await runCheck({ manual: false, mode: strategyDue ? "strategy" : "health", observeHealth: healthDue });
+      } finally {
+        if (revision === checkSchedule.revision) {
+          if (healthDue && checkSchedule.healthAt === healthDeadline) checkSchedule.healthAt = Date.now() + config.pollSeconds * 1000;
+          if (strategyDue && checkSchedule.strategyAt === strategyDeadline) checkSchedule.strategyAt = Date.now() + config.strategySeconds * 1000;
+          armNextCheck();
+        }
+      }
+    }, Math.max(running ? 250 : 0, dueAt - Date.now()));
+  }
+
+  function scheduleNext(delayMs, { immediateStrategy = true } = {}) {
+    checkSchedule.revision += 1;
+    const at = Date.now() + (delayMs == null ? config.pollSeconds * 1000 : delayMs);
+    checkSchedule.healthAt = at;
+    checkSchedule.strategyAt = immediateStrategy ? at : Date.now() + config.strategySeconds * 1000;
+    armNextCheck();
+  }
+
+  function requestHealthCheck(delayMs = 250) {
+    if (!config.enabled) return;
+    const at = Date.now() + delayMs;
+    checkSchedule.healthAt = Math.min(checkSchedule.healthAt || at, at);
+    armNextCheck();
   }
 
   function scheduleUpdateCheck(delayMs) {

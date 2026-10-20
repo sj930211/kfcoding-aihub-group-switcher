@@ -15,6 +15,7 @@
   }
   const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let scheduler = null;
+  const checkSchedule = { healthAt: 0, strategyAt: 0, revision: 0 };
   let updateScheduler = null;
   let statisticsScheduler = null;
   let isolationUndoScheduler = null;
@@ -57,6 +58,8 @@
     currentGroup: "-",
     bestGroup: "-",
     lastCheck: "-",
+    lastHealthCheck: "-",
+    lastStrategyCheck: "-",
     candidates: [],
     candidateRevision: 0, candidateRequestRevision: 0,
     tokenResults: [],
@@ -102,6 +105,9 @@
     logs: normalizeLogs(GM_getValue(STORAGE_LOGS, [])),
     positions: normalizeUiPositions(GM_getValue(STORAGE_POSITIONS, {})),
     activeView: normalizeActiveView(storedUi.activeView),
+    settingsPage: ["routing", "protection", "quality", "spending", "appearance"].includes(storedUi.settingsPage)
+      && (IS_AIHUB || storedUi.settingsPage !== "quality") ? storedUi.settingsPage : "routing",
+    settingsScroll: {},
     collapsed: false,
     update: {
       checking: false,

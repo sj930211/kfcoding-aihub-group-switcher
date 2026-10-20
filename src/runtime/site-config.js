@@ -93,6 +93,7 @@
     spendProtectionEnabled: false,
     dailySpendLimit: 0,
     pollSeconds: 30,
+    strategySeconds: 300,
     metricHours: 24,
     minSuccessRate: 95,
     minLatestSuccessRate: 95,

@@ -17,7 +17,7 @@
   document.addEventListener("visibilitychange", () => {
     scheduleStatisticsRefresh(document.visibilityState === "visible" ? 250 : undefined);
     if (config.enabled && document.visibilityState === "visible") {
-      scheduleNext(250);
+      requestHealthCheck(250);
     }
   });
 
