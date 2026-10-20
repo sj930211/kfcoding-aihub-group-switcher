@@ -3130,8 +3130,11 @@ const unexpectedDetail = api.parseImageQualityResponse(qualityPayload({ ...quali
   criteria: { ...strictCriteria, subject: { ...strictCriteria.subject, unexpected: "discard this response field" } } }));
 assert.equal(unexpectedDetail.criteria.subject.unexpected, undefined, "only scores and evidence may enter stored criteria");
 assert.equal(api.parseImageQualityResponse(qualityPayload({ ...qualityResult, criteria: Object.fromEntries(Object.keys(strictCriteria).map(key=>[key,{...strictCriteria[key],...(["support","pedal","control"].includes(key)?{connection:"broken"}:{}),score:0,evidence:"不满足该项"}])), task: 0, structure: 0, harmony: 0, finish: 0 })).score, 0);
-for (const changed of [{ task: 41 }, { structure: -1 }, { finish: "18" }, { task: 1.5 },
-  { confidence: "certain" }, { unable_to_assess: true }, { reasons: null }, { reasons: [] }, { reasons: ["  "] }, { reasons: ["x".repeat(181)] }]) {
+for (const changed of [{ task: 41 }, { structure: -1 }, { finish: "18" }, { task: 1.5 }]) {
+  assert.equal(api.parseImageQualityResponse(qualityPayload({ ...qualityResult, ...changed })).score, 85,
+    "model summaries are ignored; validated criteria determine all scores");
+}
+for (const changed of [{ confidence: "certain" }, { unable_to_assess: true }, { reasons: null }, { reasons: [] }, { reasons: ["  "] }, { reasons: ["x".repeat(181)] }]) {
   assert.throws(() => api.parseImageQualityResponse(qualityPayload({ ...qualityResult, ...changed })));
 }
 assert.throws(() => api.parseImageQualityResponse({ ...qualityPayload(qualityResult), status: "incomplete" }));

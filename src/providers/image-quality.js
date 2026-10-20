@@ -9,21 +9,54 @@
   ]);
   const IMAGE_QUALITY_CONNECTIONS = Object.freeze(["support", "pedal", "control"]);
 
-  function imageQualityScores(criteria) {
+  function imageQualityCriteriaIssue(criteria) {
     if (!criteria || typeof criteria !== "object" || Array.isArray(criteria)
-      || Object.keys(criteria).length !== IMAGE_QUALITY_CRITERIA.length) return null;
-    for (const [key, , max] of IMAGE_QUALITY_CRITERIA) {
+      ) return "缺少有效细项 criteria，须提供14个评分项";
+    for (const [key, label, max] of IMAGE_QUALITY_CRITERIA) {
+      const field = label + "（" + key + "）：";
+      if (!Object.prototype.hasOwnProperty.call(criteria, key)) return field + "缺少评分项";
       const item = criteria[key];
-      if (!item || !Number.isInteger(item.score) || item.score < 0 || item.score > max || item.score % (max / 5) !== 0 || typeof item.evidence !== "string"
-        || !item.evidence.trim() || item.evidence.length > 120) return null;
+      if (!item || typeof item !== "object" || Array.isArray(item)) return field + "缺少有效评分项对象";
+      if (!Number.isInteger(item.score)) return field + "score须为整数";
+      if (item.score < 0 || item.score > max) return field + "score须在0到" + max + "之间";
+      if (item.score % (max / 5) !== 0) return field + "score仅允许" + (max === 10 ? "0/2/4/6/8/10" : "0/1/2/3/4/5");
+      if (typeof item.evidence !== "string" || !item.evidence.trim()) return field + "缺少可见依据 evidence";
+      if (item.evidence.length > 120) return field + "evidence超过120字";
       if (IMAGE_QUALITY_CONNECTIONS.includes(key)) {
+        if (!["verified", "occluded", "unclear", "broken"].includes(item.connection)) return field + "connection须为verified/occluded/unclear/broken";
         const limit = { verified: 1, occluded: 0.6, unclear: 0.4, broken: 0.2 }[item.connection];
-        if (!["verified", "occluded", "unclear", "broken"].includes(item.connection) || item.score > max * limit
-          || (item.connection === "verified" && item.score === 0)
-          || ![item.from, item.to].every((endpoint) => typeof endpoint === "string" && endpoint.trim() && endpoint.length <= 60)
-          || item.from.trim() === item.to.trim()) return null;
+        if (item.score > max * limit) return field + "connection=" + item.connection + "时score不得超过" + max * limit;
+        if (item.connection === "verified" && item.score === 0) return field + "连接成立（verified）不能同时给0分";
+        for (const endpoint of ["from", "to"]) {
+          if (typeof item[endpoint] !== "string" || !item[endpoint].trim()) return field + "缺少接触端点 " + endpoint;
+          if (item[endpoint].length > 60) return field + endpoint + "超过60字";
+        }
+        if (item.from.trim() === item.to.trim()) return field + "from与to不能相同";
       }
     }
+    return Object.keys(criteria).length === IMAGE_QUALITY_CRITERIA.length ? "" : "细项 criteria 须包含固定14项";
+  }
+
+  function normalizeImageQualityCriteria(criteria) {
+    if (!criteria || typeof criteria !== "object" || Array.isArray(criteria)) return criteria;
+    const normalized = {};
+    const trim = (value) => typeof value === "string" ? value.trim() : value;
+    for (const [key] of IMAGE_QUALITY_CRITERIA) {
+      if (!Object.prototype.hasOwnProperty.call(criteria, key)) continue;
+      const item = criteria[key];
+      if (!item || typeof item !== "object" || Array.isArray(item)) { normalized[key] = item; continue; }
+      const score = trim(item.score);
+      normalized[key] = {
+        score: typeof score === "string" && /^(0|[1-9]\d*)(\.0+)?$/.test(score) ? Number(score) : score,
+        evidence: trim(item.evidence),
+        ...(IMAGE_QUALITY_CONNECTIONS.includes(key) ? { connection: item.connection, from: trim(item.from), to: trim(item.to) } : {}),
+      };
+    }
+    return normalized;
+  }
+
+  function imageQualityScores(criteria) {
+    if (imageQualityCriteriaIssue(criteria)) return null;
     const task = criteria.subject.score + criteria.object.score + criteria.relation.score;
     const structure = ["anatomy", "frame", "wheels", ...IMAGE_QUALITY_CONNECTIONS].reduce((sum, key) => sum + criteria[key].score, 0);
     const harmony = criteria.proportion.score + criteria.posture.score + criteria.integration.score;
@@ -129,15 +162,22 @@
     try { result = JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "")); }
     catch { throw new Error("评分格式无效，未采用图片分"); }
     if (result?.unable_to_assess === true) throw Object.assign(new Error("模型未能识别图片，未采用图片分"), { code: "IMAGE_UNASSESSABLE" });
-    if (result?.unable_to_assess !== false) throw new Error("评分格式缺少有效图片识别状态，未采用图片分");
-    const scores = imageQualityScores(result.criteria);
-    if (!scores || ["task", "structure", "harmony", "finish"].some((key) => result[key] !== undefined && result[key] !== scores[key])) {
-      throw new Error("评分格式缺少有效细项或分项不一致，未采用图片分");
+    if (result?.unable_to_assess !== false) throw new Error("评分格式不符：unable_to_assess须为布尔值false；未采用图片分");
+    const criteria = normalizeImageQualityCriteria(result.criteria);
+    const issue = imageQualityCriteriaIssue(criteria);
+    if (issue) throw new Error("评分格式不符：" + issue + "；未采用图片分");
+    // Model totals are advisory only. Required criteria and defect ceilings decide every score.
+    const scores = imageQualityScores(criteria);
+    if (!["high", "medium", "low"].includes(result.confidence)) throw new Error("评分格式不符：confidence须为high/medium/low；未采用图片分");
+    if (!Array.isArray(result.reasons) || result.reasons.length < 1 || result.reasons.length > 3) {
+      throw new Error("评分格式不符：reasons须包含1到3条总体依据；未采用图片分");
     }
-    if (!["high", "medium", "low"].includes(result.confidence)) throw new Error("评分格式缺少有效证据充分性，未采用图片分");
+    if (result.reasons.some((reason) => typeof reason !== "string" || !reason.trim() || reason.length > 180)) {
+      throw new Error("评分格式不符：reasons每条须为非空文字且不超过180字；未采用图片分");
+    }
     const entry = { task: scores.task, structure: scores.structure, harmony: scores.harmony, finish: scores.finish, score: scores.score,
-      criteria: imageQualityCriteriaDetails(result.criteria),
-      confidence: imageQualityEvidenceConfidence(result.criteria, result.confidence), reasons: result.reasons };
+      criteria: imageQualityCriteriaDetails(criteria),
+      confidence: imageQualityEvidenceConfidence(criteria, result.confidence), reasons: result.reasons };
     if (!validImageQuality(entry)) throw new Error("评分超出规则或缺少依据，未采用图片分");
     return entry;
   }
@@ -166,6 +206,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 每项evidence一条120字以内中文可见依据；from/to各60字以内。低于满分必须指出部位与不足，满分必须指出成立关系。可读但不能确认的部分如实记录，禁止补全看不见的部件或编造结构。
 插件求和并封顶：subject=0最高39，object=0最高49，relation=0最高59，anatomy/frame/wheels任一为0或support/pedal/control任一broken或0分最高69；多个限制取最低，不提高原有低分。预期任务不同则按相应主体、道具与交互解释这些键，support/pedal/control分别评估实际支撑、传力/功能链和操控/交互链，保持相同权重。
 静态图不能判断动画、交互、SVG源码或通用模型能力。
+输出必须包含且仅包含下方criteria示例中的14个英文评分键，每个score写纯数字而非带单位文字；不要返回task/structure/harmony/finish/score等汇总分，全部汇总、封顶及置信度约束由插件统一计算。发送前检查细项齐全、分数档位、接触状态与端点一致，不增加额外解释文字。
 若看不到图或无法判断，unable_to_assess=true，不编造分数。confidence是可见证据的自评充分性(high/medium/low)，不是统计概率。
 只输出JSON：{"unable_to_assess":false,"criteria":{${IMAGE_QUALITY_CRITERIA.map(([name]) => `"${name}":{"score":0,"evidence":"具体可见依据"${IMAGE_QUALITY_CONNECTIONS.includes(name) ? ',"connection":"unclear","from":"起点具体部位","to":"终点具体部位"' : ""}}`).join(",")}},"confidence":"low","reasons":["三条以内总体中文依据，每条180字以内"]}` },
         { type: "input_image", image_url: imageDataUrl, detail: "high" },
