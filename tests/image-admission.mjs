@@ -30,122 +30,134 @@ let paid=0;
 const kept = await api.selectImageQualifiedCandidate(rows,'A',{mode:'saving',assertCurrent(){},eligible:rs=>rs,async check(){paid++;},isolate(){}});
 assert.equal(kept.group,'A');assert.equal(paid,0);
 
-// Exercise actual processToken / rollback / image gate orchestration with deterministic boundaries.
+// Exercise actual background orchestration with controllable asynchronous model results.
 function runtime(overrides = {}) {
   const storage = {}, switched = [], checked = [], isolated = [];
   const ctx = { console, AbortController, DOMException, setTimeout, clearTimeout, Date, Map, Set, Promise,
-    IS_AIHUB:true,IS_AIHUB_API:true,config:api.sanitizeConfig({enabled:true,tokenIds:[1],models:['fixture'],confirmPolls:1,switchHoldMinutes:0,rollbackChecks:0,imageQualityKeyId:1,imageQualityModel:'fixture-vision',...overrides}),
-    state:{candidates:rows.map(row=>({...row})),logs:[]},imageQuality:{cancelRevision:0,catalogRevision:1,catalogAt:1},pendingCandidates:new Map(),
+    IS_AIHUB:true, IS_AIHUB_API:true,
+    config:api.sanitizeConfig({enabled:true,tokenIds:[1],models:['fixture'],confirmPolls:1,switchHoldMinutes:0,rollbackChecks:0,imageQualityKeyId:1,imageQualityModel:'fixture-vision',...overrides}),
+    state:{candidates:rows,candidateRevision:0,candidateRequestRevision:0,logs:[]}, imageQuality:{cancelRevision:0,catalogRevision:1,catalogAt:1},
+    automaticImageAdmission:{context:null,jobs:new Map(),bindings:new Map(),active:null,draining:null},pendingCandidates:new Map(),
     STORAGE_IMAGE_QUALITY_CATALOG_AT:'catalog-at',STORAGE_SWITCH_GUARD:'guard',STORAGE_LAST_SWITCH:'history',STORAGE_LOGS:'logs',MAX_LOG_ENTRIES:50,
     GM_getValue:(key,fallback)=>storage[key]??fallback,GM_setValue:(key,value)=>storage[key]=value,
-    render(){},formatRatio:value=>String(value),refs:{},
-    ...Object.fromEntries(['targetModelIdentity','targetModels','normalizeSwitchHistory','switchHoldState','normalizeSwitchGuardState','pruneSwitchGuardState','applyTemporaryBlacklist','selectRollbackCandidate','selectSwitchCandidate','selectBestCandidate','selectImageQualifiedCandidate','imageQualityAdmissionVerdict','shouldSwitchCandidate','shouldKeepCurrentDuringHold','candidateHasHealthFailure','candidateRecommendationLabel','tokenSupportsModel'].map(name=>[name,api[name]])),
-    validImageQuality:value=>!!api.imageQualityAdmissionVerdict(value,-1).pass,
+    render(){},refs:{},
+    ...Object.fromEntries(['targetModelIdentity','targetModels','normalizeSwitchHistory','normalizeSwitchGuardState','pruneSwitchGuardState','applyTemporaryBlacklist','selectRollbackCandidate','selectSwitchCandidate','selectBestCandidate','selectImageQualifiedCandidate','imageQualityAdmissionVerdict','shouldSwitchCandidate','candidateHasHealthFailure','candidateRecommendationLabel','tokenSupportsModel'].map(name=>[name,api[name]])),
     imageQualityEnabled:settings=>settings.imageQualityKeyId>0&&!!settings.imageQualityModel,
     imageQualityIdentity:api.imageQualityIdentity,
-    imageQualityFailureMessage:()=>"图片评分请求失败：评价模型不可用，本轮停止自动切换",
+    imageQualityFailureMessage:()=> '评价服务不可用，本次择优暂停',
     scores:{},runImageQuality:async({candidate,budget})=>{checked.push(candidate.group);if(budget.remaining<=0)throw Object.assign(Error('cap'),{code:'IMAGE_ADMISSION_BUDGET'});budget.remaining--;return ctx.scores[candidate.group]||entry();},
-    summarizeFailures:()=>'',
   };
   vm.createContext(ctx);vm.runInContext(read('src/runtime/operations.js'),ctx);
-  vm.runInContext(`setStatus=()=>{};globalThis.process=processToken;globalThis.context=createImageAdmissionContext;globalThis.guard=getSwitchGuardState;
-    switchTokenGroup=async(token,candidate)=>{globalThis.onSwitch(token,candidate);};
-    getTokenDetail=async id=>({id,group:globalThis.actualGroup??'outside',status:'active'});
+  vm.runInContext(`scheduleNext=()=>{};globalThis.process=processToken;globalThis.stop=stopAutomaticImageAdmission;
+    switchTokenGroup=async(token,candidate,options)=>{options?.beforeSwitch?.();if(imageQuality.recoveryError)throw Error(imageQuality.recoveryError);if(globalThis.actualGroup!==token.group)throw Error('外部分组改变，取消切换');globalThis.onSwitch(token,candidate);pendingCandidates.delete(Number(token.id));};
+    getTokenDetail=async id=>({id,group:globalThis.actualGroup,status:'active'});
     const originalIsolation=isolateImageCandidate;isolateImageCandidate=(row,reason)=>{globalThis.onIsolate(row,reason);originalIsolation(row,reason);};`,ctx);
   ctx.onSwitch=(token,candidate)=>switched.push(candidate.group);ctx.onIsolate=(row,reason)=>isolated.push([row.group,reason]);
-  ctx.token={id:1,group:'outside',status:'active'};
-  return {ctx,storage,switched,checked,isolated};
+  ctx.token={id:1,group:'C',groupId:3,status:'active'};ctx.actualGroup='C';
+  const poll=async(token=ctx.token,candidates=rows,options={})=>{ctx.state.candidateRevision=++ctx.state.candidateRequestRevision;ctx.state.candidates=candidates;return ctx.process(token,candidates,options);};
+  const settle=async()=>{await ctx.automaticImageAdmission.draining;};
+  return {ctx,storage,switched,checked,isolated,poll,settle};
+}
+const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
+{
+  const r=runtime();const wait=deferred();r.ctx.runImageQuality=async()=>{r.checked.push('A');return wait.promise;};
+  assert.equal((await r.poll()).outcome,'image-pending');assert.equal((await r.poll()).outcome,'image-pending');
+  assert.deepEqual(r.switched,[],'health polling returns while model is still pending');
+  wait.resolve(entry());await r.settle();assert.deepEqual(r.switched,[],'model completion itself never switches');
+  assert.equal((await r.poll()).outcome,'switched');assert.deepEqual(r.checked,['A']);
+  await r.poll();await r.settle();await r.poll();assert.deepEqual(r.checked,['A','A'],'a later independent decision evaluates afresh');
 }
 {
-  const {ctx,switched,checked,isolated}=runtime();ctx.scores.A=entry();
-  assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'switched');assert.deepEqual(switched,['A']);assert.deepEqual(checked,['A']);assert.equal(isolated.length,0);
+  const r=runtime({confirmPolls:3});assert.equal((await r.poll()).outcome,'pending');assert.equal(r.checked.length,0);
+  assert.equal((await r.poll()).outcome,'pending');await r.settle();assert.deepEqual(r.checked,['A']);
+  assert.equal((await r.poll()).outcome,'switched');
 }
 {
-  const {ctx,checked,switched}=runtime();await ctx.process(ctx.token,rows,{});assert.deepEqual(checked,['A']);assert.deepEqual(switched,['A']);
+  const r=runtime({switchHoldMinutes:10,pollSeconds:30});r.storage.history={byToken:{1:{model:'fixture',group:'C',at:Date.now()}}};
+  assert.equal((await r.poll()).outcome,'holding');assert.equal(r.checked.length,0);
+  r.storage.history.byToken[1].at=Date.now()-10*60000+20000;
+  assert.equal((await r.poll()).outcome,'holding');await r.settle();assert.deepEqual(r.checked,['A']);
+  r.storage.history.byToken[1].at=Date.now()-11*60000;
+  assert.equal((await r.poll()).outcome,'switched');assert.equal(r.checked.length,1);
 }
 {
-  const {ctx,isolated,switched,storage}=runtime({blacklistMinutes:7});ctx.scores.A=entry(qualityCriteria(),'low');ctx.scores.B=entry();
-  const before=Date.now();await ctx.process(ctx.token,rows,{});assert.deepEqual(switched,['B']);assert.equal(isolated[0][0],'A');
-  assert.equal(storage.guard.blacklist[0].model,'fixture');assert.ok(storage.guard.blacklist[0].until>=before+7*60000);
-  await ctx.process({...ctx.token,id:2},rows,{});assert.deepEqual(switched,['B','B']);assert.equal(isolated.length,1,'later tokens skip a newly isolated candidate');
-  storage.guard.blacklist[0].until=Date.now()-1;ctx.scores.A=entry();await ctx.process(ctx.token,rows,{});assert.equal(switched.at(-1),'A','expired isolation participates again');
+  const r=runtime({blacklistMinutes:7});r.ctx.scores.A=entry(qualityCriteria(),'low');
+  const before=Date.now();await r.poll();await r.settle();assert.equal(r.isolated[0][0],'A');
+  const isolated=r.storage.guard.blacklist[0];assert.equal(isolated.type,'image');assert.ok(isolated.until>=before+7*60000);
+  assert.equal(r.ctx.config.groupBlacklist.length,0,'user blacklist is untouched');
+  await r.poll();await r.settle();await r.poll();assert.deepEqual(r.switched,['B']);
+}
+for(const code of ['IMAGE_READ_FAILED','IMAGE_UNASSESSABLE']) {
+  const r=runtime();r.ctx.runImageQuality=async()=>{throw Object.assign(Error('fixture'),{code});};
+  await r.poll();await r.settle();assert.equal(r.isolated.length,1);assert.equal(r.isolated[0][0],'A');
+}
+for(const code of ['IMAGE_SCORER_UNAVAILABLE','UNKNOWN']) {
+  const r=runtime();r.ctx.runImageQuality=async()=>{r.checked.push('failure');throw Object.assign(Error('private upstream'),{code});};
+  await r.poll();await r.settle();assert.equal((await r.poll()).outcome,'image-error');
+  await r.poll();assert.equal(r.checked.length,1,'polls never automatically retry service failure');assert.equal(r.isolated.length,0);
+  assert(!r.ctx.imageQuality.status.includes('private upstream'));
 }
 {
-  const {ctx,isolated,switched}=runtime({imageQualityMinScore:85});ctx.scores.A=entry();ctx.scores.B=entry(fullQualityCriteria());
-  await ctx.process(ctx.token,rows,{});assert.equal(isolated[0][0],'A');assert.deepEqual(switched,['B']);
+  const r=runtime({imageQualityKeyId:0});await r.poll();await r.settle();assert.equal((await r.poll()).outcome,'image-error');assert.equal(r.isolated.length,0);assert.equal(r.checked.length,0);
 }
 {
-  const {ctx,isolated,checked,switched}=runtime();ctx.runImageQuality=async()=>{checked.push('failed');throw Object.assign(Error('图片评分请求失败：已配置模型均不可用'),{code:'IMAGE_SCORER_UNAVAILABLE'});};
-  const admission=ctx.context();
-  await assert.rejects(ctx.process(ctx.token,rows,{admission}),/不可用/);
-  await assert.rejects(ctx.process({...ctx.token,id:2},rows,{admission}),/不可用/);
-  assert.deepEqual(checked,['failed']);assert.equal(isolated.length,0);assert.equal(switched.length,0);
-  assert(!JSON.stringify(ctx.state.logs).includes('private upstream'));
+  const r=runtime();await r.poll(r.ctx.token,rows.map(row=>({...row,detectionMedia:null})));await r.settle();assert.equal(r.isolated[0][0],'A');assert.equal(r.checked.length,0);
+}
+for(const healthIsolation of [false,true]) {
+  const r=runtime();r.storage.guard={byToken:{},blacklist:[{model:'fixture',group:'A',type:healthIsolation?'health':'image',reason:'fixture',until:Date.now()+60000}]};
+  const failed=rows.map(row=>row.group==='C'?{...row,available:false,reasons:['latest-success-low']}:row);
+  assert.equal((await r.poll(r.ctx.token,failed)).outcome,'switched');assert.deepEqual(r.switched,[healthIsolation?'B':'A']);assert.equal(r.checked.length,0,'recovery bypasses model and image isolation only');
 }
 {
-  const {ctx,isolated,checked}=runtime({imageQualityKeyId:0});await ctx.process(ctx.token,rows,{});assert.equal(isolated.length,3);assert.equal(checked.length,0);
+  const r=runtime({rollbackChecks:2});r.storage.guard={byToken:{1:{model:'fixture',fromGroup:'A',toGroup:'C',remaining:2,at:Date.now()}},blacklist:[{model:'fixture',group:'C',type:'image',reason:'earlier image',until:Date.now()+60000}]};
+  const failed=rows.map(row=>row.group==='C'?{...row,available:false,reasons:['latest-success-low']}:row);
+  assert.equal((await r.poll(r.ctx.token,failed)).outcome,'rolled-back');assert.deepEqual(r.switched,['A']);assert.equal(r.checked.length,0);assert.deepEqual(Array.from(r.storage.guard.blacklist,e=>e.type).sort(),['health','image']);
 }
 {
-  const {ctx,isolated,checked,switched}=runtime();const noImage=rows.map(row=>({...row,detectionMedia:null}));await ctx.process(ctx.token,noImage,{});assert.equal(isolated.length,3);assert.equal(checked.length,0);assert.equal(switched.length,0);
+  const r=runtime({imageQualityKeyId:0});await r.poll(r.ctx.token,rows,{forceSwitch:true,targetGroup:'B'});assert.deepEqual(r.switched,['B']);assert.equal(r.checked.length,0);
 }
 {
-  const {ctx,checked,switched,isolated}=runtime({imageQualityKeyId:0});await ctx.process(ctx.token,rows,{forceSwitch:true,targetGroup:'B'});
-  assert.deepEqual(switched,['B']);assert.equal(checked.length,0);assert.equal(isolated.length,0);
+  const r=runtime({enabled:false});assert.equal((await r.poll()).outcome,'suggested');assert.equal(r.checked.length,0);
+}
+for(const invalidate of [r=>{r.ctx.config={...r.ctx.config,imageQualityMinScore:90};},r=>{r.ctx.imageQuality.cancelRevision++;},r=>{r.ctx.imageQuality.catalogRevision++;},r=>{r.storage['catalog-at']=2;}]) {
+  const r=runtime();const wait=deferred();r.ctx.runImageQuality=async()=>wait.promise;await r.poll();invalidate(r);wait.resolve(entry());await r.settle();
+  assert.equal(r.switched.length,0);assert.equal(r.isolated.length,0);
 }
 {
-  const {ctx,checked}=runtime({enabled:false});assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'suggested');assert.equal(checked.length,0);
+  const r=runtime();const wait=deferred();r.ctx.runImageQuality=async()=>wait.promise;await r.poll();
+  // Strategy changes back to current; a late failed score must not isolate old target A.
+  await r.poll(r.ctx.token,rows.map(row=>({...row,ratio:row.group==='C'?0.1:row.ratio,effectiveRatio:row.group==='C'?0.1:row.ratio})));
+  wait.resolve(entry(qualityCriteria(),'low'));await r.settle();assert.equal(r.isolated.length,0);assert.equal(r.ctx.automaticImageAdmission.bindings.size,0);
 }
 {
-  const {ctx,checked,switched}=runtime({confirmPolls:2});ctx.token.group='C';ctx.actualGroup='C';
-  assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'pending');assert.equal(checked.length,0);await ctx.process(ctx.token,rows,{});assert.deepEqual(checked,['A']);assert.deepEqual(switched,['A']);
+  const r=runtime();await r.poll();await r.settle();r.ctx.actualGroup='external';
+  await assert.rejects(r.poll(),/取消切换/);assert.equal(r.switched.length,0);
 }
 {
-  const {ctx,storage,checked}=runtime({switchHoldMinutes:10});ctx.token.group='C';ctx.actualGroup='C';storage.history={byToken:{1:{model:'fixture',group:'C',at:Date.now()}}};
-  assert.equal((await ctx.process(ctx.token,rows,{})).outcome,'holding');assert.equal(checked.length,0);
-}
-for(const invalidate of [ctx=>{ctx.config={...ctx.config,imageQualityMinScore:90};},ctx=>{ctx.imageQuality.cancelRevision++;},ctx=>{ctx.imageQuality.catalogRevision++;},ctx=>{ctx.actualGroup='changed-in-other-tab';}]) {
-  const {ctx,isolated,switched}=runtime();ctx.runImageQuality=async({candidate})=>{ctx.scores[candidate.group]=entry();invalidate(ctx);return entry();};
-  await assert.rejects(()=>ctx.process(ctx.token,rows,{}),/取消切换/);assert.equal(isolated.length,0);assert.equal(switched.length,0);
-}
-{
-  const {ctx,checked,isolated,switched}=runtime();const budget=ctx.context();budget.remaining=0;
-  await assert.rejects(()=>ctx.process(ctx.token,rows,{admission:budget}),/10次/);assert.equal(isolated.length,0);assert.equal(switched.length,0);
+  const r=runtime();r.ctx.runImageQuality=async({budget})=>{if(!budget.remaining)throw Object.assign(Error('cap'),{code:'IMAGE_ADMISSION_BUDGET'});budget.remaining--;r.checked.push('paid');return entry(qualityCriteria(),'low');};
+  const many=Array.from({length:14},(_,i)=>({...rows[0],group:'group-'+i,groupId:i+1,ratio:i+1,effectiveRatio:i+1}));
+  const token={...r.ctx.token,group:'current',groupId:99};const all=[...many,{...rows[2],group:'current',groupId:99,ratio:100,effectiveRatio:100}];r.ctx.actualGroup='current';
+  for(let i=0;i<15;i++){await r.poll(token,all);await r.settle();}
+  assert.equal(r.checked.length,10);assert.equal(r.isolated.length,10);assert.equal(r.switched.length,0);
+  assert.equal((await r.poll(token,all)).outcome,'image-error','budget remains exhausted across health polls');
 }
 {
-  const {ctx,storage,isolated,switched}=runtime({rollbackChecks:2});ctx.token.group='C';ctx.actualGroup='C';
-  storage.guard={byToken:{1:{model:'fixture',fromGroup:'A',toGroup:'C',remaining:2,at:Date.now()}},blacklist:[]};
-  ctx.scores.A=entry(qualityCriteria(),'low');ctx.scores.B=entry();
-  const failed=rows.map(row=>row.group==='C'?{...row,available:false,reasons:['recent-success-low']}:row);
-  assert.equal((await ctx.process(ctx.token,failed,{})).outcome,'rolled-back');assert.deepEqual(switched,['B']);assert.equal(isolated[0][0],'A');
-}
-console.log('image admission: strict thresholds, all strategies, fresh scoring, fallback, isolation/expiry, manual bypass, hold/confirmation, rollback, cancellation and shared budget passed');
-
-{
- const {ctx,isolated,switched,storage}=runtime();ctx.runImageQuality=async()=>{storage['catalog-at']=2;throw Object.assign(Error('stale'),{code:'IMAGE_CATALOG_STALE'});};
- await assert.rejects(()=>ctx.process(ctx.token,rows,{}),/取消切换/);assert.equal(isolated.length,0);assert.equal(switched.length,0);
+  const r=runtime();let aborted=false;const wait=deferred();r.ctx.imageQuality.controller={abort(){aborted=true;}};
+  await r.poll();await r.ctx.stop();assert.equal(aborted,false,'canceling a queued automatic job must not abort unrelated manual evaluation');
+  r.ctx.imageQuality.controller=null;wait.resolve();
 }
 {
- const {ctx,isolated,switched}=runtime();ctx.runImageQuality=async()=>{throw Object.assign(Error('stale'),{code:'IMAGE_CATALOG_STALE'});};
- await assert.rejects(()=>ctx.process(ctx.token,rows,{}),/取消切换/);assert.equal(isolated.length,0);assert.equal(switched.length,0);
+  const r=runtime();const wait=deferred();r.ctx.runImageQuality=async()=>wait.promise;await r.poll();
+  const inflightRevision=++r.ctx.state.candidateRequestRevision;
+  wait.resolve(entry());await r.settle();
+  r.ctx.state.candidateRevision=inflightRevision;
+  assert.equal((await r.ctx.process(r.ctx.token,rows)).outcome,'image-pending','health request started before score completion cannot authorize write');
+  assert.equal(r.switched.length,0);assert.equal((await r.poll()).outcome,'switched');
 }
 {
- const {ctx,switched}=runtime();const admission=ctx.context();ctx.config={...ctx.config,tokenIds:[]};
- await assert.rejects(()=>ctx.process(ctx.token,rows,{forceSwitch:true,targetGroup:'B',admission}),/设置已变更/);assert.equal(switched.length,0);
+  const r=runtime();const wait=deferred();r.ctx.runImageQuality=async()=>wait.promise;await r.poll();
+  r.ctx.actualGroup='external';wait.resolve(entry(qualityCriteria(),'low'));await r.settle();
+  assert.equal(r.isolated.length,0,'external business-key change retires late rejected image');
+  assert.equal(r.ctx.automaticImageAdmission.bindings.size,0);
 }
-console.log('PASS shared directory watermark, stale-source errors and manual settings snapshot cancellation');
-{
- const {ctx,isolated,switched}=runtime();let calls=0;
- ctx.runImageQuality=async({budget})=>{if(budget.remaining<=0)throw Object.assign(Error('cap'),{code:'IMAGE_ADMISSION_BUDGET'});budget.remaining--;calls++;throw Error('HTTP 400');};
- const many=Array.from({length:14},(_,i)=>({...rows[0],group:'group-'+i,groupId:i+1,ratio:i+1,effectiveRatio:i+1}));
- await assert.rejects(()=>ctx.process(ctx.token,many,{}),/10次/);
- assert.equal(calls,10);assert.equal(isolated.length,10,'the tenth failed request still isolates its group; unanalysed groups do not');assert.equal(switched.length,0);
-}
-console.log('PASS automatic candidate loop makes at most10 paid attempts and never isolates an unanalysed budget-blocked candidate');
-
-{
-  const {ctx,checked,switched}=runtime();ctx.scores.A=entry();
-  await ctx.process(ctx.token,rows,{});await ctx.process(ctx.token,rows,{});
-  assert.deepEqual(checked,['A','A'],'a visible earlier evaluation must never skip a later switch evaluation');
-  assert.deepEqual(switched,['A','A']);
-}
-console.log('PASS each actual switch evaluates afresh; scoring infrastructure failure stops the entire round without image blacklisting');
+console.log('PASS background polling, confirmation/hold pre-evaluation, fresh decision scores, fault isolation, emergency/rollback/manual bypass, stale cancellation, service pause, shared ten-request budget and owned cancellation');

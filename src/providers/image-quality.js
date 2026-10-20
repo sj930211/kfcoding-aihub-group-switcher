@@ -90,19 +90,33 @@
 
   function updateImageQualityCatalog(summary) {
     imageQuality.catalogReady = true;
-    imageQuality.catalogAt = Date.now();
-    imageQuality.catalogRevision += 1;
-    imageQuality.catalog = summary.apis.map((api) => ({
+    const catalog = summary.apis.map((api) => ({
       group: api.planType, groupId: Number(api.id), detectionMedia: api.detectionMedia,
     }));
+    const fingerprint = (rows) => JSON.stringify(rows.map((row) => [row.groupId, row.group, imageQualityIdentity(row)]).sort((a, b) => a[0] - b[0]));
+    const changed = fingerprint(catalog) !== fingerprint(imageQuality.catalog);
+    imageQuality.catalog = catalog;
+    if (changed) {
+      imageQuality.catalogAt = Math.max(Date.now(), Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) + 1);
+      imageQuality.catalogRevision += 1;
+      if (typeof invalidateAutomaticImageAdmission === "function") invalidateAutomaticImageAdmission();
+    }
     imageQuality.sample = imageQuality.catalog.find((row) => imageQualityIdentity(row)) || null;
     const current = new Map(imageQuality.catalog.map((row) => [Number(row.groupId), imageQualityIdentity(row)]));
     for (const [id, record] of imageQuality.records) {
       if (!current.get(id) || current.get(id) !== record.source) imageQuality.records.delete(id);
     }
     // Only a directory watermark is shared between tabs, never scores or image data.
-    GM_setValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, Math.max(imageQuality.catalogAt,
-      Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) || 0));
+    if (changed) GM_setValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, imageQuality.catalogAt);
+    else {
+      // This response refreshed our own directory too; acknowledge a newer tab watermark.
+      const watermark = Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0));
+      if (watermark > imageQuality.catalogAt) {
+        imageQuality.catalogAt = watermark;
+        imageQuality.catalogRevision += 1;
+        if (typeof invalidateAutomaticImageAdmission === "function") invalidateAutomaticImageAdmission();
+      }
+    }
   }
 
   function parseImageQualityResponse(payload) {
@@ -178,7 +192,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     return `效果 ${entry.score}/100 · 任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15\n`
       + `协调规则 v3${scores.capReason ? ` · 分项合计${scores.rawScore}，${scores.capReason}封顶${scores.score}` : ""}\n`
       + IMAGE_QUALITY_CRITERIA.map(([name, label, max]) => `${label} ${entry.criteria[name].score}/${max}${compact ? "" : `：${entry.criteria[name].evidence}${IMAGE_QUALITY_CONNECTIONS.includes(name) ? `（${entry.criteria[name].from} → ${entry.criteria[name].to}；${{verified:"成立",occluded:"遮挡",unclear:"含糊",broken:"不成立"}[entry.criteria[name].connection]}）` : ""}`}`).join("\n") + "\n"
-      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${entry.model || config.imageQualityModel}${entry.scoringGroup ? ` · 评分分组 ${entry.scoringGroup}` : ""} · 本页上次评价，下次切换重新计算\n`
+      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${entry.model || config.imageQualityModel}${entry.scoringGroup ? ` · 评分分组 ${entry.scoringGroup}` : ""} · 本页评价记录，仅本次待切换决策可采用\n`
       + `${new Date(entry.assessedAt).toLocaleString()}\n${compact ? "完整可见依据见图片或设置列表" : entry.reasons.join("；")}`;
   }
 
@@ -187,7 +201,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const score = document.createElement("button");
     score.type = "button";
     score.className = "candidate-image-score";
-    score.textContent = entry ? `${entry.score}分` : "未评";
+    const progress = typeof automaticImageAdmissionStatus === "function" ? automaticImageAdmissionStatus(candidate) : "";
+    score.textContent = progress || (entry ? `${entry.score}分` : "未评");
     score.dataset.qualityDetail = imageQualityDescription(entry, true);
     score.title = score.dataset.qualityDetail;
     score.setAttribute("aria-label", `${candidate.group} · 评价${entry ? ` ${entry.score}/100` : "未完成"}`);
@@ -201,11 +216,11 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     if (!container) return;
     const rows = imageQualityRows().filter(imageQualityIdentity);
     const enabled = imageQualityEnabled(config);
-    if (!sectionNeedsRender(container, [enabled, imageQuality.controller,
+    if (!sectionNeedsRender(container, [enabled, imageQuality.controller, imageQuality.status,
       ...rows.flatMap((row) => [row.groupId, row.group, imageQualityIdentity(row), candidateImageQuality(row)])])) return;
     container.replaceChildren();
     refs.imageQualityListSummary.textContent = enabled
-      ? `${rows.filter(candidateImageQuality).length} 已评分 / ${rows.length} 张当前图片 · 仅本页展示，切换时重新评价`
+      ? `${rows.filter(candidateImageQuality).length} 已评分 / ${rows.length} 张当前图片 · 仅本页展示，每次决策单独评价`
       : "选择评分密钥和模型后展示当前图片评价";
     if (!enabled || !rows.length) {
       const empty = document.createElement("p");
@@ -230,8 +245,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       heading.append(name, createImageQualityScore(candidate));
       const breakdown = document.createElement("p");
       breakdown.className = "image-quality-breakdown";
-      breakdown.textContent = entry ? `任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15`
-        : "尚无当前原图的有效评分";
+      const progress = typeof automaticImageAdmissionStatus === "function" ? automaticImageAdmissionStatus(candidate) : "";
+      breakdown.textContent = progress || (entry ? `任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15`
+        : "未评价");
       if (entry) {
         const scores = imageQualityScores(entry.criteria);
         if (scores.capReason) breakdown.textContent += ` · ${scores.capReason}封顶${scores.score}`;
@@ -242,7 +258,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       summary.textContent = entry ? "评价依据与时间" : "评分状态";
       const detail = document.createElement("p");
       detail.textContent = entry ? imageQualityDescription(entry)
-        : "自动切换前或点击手动评价时计算；刷新页面后不保留。";
+        : "候选组接近切换条件时后台评价；刷新页面后不保留。";
       details.append(summary, detail);
       copy.append(heading, breakdown, details);
       row.append(image, copy);
@@ -273,7 +289,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     refs.imageQualityRun.disabled = busy || !available;
     refs.imageQualityRun.textContent = available ? "评价当前图片（计费）" : "暂无图片";
     refs.imageQualityStop.hidden = !imageQuality.controller;
-    refs.imageQualityStatus.textContent = imageQuality.status || `本页已评价 ${rows.filter(candidateImageQuality).length} · 刷新列表不调用模型`;
+    refs.imageQualityStatus.textContent = imageQuality.recoveryError || imageQuality.status || `本页已评价 ${rows.filter(candidateImageQuality).length} · 刷新列表不调用模型`;
   }
 
 
@@ -387,14 +403,19 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       },
       async restore() {
         if (!changed) return;
-        const latestId = imageQualityGroupId(await read());
-        if (latestId === originalId) return;
+        let latest = await read();
+        const latestId = imageQualityGroupId(latest);
+        if (latestId === originalId) return latest;
         if (latestId !== expectedId && latestId !== pendingId) throw new Error("图片评分请求失败：评分密钥分组已被其他操作改变，未覆盖；请检查评分密钥当前分组");
         await put(originalId);
-        if (imageQualityGroupId(await read()) !== originalId) throw new Error("图片评分请求失败：评分密钥原分组恢复校验失败，请手动检查；本轮不切换业务分组");
+        latest = await read();
+        if (imageQualityGroupId(latest) !== originalId) throw new Error("图片评分请求失败：评分密钥原分组恢复校验失败，请手动检查；本轮不切换业务分组");
+        return latest;
       },
     };
     if (typeof session.credential !== "string" || !/^[A-Za-z0-9_-]{16,512}$/.test(session.credential)) throw new Error("无法读取完整评分密钥，请重新登录或更换密钥");
+    imageQuality.scoringToken = { id: settings.imageQualityKeyId, name: original.name,
+      status: original.status, groupId: originalId, group: imageQualityGroupName(original) };
     return session;
   }
 
@@ -466,6 +487,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   function cancelImageQuality() {
+    if (typeof invalidateAutomaticImageAdmission === "function") invalidateAutomaticImageAdmission();
     imageQuality.cancelRevision = (imageQuality.cancelRevision || 0) + 1;
     imageQuality.controller?.abort();
     imageQuality.modelsController?.abort();
@@ -688,6 +710,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
   async function runImageQuality(options) {
     if (!imageQualityEnabled(config) || imageQuality.controller || imageQuality.modelsController) return;
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
     const test = options?.test === true;
     const settings = { ...config };
     const settingsKey = imageQualitySettingsKey(settings);
@@ -700,8 +723,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     budget.unavailableGroups ||= new Set();
     const controller = new AbortController();
     imageQuality.controller = controller;
-    imageQuality.status = useFallback ? "正在评价当前图片；临时切组期间串行执行，每批最多10次模型请求"
-      : "正在评价当前图片；最多2张并发，每批最多10次模型请求";
+    options?.onController?.(controller);
+    imageQuality.status = options?.candidate ? `正在后台评价 ${options.candidate.group}（计费）`
+      : "正在评价当前图片（计费）";
     if (test) { imageQuality.testStatus = `正在测试 ${settings.imageQualityModel}（当前分组、1张1次，计费）…`; imageQuality.testResult = ""; }
     render();
     let session;
@@ -762,7 +786,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       }
       throw Object.assign(new Error(test
         ? "图片评分请求失败：当前评分分组暂不可用；本次仅请求1次，未切换分组或模型"
-        : "图片评分请求失败：当前及备用评分分组均不可用，本轮停止自动切换；未拉黑图片分组"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+        : "图片评分请求失败：当前及备用评分分组均不可用，本轮停止自动切换；未隔离图片分组"), { code: "IMAGE_SCORER_UNAVAILABLE" });
     };
     const worker = async () => {
       while (!controller.signal.aborted && !failure && next < batch.length) {
@@ -790,9 +814,20 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           await Promise.all(Array.from({ length: test || options?.candidate || useFallback ? 1 : 2 }, worker));
         } catch (error) { failure ||= error; }
         finally {
-          try { await session?.restore(); }
+          try {
+            const restored = await session?.restore();
+            if (restored && typeof tokensCache !== "undefined") {
+              const cached = tokensCache.find((token) => Number(token.id) === settings.imageQualityKeyId);
+              if (cached) Object.assign(cached, { groupId: imageQualityGroupId(restored), group: imageQualityGroupName(restored) });
+            }
+          }
           catch {
-            failure = Object.assign(new Error("图片评分请求失败：未能确认评分密钥已恢复原分组，请手动检查；本轮停止自动切换"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+            if (typeof tokensCache !== "undefined") {
+              const cached = tokensCache.find((token) => Number(token.id) === settings.imageQualityKeyId);
+              if (cached) Object.assign(cached, { groupId: 0, group: "" });
+            }
+            failure = Object.assign(new Error("图片评分请求失败：未能确认评分密钥已恢复原分组，请手动检查后刷新页面；所有切换已暂停"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+            imageQuality.recoveryError = failure.message;
             published.forEach((id) => imageQuality.records.delete(id));
             selectedEntry = null;
           }
@@ -814,6 +849,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         imageQuality.status = "评价已停止；已发出的请求可能已计费，已完成必要的评分分组恢复";
         if (test) imageQuality.testStatus = imageQuality.status;
       }
+      imageQuality.scoringToken = null;
       imageQuality.controller = null;
       render();
     }

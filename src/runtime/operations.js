@@ -690,6 +690,8 @@
 
   async function switchTokenGroupUnlocked(token, candidate, options) {
     const switchOptions = options || {};
+    switchOptions.beforeSwitch?.();
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
     if (IS_AIHUB_API) {
       if (!Number.isFinite(Number(candidate.groupId)) || Number(candidate.groupId) <= 0) {
         throw new Error(`目标分组 ${candidate.group} 缺少有效 ID`);
@@ -741,49 +743,159 @@
     }
   }
 
+  // Only a pending decision owns these results. Display records never grant admission.
+  function automaticImageAdmissionStatus(candidate) {
+    const job = [...automaticImageAdmission.jobs.values()].find((item) => !item.invalid
+      && item.candidate.group === candidate.group && item.source === imageQualityIdentity(candidate));
+    if (!job) return "";
+    if (job.error) return "服务异常";
+    if (!job.verdict) return automaticImageAdmission.active === job ? "评价中" : "待评价";
+    return job.verdict.pass ? "" : "未通过";
+  }
+
+  function detachAutomaticImageAdmission(tokenId) {
+    const binding = automaticImageAdmission.bindings.get(Number(tokenId));
+    if (!binding) return;
+    automaticImageAdmission.bindings.delete(Number(tokenId));
+    const job = binding.job;
+    if (![...automaticImageAdmission.bindings.values()].some((item) => item.job === job)) {
+      job.invalid = true;
+      automaticImageAdmission.jobs.delete(job.key);
+      if (automaticImageAdmission.active === job) job.controller?.abort();
+    }
+  }
+
+  function invalidateAutomaticImageAdmission() {
+    for (const job of automaticImageAdmission.jobs.values()) job.invalid = true;
+    automaticImageAdmission.active?.controller?.abort();
+    automaticImageAdmission.context = null;
+    automaticImageAdmission.jobs.clear();
+    automaticImageAdmission.bindings.clear();
+  }
+
+  async function stopAutomaticImageAdmission() {
+    invalidateAutomaticImageAdmission();
+    // Restoration runs inside the scorer's finally block, even on abort.
+    await automaticImageAdmission.draining;
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
+  }
+
+  function startAutomaticImageAdmissionQueue() {
+    if (automaticImageAdmission.draining) return;
+    const drain = async () => {
+      for (;;) {
+        const job = [...automaticImageAdmission.jobs.values()].find((item) => !item.invalid && !item.started);
+        if (!job) return;
+        job.started = true;
+        automaticImageAdmission.active = job;
+        try {
+          if (job.context.scorerFailure) throw job.context.scorerFailure;
+          job.verdict = await checkCandidateImageAdmission(job.candidate, job.context, () => {
+            if (job.invalid) throw new Error("候选已改变，本次评价已失效");
+          }, (controller) => { job.controller = controller; });
+          // A late result must not affect a business decision abandoned outside this page.
+          for (const [tokenId, binding] of [...automaticImageAdmission.bindings]) {
+            if (binding.job !== job) continue;
+            const latest = Number(imageQuality.scoringToken?.id) === tokenId
+              ? imageQuality.scoringToken : await getTokenDetail(tokenId);
+            if (latest.group !== binding.token.group) detachAutomaticImageAdmission(tokenId);
+          }
+          if (job.invalid) continue;
+          assertImageAdmissionCurrent(job.context);
+          job.completedRevision = state.candidateRequestRevision;
+          if (!job.verdict.pass) isolateImageCandidate(job.candidate, job.verdict.reason);
+          imageQuality.status = `${job.candidate.group} · ${job.verdict.pass ? "图片通过，等待最新健康检查" : job.verdict.reason + "，已故障隔离"}`;
+        } catch (error) {
+          if (!job.invalid) {
+            job.error = error instanceof Error ? error.message : String(error);
+            imageQuality.status = job.error;
+          }
+        } finally {
+          automaticImageAdmission.active = null;
+          render();
+        }
+      }
+    };
+    automaticImageAdmission.draining = drain().finally(() => {
+      automaticImageAdmission.draining = null;
+      if ([...automaticImageAdmission.jobs.values()].some((job) => !job.invalid && !job.started)) startAutomaticImageAdmissionQueue();
+      if (config.enabled) scheduleNext(250);
+    });
+  }
+
+  function prepareAutomaticImageAdmission(token, candidate) {
+    let context = automaticImageAdmission.context;
+    if (context) {
+      try { assertImageAdmissionCurrent(context); }
+      catch { invalidateAutomaticImageAdmission(); context = null; }
+    }
+    if (!context) automaticImageAdmission.context = context = createImageAdmissionContext();
+    const tokenId = Number(token.id);
+    const previous = automaticImageAdmission.bindings.get(tokenId);
+    const key = JSON.stringify([candidate.groupId, candidate.group, imageQualityIdentity(candidate)]);
+    if (previous && (previous.job.key !== key || previous.token.group !== token.group)) detachAutomaticImageAdmission(tokenId);
+    let job = automaticImageAdmission.jobs.get(key);
+    if (!job) {
+      job = { key, candidate, source: imageQualityIdentity(candidate), context,
+        verdict: null, error: "", invalid: false, started: false };
+      automaticImageAdmission.jobs.set(key, job);
+    }
+    automaticImageAdmission.bindings.set(tokenId, { job, token: { ...token } });
+    startAutomaticImageAdmissionQueue();
+    return job;
+  }
+
   function createImageAdmissionContext() {
     return { remaining: 10, unavailableGroups: new Set(), scorerFailure: null, configKey: JSON.stringify(config), catalogRevision: imageQuality.catalogRevision,
       cancelRevision: imageQuality.cancelRevision || 0 };
   }
 
   function assertImageAdmissionCurrent(context) {
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
     if (context.configKey !== JSON.stringify(config) || context.catalogRevision !== imageQuality.catalogRevision
       || context.cancelRevision !== (imageQuality.cancelRevision || 0)
       || Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) > imageQuality.catalogAt) {
-      throw new Error("设置、图片目录已变更或评分已停止，本轮取消切换；未继续拉黑");
+      throw new Error("设置、图片目录已变更或评分已停止，本轮取消切换；未继续隔离");
     }
   }
 
-  async function waitForImageAdmissionIdle(context) {
+  async function waitForImageAdmissionIdle(context, assertJob) {
     const deadline = Date.now() + 90000;
     while (imageQuality.controller || imageQuality.modelsController) {
+      assertJob();
       assertImageAdmissionCurrent(context);
-      if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未拉黑");
+      if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未隔离");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     assertImageAdmissionCurrent(context);
   }
 
-  async function checkCandidateImageAdmission(candidate, context) {
+  async function checkCandidateImageAdmission(candidate, context, assertJob = () => {}, onController) {
+    assertJob();
     assertImageAdmissionCurrent(context);
     if (!imageQualityIdentity(candidate)) return { pass: false, reason: "没有可用图片" };
-    if (!imageQualityEnabled(config)) return { pass: false, reason: "未配置评分密钥或模型，没有有效评价" };
-    await waitForImageAdmissionIdle(context);
+    if (!imageQualityEnabled(config)) throw new Error("请配置评分密钥和模型；正常择优已暂停，故障恢复仍可执行");
+    await waitForImageAdmissionIdle(context, assertJob);
     if (context.scorerFailure) throw context.scorerFailure;
-    setStatus(`切换前重新评价 ${candidate.group} 的图片（计费）…`, "running");
+    assertJob();
     let entry;
     try {
-      entry = await runImageQuality({ candidate, budget: context });
+      entry = await runImageQuality({ candidate, budget: context, onController });
     } catch (error) {
+      assertJob();
       assertImageAdmissionCurrent(context);
-      if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续拉黑");
-      if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次请求上限，保持当前分组；未继续拉黑");
+      if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续隔离");
+      if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次请求上限，保持当前分组；未继续隔离");
       if (error?.code === "IMAGE_SCORER_UNAVAILABLE") {
         context.scorerFailure = new Error(imageQualityFailureMessage(error, new AbortController()));
         throw context.scorerFailure;
       }
-      return { pass: false, reason: "图片读取或评分失败，没有有效评价" };
+      if (error?.code === "IMAGE_READ_FAILED") return { pass: false, reason: "图片读取失败，没有有效评价" };
+      if (error?.code === "IMAGE_UNASSESSABLE") return { pass: false, reason: "图片无法识别，没有有效评价" };
+      context.scorerFailure = new Error("图片读取或评价失败，本次决策停止；未隔离业务分组");
+      throw context.scorerFailure;
     }
+    assertJob();
     assertImageAdmissionCurrent(context);
     return imageQualityAdmissionVerdict(entry, config.imageQualityMinScore);
   }
@@ -792,11 +904,12 @@
     const now = Date.now();
     const model = targetModelIdentity(config);
     const guard = getSwitchGuardState(now);
-    guard.blacklist = guard.blacklist.filter((entry) => entry.model !== model || entry.group !== candidate.group);
-    guard.blacklist.push({ model, group: candidate.group, until: now + config.blacklistMinutes * 60000 });
+    guard.blacklist = guard.blacklist.filter((entry) => entry.model !== model || entry.group !== candidate.group || entry.type !== "image");
+    guard.blacklist.push({ model, group: candidate.group, type: "image", reason,
+      until: now + config.blacklistMinutes * 60000 });
     saveSwitchGuardState(guard);
     refreshCandidateIsolationState();
-    addLog(`${candidate.group}：${reason}，临时拉黑 ${config.blacklistMinutes} 分钟`, "warning");
+    addLog(`${candidate.group}：${reason}，故障隔离 ${config.blacklistMinutes} 分钟`, "warning");
     render();
   }
 
@@ -822,6 +935,7 @@
 
   function imageAdmissionHoldResult(token) {
     pendingCandidates.delete(Number(token.id));
+    detachAutomaticImageAdmission(token.id);
     return { outcome: "image-blocked", group: token.group || "未设置", tone: "warning",
       message: "没有需要切换且通过图片准入的分组，保持当前分组" };
   }
@@ -868,27 +982,30 @@
 
     if (candidateHasHealthFailure(current)) {
       guardState.blacklist = guardState.blacklist.filter(
-        (entry) => entry.model !== targetModelIdentity(config) || entry.group !== guard.toGroup,
+        (entry) => entry.model !== targetModelIdentity(config) || entry.group !== guard.toGroup || entry.type === "image",
       );
       guardState.blacklist.push({
         model: targetModelIdentity(config),
         group: guard.toGroup,
         until: now + config.blacklistMinutes * 60000,
+        type: "health", reason: "切换后健康检查失败",
       });
     }
     delete guardState.byToken[tokenId];
     saveSwitchGuardState(guardState);
 
-    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now);
+    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now, { ignoreImage: true });
     const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup, config.selectionMode);
     let fallback = rollbackTarget.candidate;
     if (!fallback) return IS_AIHUB ? imageAdmissionHoldResult(token) : null;
-    fallback = await admittedSwitchCandidate(token, eligible, fallback, admission);
+    await stopAutomaticImageAdmission();
+    assertImageAdmissionCurrent(admission);
     if (!fallback || fallback.group === token.group) return imageAdmissionHoldResult(token);
 
     const destination = fallback.group === guard.fromGroup ? "原分组" : "其他可用分组";
     await switchTokenGroup(token, fallback, {
       trackRollback: false,
+      beforeSwitch: () => assertImageAdmissionCurrent(admission),
       logTone: "warning",
       logMessage: `${tokenLabel(token)} 的 ${guard.toGroup} 观察失败，已回滚到${destination} ${fallback.group}`,
     });
@@ -907,9 +1024,26 @@
     const admission = options?.admission || createImageAdmissionContext();
     if (admission.configKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
     validateToken(token);
+    const binding = automaticImageAdmission.bindings.get(tokenId);
+    if (binding && (binding.token.group !== token.group || Number(binding.token.groupId) !== Number(token.groupId))) {
+      detachAutomaticImageAdmission(tokenId);
+      pendingCandidates.delete(tokenId);
+    }
+    const recoveryCandidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now(), { ignoreImage: true });
     if (config.enabled && !forceSwitch) {
-      const rollback = await handleRollbackGuard(token, candidates, admission);
+      const rollback = await handleRollbackGuard(token, recoveryCandidates, admission);
       if (rollback) return rollback;
+    }
+    const healthyCurrent = recoveryCandidates.find((candidate) => candidate.group === token.group);
+    if (config.enabled && !forceSwitch && (!healthyCurrent || !healthyCurrent.available)) {
+      const recovery = selectSwitchCandidate(recoveryCandidates, token.group, "", { mode: config.selectionMode });
+      await stopAutomaticImageAdmission();
+      assertImageAdmissionCurrent(admission);
+      pendingCandidates.delete(tokenId);
+      if (!recovery || recovery.group === token.group) return { outcome: "recovery-blocked", group: token.group || "未设置",
+        tone: "warning", message: "当前分组不可用，没有可恢复的健康分组" };
+      await switchTokenGroup(token, recovery, { beforeSwitch: () => assertImageAdmissionCurrent(admission) });
+      return { outcome: "switched", group: recovery.group, tone: "success", message: "故障恢复，已跳过图片检查" };
     }
     // Previous tokens in this check may already have isolated an image candidate.
     candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
@@ -928,12 +1062,14 @@
     );
 
     if (!selected) {
+      detachAutomaticImageAdmission(tokenId);
       if (IS_AIHUB && !targetGroup) return imageAdmissionHoldResult(token);
       const reasonSummary = summarizeFailures(candidates);
       throw new Error(`没有满足条件的分组${reasonSummary ? `：${reasonSummary}` : ""}`);
     }
     if (!shouldSwitchCandidate(selected, token.group)) {
       pendingCandidates.delete(tokenId);
+      detachAutomaticImageAdmission(tokenId);
       if (config.enabled && !forceSwitch && !targetGroup && holdState.expired) {
         recordSwitchHoldStart(tokenId, selected);
         return {
@@ -954,7 +1090,7 @@
       // An explicit manual destination bypasses image admission, including list buttons.
       if (!targetGroup) selected = await admittedSwitchCandidate(token, candidates, selected, admission);
       if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
-      await switchTokenGroup(token, selected);
+      await switchTokenGroup(token, selected, { beforeSwitch: () => assertImageAdmissionCurrent(admission) });
       return {
         outcome: "switched",
         group: selected.group,
@@ -964,6 +1100,7 @@
     }
     if (!config.enabled) {
       pendingCandidates.delete(tokenId);
+      detachAutomaticImageAdmission(tokenId);
       return {
         outcome: "suggested",
         group: token.group || "未设置",
@@ -971,50 +1108,46 @@
         message: `建议切换到 ${selected.group}`,
       };
     }
-    if (!current || !current.available) {
-      selected = await admittedSwitchCandidate(token, candidates, selected, admission);
-      if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
-      await switchTokenGroup(token, selected);
-      return {
-        outcome: "switched",
-        group: selected.group,
-        tone: "success",
-        message: "当前分组不可用，已回退",
-      };
-    }
-
+    const oldBinding = automaticImageAdmission.bindings.get(tokenId);
+    if (oldBinding && (oldBinding.job.candidate.group !== selected.group
+      || oldBinding.job.source !== imageQualityIdentity(selected))) detachAutomaticImageAdmission(tokenId);
     const pending = pendingCandidates.get(tokenId);
     const nextPending = pending && pending.group === selected.group
       ? { group: selected.group, hits: pending.hits + 1 }
       : { group: selected.group, hits: 1 };
     pendingCandidates.set(tokenId, nextPending);
+    // Start near the decision, never throughout a long hold or for a transient first hit.
+    const nearHoldEnd = !shouldKeepCurrentDuringHold(current, holdState)
+      || holdState.remainingMs <= config.pollSeconds * 1000;
+    const nearConfirmation = nextPending.hits >= Math.max(1, config.confirmPolls - 1);
+    const job = IS_AIHUB && nearHoldEnd && nearConfirmation ? prepareAutomaticImageAdmission(token, selected) : null;
+    if (!nearHoldEnd) detachAutomaticImageAdmission(tokenId);
     if (nextPending.hits < config.confirmPolls) {
-      return {
-        outcome: "pending",
-        group: token.group || "未设置",
-        tone: "warning",
-        message: `${selected.group} 待确认 ${nextPending.hits}/${config.confirmPolls}`,
-      };
+      return { outcome: "pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · 确认 ${nextPending.hits}/${config.confirmPolls}${job ? " · " + (job.verdict?.pass ? "图片已通过" : "后台评价中") : ""}` };
     }
-
     if (shouldKeepCurrentDuringHold(current, holdState)) {
-      return {
-        outcome: "holding",
-        group: token.group || "未设置",
-        tone: "success",
-        message: `保持中，仍会检测；${Math.ceil(holdState.remainingMs / 60000)} 分钟后重新择优`,
-      };
+      return { outcome: "holding", group: token.group || "未设置", tone: "success",
+        message: `保持中，${Math.ceil(holdState.remainingMs / 60000)} 分钟后择优${job ? " · 图片预评价中" : ""}` };
     }
-
-    selected = await admittedSwitchCandidate(token, candidates, selected, admission);
-    if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
-    await switchTokenGroup(token, selected);
-    return {
-      outcome: "switched",
-      group: selected.group,
-      tone: "success",
-      message: "已自动切换",
-    };
+    if (IS_AIHUB) {
+      if (job?.error) return { outcome: "image-error", group: token.group || "未设置", tone: "warning", message: job.error };
+      if (!job?.verdict?.pass) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · ${job?.verdict ? "图片未通过，已故障隔离" : "等待后台图片评价，继续监控"}` };
+      assertImageAdmissionCurrent(job.context);
+      if (Number(imageQuality.scoringToken?.id) === tokenId) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · 图片通过，等待评分密钥恢复` };
+      if (!(state.candidateRevision > job.completedRevision)) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · 图片通过，等待最新健康检查` };
+    }
+    await switchTokenGroup(token, selected, { beforeSwitch: () => {
+      if (IS_AIHUB) {
+        assertImageAdmissionCurrent(job.context);
+        if (job.invalid || job.source !== imageQualityIdentity(selected)) throw new Error("待切换评价已失效，本轮取消切换");
+      }
+    } });
+    detachAutomaticImageAdmission(tokenId);
+    return { outcome: "switched", group: selected.group, tone: "success", message: "已自动切换" };
   }
 
   async function runCheck(options) {
@@ -1061,6 +1194,8 @@
     );
     let monitorFallback = false;
     try {
+      if (forceSwitch) await stopAutomaticImageAdmission();
+      const candidateRequestRevision = ++state.candidateRequestRevision;
       let candidates;
       if (IS_AIHUB) {
         const range = aihubMonitorRange(config.metricHours);
@@ -1139,6 +1274,7 @@
       if (manual) renderOptions(true);
       const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
       state.candidates = candidates;
+      state.candidateRevision = candidateRequestRevision;
       state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (targetGroup) {
@@ -1165,7 +1301,12 @@
       if (IS_AIHUB) await tokenCatalogRefresh;
       if (checkConfigKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
       const admission = { ...createImageAdmissionContext(), cancelRevision: checkCancelRevision };
-      const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => getTokenDetail(tokenId)));
+      const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => {
+        // Do not mistake the scorer's temporary route for a business-key change.
+        const scoringToken = imageQuality.scoringToken;
+        return scoringToken && Number(scoringToken.id) === Number(tokenId)
+          ? Promise.resolve({ ...scoringToken }) : getTokenDetail(tokenId);
+      }));
       state.tokenResults = [];
       for (let index = 0; index < details.length; index += 1) {
         const tokenId = selectedTokenIds[index];
@@ -1177,6 +1318,7 @@
           const message = detail.reason instanceof Error ? detail.reason.message : String(detail.reason);
           state.tokenResults.push({ id: tokenId, name: fallbackName, group: "未知", tone: "error", outcome: "error", message });
           addLog(`${fallbackName}：${message}`, "error");
+          detachAutomaticImageAdmission(tokenId);
           continue;
         }
 
@@ -1187,6 +1329,7 @@
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           pendingCandidates.delete(tokenId);
+          detachAutomaticImageAdmission(tokenId);
           state.tokenResults.push({
             id: tokenId,
             name: tokenLabel(token),
@@ -1201,6 +1344,7 @@
         render();
       }
 
+      if (!automaticImageAdmission.bindings.size && !automaticImageAdmission.active) automaticImageAdmission.context = null;
       refreshCandidateIsolationState();
       state.currentGroup = summarizeTokenGroups(state.tokenResults);
       const failedCount = state.tokenResults.filter((result) => result.outcome === "error").length;
@@ -1538,10 +1682,13 @@
   function renderCandidates() {
     if (!refs.candidateRows) return;
     const qualityEnabled = imageQualityEnabled(config);
+    const scoringToken = imageQuality.scoringToken;
+    const displayedTokens = tokensCache.map((token) => scoringToken && Number(scoringToken.id) === Number(token.id)
+      ? { ...token, ...scoringToken } : token);
     if (!sectionNeedsRender(refs.candidateRows, [state.candidates, config.selectionMode,
-      tokensCache, ...tokensCache.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
+      tokensCache, ...displayedTokens.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
       config.tokenIds.join(","), running, qualityEnabled, config.imageQualityModel, config.imageQualityTask,
-      ...(qualityEnabled ? state.candidates.map(candidateImageQuality) : [])])) return;
+      ...(qualityEnabled ? state.candidates.flatMap((candidate) => [candidateImageQuality(candidate), automaticImageAdmissionStatus(candidate)]) : [])])) return;
     refs.candidateRows.replaceChildren();
     const rows = IS_AIHUB ? sortCandidateRowsForMode(state.candidates, config.selectionMode) : state.candidates
       .slice()
@@ -1671,7 +1818,7 @@
         row.classList.add("candidate-details");
         const heading = document.createElement("div");
         heading.className = "candidate-heading";
-        const currentTokens = candidateCurrentTokens(candidate, tokensCache, config.tokenIds);
+        const currentTokens = candidateCurrentTokens(candidate, displayedTokens, config.tokenIds);
         if (currentTokens.length) {
           row.dataset.current = "true";
           const currentTag = document.createElement("span");
@@ -1858,7 +2005,7 @@
     if (!entries.length) {
       const empty = document.createElement("div");
       empty.className = "isolation-empty";
-      empty.textContent = "切换后的健康检查未发现需要隔离的分组";
+      empty.textContent = "当前无健康故障或图片未通过的隔离分组";
       refs.isolationRows.appendChild(empty);
       return;
     }
@@ -1881,7 +2028,8 @@
       model.textContent = modelIdentityLabel(entry.model);
       model.title = `模型：${modelIdentityLabel(entry.model)}`;
       const reason = document.createElement("span");
-      reason.textContent = "切换后健康检查失败";
+      reason.textContent = `${entry.type === "image" ? "图片" : "健康"} · ${entry.reason || "切换后健康检查失败"}`;
+      reason.title = reason.textContent;
       const remaining = document.createElement("span");
       remaining.className = "isolation-remaining";
       remaining.textContent = `剩余 ${formatIsolationRemaining(entry.until, now)}`;

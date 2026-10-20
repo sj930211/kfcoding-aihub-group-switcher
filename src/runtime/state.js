@@ -40,13 +40,16 @@
     }),
   }) : null;
   const pendingCandidates = new Map();
+  const automaticImageAdmission = {
+    context: null, jobs: new Map(), bindings: new Map(), active: null, draining: null,
+  };
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
   // Evaluations live only in this page; historical persisted caches are never read or rewritten.
   const imageQuality = {
     records: new Map(), catalogAt: 0, catalogRevision: 0, cancelRevision: 0,
     controller: null, catalog: [], catalogReady: false, status: "",
     modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
-    sample: null, testStatus: "", testResult: "",
+    sample: null, testStatus: "", testResult: "", recoveryError: "", scoringToken: null,
   };
   const state = {
     tone: "idle",
@@ -55,6 +58,7 @@
     bestGroup: "-",
     lastCheck: "-",
     candidates: [],
+    candidateRevision: 0, candidateRequestRevision: 0,
     tokenResults: [],
     todayUsage: {
       balance: 0,

@@ -647,11 +647,13 @@
   }
 
   function persistFormConfig() {
+    const previousConfigKey = JSON.stringify(config);
     const previousIdentity = `${config.tokenIds.join(",")}:${targetModelIdentity(config)}`;
     const previousQualityKey = config.imageQualityKeyId;
     const previousQuality = imageQualitySettingsKey(config);
     const wasEnabled = config.enabled;
     config = readFormConfig();
+    if (previousConfigKey !== JSON.stringify(config)) invalidateAutomaticImageAdmission();
     if (previousQuality !== imageQualitySettingsKey(config)) {
       cancelImageQuality();
       imageQuality.status = "";

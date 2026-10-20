@@ -219,6 +219,8 @@
         model: String(entry.model || ""),
         group: String(entry.group || "").trim(),
         until: Math.max(0, Number(entry.until) || 0),
+        ...(entry.type === "image" || entry.type === "health" ? { type: entry.type,
+          reason: String(entry.reason || "").slice(0, 180) } : {}),
       }))
       .filter((entry) => entry.model && entry.group && entry.until > 0)
       .slice(0, 100);
@@ -264,10 +266,10 @@
     const restored = normalizeSwitchGuardState({ blacklist: entries }).blacklist
       .filter((entry) => entry.until > timestamp);
     const byKey = new Map(
-      state.blacklist.map((entry) => [`${entry.model}\u0000${entry.group}`, entry]),
+      state.blacklist.map((entry) => [`${entry.model}\u0000${entry.group}\u0000${entry.type || "health"}`, entry]),
     );
     restored.forEach((entry) => {
-      const key = `${entry.model}\u0000${entry.group}`;
+      const key = `${entry.model}\u0000${entry.group}\u0000${entry.type || "health"}`;
       const current = byKey.get(key);
       if (!current || current.until < entry.until) byKey.set(key, entry);
     });
@@ -275,22 +277,18 @@
     return state;
   }
 
-  function applyTemporaryBlacklist(candidates, guardState, model, now) {
+  function applyTemporaryBlacklist(candidates, guardState, model, now, options) {
     const blocked = new Set(
       normalizeSwitchGuardState(guardState).blacklist
-        .filter((entry) => entry.model === model && entry.until > now)
+        .filter((entry) => entry.model === model && entry.until > now
+          && !(options?.ignoreImage && entry.type === "image"))
         .map((entry) => entry.group),
     );
     return candidates.map((candidate) => {
-      if (!blocked.has(candidate.group)) return candidate;
-      return {
-        ...candidate,
-        available: false,
-        reasons: [
-          "temporarily-blacklisted",
-          ...candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted"),
-        ],
-      };
+      const reasons = candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted");
+      if (blocked.has(candidate.group)) reasons.unshift("temporarily-blacklisted");
+      return { ...candidate, reasons,
+        available: reasons.length === 0 && (candidate.available || candidate.reasons.includes("temporarily-blacklisted")) };
     });
   }
 

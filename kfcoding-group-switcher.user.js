@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      0.19.0
+// @version      0.20.0
 // @description  在 KFCoding、AIHub、ooioo 和 FluxionAI 监控分组倍率与可用性，并切换一个或多个 API 密钥。
 // @author       sj930211
 // @license      MIT
@@ -91,7 +91,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "0.19.0";
+  const SCRIPT_VERSION = "0.20.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -381,6 +381,8 @@
         model: String(entry.model || ""),
         group: String(entry.group || "").trim(),
         until: Math.max(0, Number(entry.until) || 0),
+        ...(entry.type === "image" || entry.type === "health" ? { type: entry.type,
+          reason: String(entry.reason || "").slice(0, 180) } : {}),
       }))
       .filter((entry) => entry.model && entry.group && entry.until > 0)
       .slice(0, 100);
@@ -426,10 +428,10 @@
     const restored = normalizeSwitchGuardState({ blacklist: entries }).blacklist
       .filter((entry) => entry.until > timestamp);
     const byKey = new Map(
-      state.blacklist.map((entry) => [`${entry.model}\u0000${entry.group}`, entry]),
+      state.blacklist.map((entry) => [`${entry.model}\u0000${entry.group}\u0000${entry.type || "health"}`, entry]),
     );
     restored.forEach((entry) => {
-      const key = `${entry.model}\u0000${entry.group}`;
+      const key = `${entry.model}\u0000${entry.group}\u0000${entry.type || "health"}`;
       const current = byKey.get(key);
       if (!current || current.until < entry.until) byKey.set(key, entry);
     });
@@ -437,22 +439,18 @@
     return state;
   }
 
-  function applyTemporaryBlacklist(candidates, guardState, model, now) {
+  function applyTemporaryBlacklist(candidates, guardState, model, now, options) {
     const blocked = new Set(
       normalizeSwitchGuardState(guardState).blacklist
-        .filter((entry) => entry.model === model && entry.until > now)
+        .filter((entry) => entry.model === model && entry.until > now
+          && !(options?.ignoreImage && entry.type === "image"))
         .map((entry) => entry.group),
     );
     return candidates.map((candidate) => {
-      if (!blocked.has(candidate.group)) return candidate;
-      return {
-        ...candidate,
-        available: false,
-        reasons: [
-          "temporarily-blacklisted",
-          ...candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted"),
-        ],
-      };
+      const reasons = candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted");
+      if (blocked.has(candidate.group)) reasons.unshift("temporarily-blacklisted");
+      return { ...candidate, reasons,
+        available: reasons.length === 0 && (candidate.available || candidate.reasons.includes("temporarily-blacklisted")) };
     });
   }
 
@@ -2170,19 +2168,33 @@
 
   function updateImageQualityCatalog(summary) {
     imageQuality.catalogReady = true;
-    imageQuality.catalogAt = Date.now();
-    imageQuality.catalogRevision += 1;
-    imageQuality.catalog = summary.apis.map((api) => ({
+    const catalog = summary.apis.map((api) => ({
       group: api.planType, groupId: Number(api.id), detectionMedia: api.detectionMedia,
     }));
+    const fingerprint = (rows) => JSON.stringify(rows.map((row) => [row.groupId, row.group, imageQualityIdentity(row)]).sort((a, b) => a[0] - b[0]));
+    const changed = fingerprint(catalog) !== fingerprint(imageQuality.catalog);
+    imageQuality.catalog = catalog;
+    if (changed) {
+      imageQuality.catalogAt = Math.max(Date.now(), Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) + 1);
+      imageQuality.catalogRevision += 1;
+      if (typeof invalidateAutomaticImageAdmission === "function") invalidateAutomaticImageAdmission();
+    }
     imageQuality.sample = imageQuality.catalog.find((row) => imageQualityIdentity(row)) || null;
     const current = new Map(imageQuality.catalog.map((row) => [Number(row.groupId), imageQualityIdentity(row)]));
     for (const [id, record] of imageQuality.records) {
       if (!current.get(id) || current.get(id) !== record.source) imageQuality.records.delete(id);
     }
     // Only a directory watermark is shared between tabs, never scores or image data.
-    GM_setValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, Math.max(imageQuality.catalogAt,
-      Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) || 0));
+    if (changed) GM_setValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, imageQuality.catalogAt);
+    else {
+      // This response refreshed our own directory too; acknowledge a newer tab watermark.
+      const watermark = Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0));
+      if (watermark > imageQuality.catalogAt) {
+        imageQuality.catalogAt = watermark;
+        imageQuality.catalogRevision += 1;
+        if (typeof invalidateAutomaticImageAdmission === "function") invalidateAutomaticImageAdmission();
+      }
+    }
   }
 
   function parseImageQualityResponse(payload) {
@@ -2258,7 +2270,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     return `效果 ${entry.score}/100 · 任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15\n`
       + `协调规则 v3${scores.capReason ? ` · 分项合计${scores.rawScore}，${scores.capReason}封顶${scores.score}` : ""}\n`
       + IMAGE_QUALITY_CRITERIA.map(([name, label, max]) => `${label} ${entry.criteria[name].score}/${max}${compact ? "" : `：${entry.criteria[name].evidence}${IMAGE_QUALITY_CONNECTIONS.includes(name) ? `（${entry.criteria[name].from} → ${entry.criteria[name].to}；${{verified:"成立",occluded:"遮挡",unclear:"含糊",broken:"不成立"}[entry.criteria[name].connection]}）` : ""}`}`).join("\n") + "\n"
-      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${entry.model || config.imageQualityModel}${entry.scoringGroup ? ` · 评分分组 ${entry.scoringGroup}` : ""} · 本页上次评价，下次切换重新计算\n`
+      + `证据充分性：${{ high: "高", medium: "中", low: "低（不通过自动准入）" }[entry.confidence]} · ${entry.model || config.imageQualityModel}${entry.scoringGroup ? ` · 评分分组 ${entry.scoringGroup}` : ""} · 本页评价记录，仅本次待切换决策可采用\n`
       + `${new Date(entry.assessedAt).toLocaleString()}\n${compact ? "完整可见依据见图片或设置列表" : entry.reasons.join("；")}`;
   }
 
@@ -2267,7 +2279,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const score = document.createElement("button");
     score.type = "button";
     score.className = "candidate-image-score";
-    score.textContent = entry ? `${entry.score}分` : "未评";
+    const progress = typeof automaticImageAdmissionStatus === "function" ? automaticImageAdmissionStatus(candidate) : "";
+    score.textContent = progress || (entry ? `${entry.score}分` : "未评");
     score.dataset.qualityDetail = imageQualityDescription(entry, true);
     score.title = score.dataset.qualityDetail;
     score.setAttribute("aria-label", `${candidate.group} · 评价${entry ? ` ${entry.score}/100` : "未完成"}`);
@@ -2281,11 +2294,11 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     if (!container) return;
     const rows = imageQualityRows().filter(imageQualityIdentity);
     const enabled = imageQualityEnabled(config);
-    if (!sectionNeedsRender(container, [enabled, imageQuality.controller,
+    if (!sectionNeedsRender(container, [enabled, imageQuality.controller, imageQuality.status,
       ...rows.flatMap((row) => [row.groupId, row.group, imageQualityIdentity(row), candidateImageQuality(row)])])) return;
     container.replaceChildren();
     refs.imageQualityListSummary.textContent = enabled
-      ? `${rows.filter(candidateImageQuality).length} 已评分 / ${rows.length} 张当前图片 · 仅本页展示，切换时重新评价`
+      ? `${rows.filter(candidateImageQuality).length} 已评分 / ${rows.length} 张当前图片 · 仅本页展示，每次决策单独评价`
       : "选择评分密钥和模型后展示当前图片评价";
     if (!enabled || !rows.length) {
       const empty = document.createElement("p");
@@ -2310,8 +2323,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       heading.append(name, createImageQualityScore(candidate));
       const breakdown = document.createElement("p");
       breakdown.className = "image-quality-breakdown";
-      breakdown.textContent = entry ? `任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15`
-        : "尚无当前原图的有效评分";
+      const progress = typeof automaticImageAdmissionStatus === "function" ? automaticImageAdmissionStatus(candidate) : "";
+      breakdown.textContent = progress || (entry ? `任务 ${entry.task}/20 · 结构 ${entry.structure}/40 · 协调 ${entry.harmony}/25 · 完成 ${entry.finish}/15`
+        : "未评价");
       if (entry) {
         const scores = imageQualityScores(entry.criteria);
         if (scores.capReason) breakdown.textContent += ` · ${scores.capReason}封顶${scores.score}`;
@@ -2322,7 +2336,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       summary.textContent = entry ? "评价依据与时间" : "评分状态";
       const detail = document.createElement("p");
       detail.textContent = entry ? imageQualityDescription(entry)
-        : "自动切换前或点击手动评价时计算；刷新页面后不保留。";
+        : "候选组接近切换条件时后台评价；刷新页面后不保留。";
       details.append(summary, detail);
       copy.append(heading, breakdown, details);
       row.append(image, copy);
@@ -2353,7 +2367,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     refs.imageQualityRun.disabled = busy || !available;
     refs.imageQualityRun.textContent = available ? "评价当前图片（计费）" : "暂无图片";
     refs.imageQualityStop.hidden = !imageQuality.controller;
-    refs.imageQualityStatus.textContent = imageQuality.status || `本页已评价 ${rows.filter(candidateImageQuality).length} · 刷新列表不调用模型`;
+    refs.imageQualityStatus.textContent = imageQuality.recoveryError || imageQuality.status || `本页已评价 ${rows.filter(candidateImageQuality).length} · 刷新列表不调用模型`;
   }
 
 
@@ -2467,14 +2481,19 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       },
       async restore() {
         if (!changed) return;
-        const latestId = imageQualityGroupId(await read());
-        if (latestId === originalId) return;
+        let latest = await read();
+        const latestId = imageQualityGroupId(latest);
+        if (latestId === originalId) return latest;
         if (latestId !== expectedId && latestId !== pendingId) throw new Error("图片评分请求失败：评分密钥分组已被其他操作改变，未覆盖；请检查评分密钥当前分组");
         await put(originalId);
-        if (imageQualityGroupId(await read()) !== originalId) throw new Error("图片评分请求失败：评分密钥原分组恢复校验失败，请手动检查；本轮不切换业务分组");
+        latest = await read();
+        if (imageQualityGroupId(latest) !== originalId) throw new Error("图片评分请求失败：评分密钥原分组恢复校验失败，请手动检查；本轮不切换业务分组");
+        return latest;
       },
     };
     if (typeof session.credential !== "string" || !/^[A-Za-z0-9_-]{16,512}$/.test(session.credential)) throw new Error("无法读取完整评分密钥，请重新登录或更换密钥");
+    imageQuality.scoringToken = { id: settings.imageQualityKeyId, name: original.name,
+      status: original.status, groupId: originalId, group: imageQualityGroupName(original) };
     return session;
   }
 
@@ -2546,6 +2565,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   function cancelImageQuality() {
+    if (typeof invalidateAutomaticImageAdmission === "function") invalidateAutomaticImageAdmission();
     imageQuality.cancelRevision = (imageQuality.cancelRevision || 0) + 1;
     imageQuality.controller?.abort();
     imageQuality.modelsController?.abort();
@@ -2768,6 +2788,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
   async function runImageQuality(options) {
     if (!imageQualityEnabled(config) || imageQuality.controller || imageQuality.modelsController) return;
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
     const test = options?.test === true;
     const settings = { ...config };
     const settingsKey = imageQualitySettingsKey(settings);
@@ -2780,8 +2801,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     budget.unavailableGroups ||= new Set();
     const controller = new AbortController();
     imageQuality.controller = controller;
-    imageQuality.status = useFallback ? "正在评价当前图片；临时切组期间串行执行，每批最多10次模型请求"
-      : "正在评价当前图片；最多2张并发，每批最多10次模型请求";
+    options?.onController?.(controller);
+    imageQuality.status = options?.candidate ? `正在后台评价 ${options.candidate.group}（计费）`
+      : "正在评价当前图片（计费）";
     if (test) { imageQuality.testStatus = `正在测试 ${settings.imageQualityModel}（当前分组、1张1次，计费）…`; imageQuality.testResult = ""; }
     render();
     let session;
@@ -2842,7 +2864,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       }
       throw Object.assign(new Error(test
         ? "图片评分请求失败：当前评分分组暂不可用；本次仅请求1次，未切换分组或模型"
-        : "图片评分请求失败：当前及备用评分分组均不可用，本轮停止自动切换；未拉黑图片分组"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+        : "图片评分请求失败：当前及备用评分分组均不可用，本轮停止自动切换；未隔离图片分组"), { code: "IMAGE_SCORER_UNAVAILABLE" });
     };
     const worker = async () => {
       while (!controller.signal.aborted && !failure && next < batch.length) {
@@ -2870,9 +2892,20 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           await Promise.all(Array.from({ length: test || options?.candidate || useFallback ? 1 : 2 }, worker));
         } catch (error) { failure ||= error; }
         finally {
-          try { await session?.restore(); }
+          try {
+            const restored = await session?.restore();
+            if (restored && typeof tokensCache !== "undefined") {
+              const cached = tokensCache.find((token) => Number(token.id) === settings.imageQualityKeyId);
+              if (cached) Object.assign(cached, { groupId: imageQualityGroupId(restored), group: imageQualityGroupName(restored) });
+            }
+          }
           catch {
-            failure = Object.assign(new Error("图片评分请求失败：未能确认评分密钥已恢复原分组，请手动检查；本轮停止自动切换"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+            if (typeof tokensCache !== "undefined") {
+              const cached = tokensCache.find((token) => Number(token.id) === settings.imageQualityKeyId);
+              if (cached) Object.assign(cached, { groupId: 0, group: "" });
+            }
+            failure = Object.assign(new Error("图片评分请求失败：未能确认评分密钥已恢复原分组，请手动检查后刷新页面；所有切换已暂停"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+            imageQuality.recoveryError = failure.message;
             published.forEach((id) => imageQuality.records.delete(id));
             selectedEntry = null;
           }
@@ -2894,6 +2927,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         imageQuality.status = "评价已停止；已发出的请求可能已计费，已完成必要的评分分组恢复";
         if (test) imageQuality.testStatus = imageQuality.status;
       }
+      imageQuality.scoringToken = null;
       imageQuality.controller = null;
       render();
     }
@@ -3755,13 +3789,16 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     }),
   }) : null;
   const pendingCandidates = new Map();
+  const automaticImageAdmission = {
+    context: null, jobs: new Map(), bindings: new Map(), active: null, draining: null,
+  };
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
   // Evaluations live only in this page; historical persisted caches are never read or rewritten.
   const imageQuality = {
     records: new Map(), catalogAt: 0, catalogRevision: 0, cancelRevision: 0,
     controller: null, catalog: [], catalogReady: false, status: "",
     modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
-    sample: null, testStatus: "", testResult: "",
+    sample: null, testStatus: "", testResult: "", recoveryError: "", scoringToken: null,
   };
   const state = {
     tone: "idle",
@@ -3770,6 +3807,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     bestGroup: "-",
     lastCheck: "-",
     candidates: [],
+    candidateRevision: 0, candidateRequestRevision: 0,
     tokenResults: [],
     todayUsage: {
       balance: 0,
@@ -4518,6 +4556,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
   async function switchTokenGroupUnlocked(token, candidate, options) {
     const switchOptions = options || {};
+    switchOptions.beforeSwitch?.();
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
     if (IS_AIHUB_API) {
       if (!Number.isFinite(Number(candidate.groupId)) || Number(candidate.groupId) <= 0) {
         throw new Error(`目标分组 ${candidate.group} 缺少有效 ID`);
@@ -4569,49 +4609,159 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     }
   }
 
+  // Only a pending decision owns these results. Display records never grant admission.
+  function automaticImageAdmissionStatus(candidate) {
+    const job = [...automaticImageAdmission.jobs.values()].find((item) => !item.invalid
+      && item.candidate.group === candidate.group && item.source === imageQualityIdentity(candidate));
+    if (!job) return "";
+    if (job.error) return "服务异常";
+    if (!job.verdict) return automaticImageAdmission.active === job ? "评价中" : "待评价";
+    return job.verdict.pass ? "" : "未通过";
+  }
+
+  function detachAutomaticImageAdmission(tokenId) {
+    const binding = automaticImageAdmission.bindings.get(Number(tokenId));
+    if (!binding) return;
+    automaticImageAdmission.bindings.delete(Number(tokenId));
+    const job = binding.job;
+    if (![...automaticImageAdmission.bindings.values()].some((item) => item.job === job)) {
+      job.invalid = true;
+      automaticImageAdmission.jobs.delete(job.key);
+      if (automaticImageAdmission.active === job) job.controller?.abort();
+    }
+  }
+
+  function invalidateAutomaticImageAdmission() {
+    for (const job of automaticImageAdmission.jobs.values()) job.invalid = true;
+    automaticImageAdmission.active?.controller?.abort();
+    automaticImageAdmission.context = null;
+    automaticImageAdmission.jobs.clear();
+    automaticImageAdmission.bindings.clear();
+  }
+
+  async function stopAutomaticImageAdmission() {
+    invalidateAutomaticImageAdmission();
+    // Restoration runs inside the scorer's finally block, even on abort.
+    await automaticImageAdmission.draining;
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
+  }
+
+  function startAutomaticImageAdmissionQueue() {
+    if (automaticImageAdmission.draining) return;
+    const drain = async () => {
+      for (;;) {
+        const job = [...automaticImageAdmission.jobs.values()].find((item) => !item.invalid && !item.started);
+        if (!job) return;
+        job.started = true;
+        automaticImageAdmission.active = job;
+        try {
+          if (job.context.scorerFailure) throw job.context.scorerFailure;
+          job.verdict = await checkCandidateImageAdmission(job.candidate, job.context, () => {
+            if (job.invalid) throw new Error("候选已改变，本次评价已失效");
+          }, (controller) => { job.controller = controller; });
+          // A late result must not affect a business decision abandoned outside this page.
+          for (const [tokenId, binding] of [...automaticImageAdmission.bindings]) {
+            if (binding.job !== job) continue;
+            const latest = Number(imageQuality.scoringToken?.id) === tokenId
+              ? imageQuality.scoringToken : await getTokenDetail(tokenId);
+            if (latest.group !== binding.token.group) detachAutomaticImageAdmission(tokenId);
+          }
+          if (job.invalid) continue;
+          assertImageAdmissionCurrent(job.context);
+          job.completedRevision = state.candidateRequestRevision;
+          if (!job.verdict.pass) isolateImageCandidate(job.candidate, job.verdict.reason);
+          imageQuality.status = `${job.candidate.group} · ${job.verdict.pass ? "图片通过，等待最新健康检查" : job.verdict.reason + "，已故障隔离"}`;
+        } catch (error) {
+          if (!job.invalid) {
+            job.error = error instanceof Error ? error.message : String(error);
+            imageQuality.status = job.error;
+          }
+        } finally {
+          automaticImageAdmission.active = null;
+          render();
+        }
+      }
+    };
+    automaticImageAdmission.draining = drain().finally(() => {
+      automaticImageAdmission.draining = null;
+      if ([...automaticImageAdmission.jobs.values()].some((job) => !job.invalid && !job.started)) startAutomaticImageAdmissionQueue();
+      if (config.enabled) scheduleNext(250);
+    });
+  }
+
+  function prepareAutomaticImageAdmission(token, candidate) {
+    let context = automaticImageAdmission.context;
+    if (context) {
+      try { assertImageAdmissionCurrent(context); }
+      catch { invalidateAutomaticImageAdmission(); context = null; }
+    }
+    if (!context) automaticImageAdmission.context = context = createImageAdmissionContext();
+    const tokenId = Number(token.id);
+    const previous = automaticImageAdmission.bindings.get(tokenId);
+    const key = JSON.stringify([candidate.groupId, candidate.group, imageQualityIdentity(candidate)]);
+    if (previous && (previous.job.key !== key || previous.token.group !== token.group)) detachAutomaticImageAdmission(tokenId);
+    let job = automaticImageAdmission.jobs.get(key);
+    if (!job) {
+      job = { key, candidate, source: imageQualityIdentity(candidate), context,
+        verdict: null, error: "", invalid: false, started: false };
+      automaticImageAdmission.jobs.set(key, job);
+    }
+    automaticImageAdmission.bindings.set(tokenId, { job, token: { ...token } });
+    startAutomaticImageAdmissionQueue();
+    return job;
+  }
+
   function createImageAdmissionContext() {
     return { remaining: 10, unavailableGroups: new Set(), scorerFailure: null, configKey: JSON.stringify(config), catalogRevision: imageQuality.catalogRevision,
       cancelRevision: imageQuality.cancelRevision || 0 };
   }
 
   function assertImageAdmissionCurrent(context) {
+    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
     if (context.configKey !== JSON.stringify(config) || context.catalogRevision !== imageQuality.catalogRevision
       || context.cancelRevision !== (imageQuality.cancelRevision || 0)
       || Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) > imageQuality.catalogAt) {
-      throw new Error("设置、图片目录已变更或评分已停止，本轮取消切换；未继续拉黑");
+      throw new Error("设置、图片目录已变更或评分已停止，本轮取消切换；未继续隔离");
     }
   }
 
-  async function waitForImageAdmissionIdle(context) {
+  async function waitForImageAdmissionIdle(context, assertJob) {
     const deadline = Date.now() + 90000;
     while (imageQuality.controller || imageQuality.modelsController) {
+      assertJob();
       assertImageAdmissionCurrent(context);
-      if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未拉黑");
+      if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未隔离");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     assertImageAdmissionCurrent(context);
   }
 
-  async function checkCandidateImageAdmission(candidate, context) {
+  async function checkCandidateImageAdmission(candidate, context, assertJob = () => {}, onController) {
+    assertJob();
     assertImageAdmissionCurrent(context);
     if (!imageQualityIdentity(candidate)) return { pass: false, reason: "没有可用图片" };
-    if (!imageQualityEnabled(config)) return { pass: false, reason: "未配置评分密钥或模型，没有有效评价" };
-    await waitForImageAdmissionIdle(context);
+    if (!imageQualityEnabled(config)) throw new Error("请配置评分密钥和模型；正常择优已暂停，故障恢复仍可执行");
+    await waitForImageAdmissionIdle(context, assertJob);
     if (context.scorerFailure) throw context.scorerFailure;
-    setStatus(`切换前重新评价 ${candidate.group} 的图片（计费）…`, "running");
+    assertJob();
     let entry;
     try {
-      entry = await runImageQuality({ candidate, budget: context });
+      entry = await runImageQuality({ candidate, budget: context, onController });
     } catch (error) {
+      assertJob();
       assertImageAdmissionCurrent(context);
-      if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续拉黑");
-      if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次请求上限，保持当前分组；未继续拉黑");
+      if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续隔离");
+      if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次请求上限，保持当前分组；未继续隔离");
       if (error?.code === "IMAGE_SCORER_UNAVAILABLE") {
         context.scorerFailure = new Error(imageQualityFailureMessage(error, new AbortController()));
         throw context.scorerFailure;
       }
-      return { pass: false, reason: "图片读取或评分失败，没有有效评价" };
+      if (error?.code === "IMAGE_READ_FAILED") return { pass: false, reason: "图片读取失败，没有有效评价" };
+      if (error?.code === "IMAGE_UNASSESSABLE") return { pass: false, reason: "图片无法识别，没有有效评价" };
+      context.scorerFailure = new Error("图片读取或评价失败，本次决策停止；未隔离业务分组");
+      throw context.scorerFailure;
     }
+    assertJob();
     assertImageAdmissionCurrent(context);
     return imageQualityAdmissionVerdict(entry, config.imageQualityMinScore);
   }
@@ -4620,11 +4770,12 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const now = Date.now();
     const model = targetModelIdentity(config);
     const guard = getSwitchGuardState(now);
-    guard.blacklist = guard.blacklist.filter((entry) => entry.model !== model || entry.group !== candidate.group);
-    guard.blacklist.push({ model, group: candidate.group, until: now + config.blacklistMinutes * 60000 });
+    guard.blacklist = guard.blacklist.filter((entry) => entry.model !== model || entry.group !== candidate.group || entry.type !== "image");
+    guard.blacklist.push({ model, group: candidate.group, type: "image", reason,
+      until: now + config.blacklistMinutes * 60000 });
     saveSwitchGuardState(guard);
     refreshCandidateIsolationState();
-    addLog(`${candidate.group}：${reason}，临时拉黑 ${config.blacklistMinutes} 分钟`, "warning");
+    addLog(`${candidate.group}：${reason}，故障隔离 ${config.blacklistMinutes} 分钟`, "warning");
     render();
   }
 
@@ -4650,6 +4801,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
   function imageAdmissionHoldResult(token) {
     pendingCandidates.delete(Number(token.id));
+    detachAutomaticImageAdmission(token.id);
     return { outcome: "image-blocked", group: token.group || "未设置", tone: "warning",
       message: "没有需要切换且通过图片准入的分组，保持当前分组" };
   }
@@ -4696,27 +4848,30 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
 
     if (candidateHasHealthFailure(current)) {
       guardState.blacklist = guardState.blacklist.filter(
-        (entry) => entry.model !== targetModelIdentity(config) || entry.group !== guard.toGroup,
+        (entry) => entry.model !== targetModelIdentity(config) || entry.group !== guard.toGroup || entry.type === "image",
       );
       guardState.blacklist.push({
         model: targetModelIdentity(config),
         group: guard.toGroup,
         until: now + config.blacklistMinutes * 60000,
+        type: "health", reason: "切换后健康检查失败",
       });
     }
     delete guardState.byToken[tokenId];
     saveSwitchGuardState(guardState);
 
-    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now);
+    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now, { ignoreImage: true });
     const rollbackTarget = selectRollbackCandidate(eligible, guard.fromGroup, config.selectionMode);
     let fallback = rollbackTarget.candidate;
     if (!fallback) return IS_AIHUB ? imageAdmissionHoldResult(token) : null;
-    fallback = await admittedSwitchCandidate(token, eligible, fallback, admission);
+    await stopAutomaticImageAdmission();
+    assertImageAdmissionCurrent(admission);
     if (!fallback || fallback.group === token.group) return imageAdmissionHoldResult(token);
 
     const destination = fallback.group === guard.fromGroup ? "原分组" : "其他可用分组";
     await switchTokenGroup(token, fallback, {
       trackRollback: false,
+      beforeSwitch: () => assertImageAdmissionCurrent(admission),
       logTone: "warning",
       logMessage: `${tokenLabel(token)} 的 ${guard.toGroup} 观察失败，已回滚到${destination} ${fallback.group}`,
     });
@@ -4735,9 +4890,26 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const admission = options?.admission || createImageAdmissionContext();
     if (admission.configKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
     validateToken(token);
+    const binding = automaticImageAdmission.bindings.get(tokenId);
+    if (binding && (binding.token.group !== token.group || Number(binding.token.groupId) !== Number(token.groupId))) {
+      detachAutomaticImageAdmission(tokenId);
+      pendingCandidates.delete(tokenId);
+    }
+    const recoveryCandidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now(), { ignoreImage: true });
     if (config.enabled && !forceSwitch) {
-      const rollback = await handleRollbackGuard(token, candidates, admission);
+      const rollback = await handleRollbackGuard(token, recoveryCandidates, admission);
       if (rollback) return rollback;
+    }
+    const healthyCurrent = recoveryCandidates.find((candidate) => candidate.group === token.group);
+    if (config.enabled && !forceSwitch && (!healthyCurrent || !healthyCurrent.available)) {
+      const recovery = selectSwitchCandidate(recoveryCandidates, token.group, "", { mode: config.selectionMode });
+      await stopAutomaticImageAdmission();
+      assertImageAdmissionCurrent(admission);
+      pendingCandidates.delete(tokenId);
+      if (!recovery || recovery.group === token.group) return { outcome: "recovery-blocked", group: token.group || "未设置",
+        tone: "warning", message: "当前分组不可用，没有可恢复的健康分组" };
+      await switchTokenGroup(token, recovery, { beforeSwitch: () => assertImageAdmissionCurrent(admission) });
+      return { outcome: "switched", group: recovery.group, tone: "success", message: "故障恢复，已跳过图片检查" };
     }
     // Previous tokens in this check may already have isolated an image candidate.
     candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
@@ -4756,12 +4928,14 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     );
 
     if (!selected) {
+      detachAutomaticImageAdmission(tokenId);
       if (IS_AIHUB && !targetGroup) return imageAdmissionHoldResult(token);
       const reasonSummary = summarizeFailures(candidates);
       throw new Error(`没有满足条件的分组${reasonSummary ? `：${reasonSummary}` : ""}`);
     }
     if (!shouldSwitchCandidate(selected, token.group)) {
       pendingCandidates.delete(tokenId);
+      detachAutomaticImageAdmission(tokenId);
       if (config.enabled && !forceSwitch && !targetGroup && holdState.expired) {
         recordSwitchHoldStart(tokenId, selected);
         return {
@@ -4782,7 +4956,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       // An explicit manual destination bypasses image admission, including list buttons.
       if (!targetGroup) selected = await admittedSwitchCandidate(token, candidates, selected, admission);
       if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
-      await switchTokenGroup(token, selected);
+      await switchTokenGroup(token, selected, { beforeSwitch: () => assertImageAdmissionCurrent(admission) });
       return {
         outcome: "switched",
         group: selected.group,
@@ -4792,6 +4966,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     }
     if (!config.enabled) {
       pendingCandidates.delete(tokenId);
+      detachAutomaticImageAdmission(tokenId);
       return {
         outcome: "suggested",
         group: token.group || "未设置",
@@ -4799,50 +4974,46 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         message: `建议切换到 ${selected.group}`,
       };
     }
-    if (!current || !current.available) {
-      selected = await admittedSwitchCandidate(token, candidates, selected, admission);
-      if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
-      await switchTokenGroup(token, selected);
-      return {
-        outcome: "switched",
-        group: selected.group,
-        tone: "success",
-        message: "当前分组不可用，已回退",
-      };
-    }
-
+    const oldBinding = automaticImageAdmission.bindings.get(tokenId);
+    if (oldBinding && (oldBinding.job.candidate.group !== selected.group
+      || oldBinding.job.source !== imageQualityIdentity(selected))) detachAutomaticImageAdmission(tokenId);
     const pending = pendingCandidates.get(tokenId);
     const nextPending = pending && pending.group === selected.group
       ? { group: selected.group, hits: pending.hits + 1 }
       : { group: selected.group, hits: 1 };
     pendingCandidates.set(tokenId, nextPending);
+    // Start near the decision, never throughout a long hold or for a transient first hit.
+    const nearHoldEnd = !shouldKeepCurrentDuringHold(current, holdState)
+      || holdState.remainingMs <= config.pollSeconds * 1000;
+    const nearConfirmation = nextPending.hits >= Math.max(1, config.confirmPolls - 1);
+    const job = IS_AIHUB && nearHoldEnd && nearConfirmation ? prepareAutomaticImageAdmission(token, selected) : null;
+    if (!nearHoldEnd) detachAutomaticImageAdmission(tokenId);
     if (nextPending.hits < config.confirmPolls) {
-      return {
-        outcome: "pending",
-        group: token.group || "未设置",
-        tone: "warning",
-        message: `${selected.group} 待确认 ${nextPending.hits}/${config.confirmPolls}`,
-      };
+      return { outcome: "pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · 确认 ${nextPending.hits}/${config.confirmPolls}${job ? " · " + (job.verdict?.pass ? "图片已通过" : "后台评价中") : ""}` };
     }
-
     if (shouldKeepCurrentDuringHold(current, holdState)) {
-      return {
-        outcome: "holding",
-        group: token.group || "未设置",
-        tone: "success",
-        message: `保持中，仍会检测；${Math.ceil(holdState.remainingMs / 60000)} 分钟后重新择优`,
-      };
+      return { outcome: "holding", group: token.group || "未设置", tone: "success",
+        message: `保持中，${Math.ceil(holdState.remainingMs / 60000)} 分钟后择优${job ? " · 图片预评价中" : ""}` };
     }
-
-    selected = await admittedSwitchCandidate(token, candidates, selected, admission);
-    if (!selected || selected.group === token.group) return imageAdmissionHoldResult(token);
-    await switchTokenGroup(token, selected);
-    return {
-      outcome: "switched",
-      group: selected.group,
-      tone: "success",
-      message: "已自动切换",
-    };
+    if (IS_AIHUB) {
+      if (job?.error) return { outcome: "image-error", group: token.group || "未设置", tone: "warning", message: job.error };
+      if (!job?.verdict?.pass) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · ${job?.verdict ? "图片未通过，已故障隔离" : "等待后台图片评价，继续监控"}` };
+      assertImageAdmissionCurrent(job.context);
+      if (Number(imageQuality.scoringToken?.id) === tokenId) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · 图片通过，等待评分密钥恢复` };
+      if (!(state.candidateRevision > job.completedRevision)) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
+        message: `${selected.group} · 图片通过，等待最新健康检查` };
+    }
+    await switchTokenGroup(token, selected, { beforeSwitch: () => {
+      if (IS_AIHUB) {
+        assertImageAdmissionCurrent(job.context);
+        if (job.invalid || job.source !== imageQualityIdentity(selected)) throw new Error("待切换评价已失效，本轮取消切换");
+      }
+    } });
+    detachAutomaticImageAdmission(tokenId);
+    return { outcome: "switched", group: selected.group, tone: "success", message: "已自动切换" };
   }
 
   async function runCheck(options) {
@@ -4889,6 +5060,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     );
     let monitorFallback = false;
     try {
+      if (forceSwitch) await stopAutomaticImageAdmission();
+      const candidateRequestRevision = ++state.candidateRequestRevision;
       let candidates;
       if (IS_AIHUB) {
         const range = aihubMonitorRange(config.metricHours);
@@ -4967,6 +5140,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       if (manual) renderOptions(true);
       const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
       state.candidates = candidates;
+      state.candidateRevision = candidateRequestRevision;
       state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
       state.lastCheck = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (targetGroup) {
@@ -4993,7 +5167,12 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       if (IS_AIHUB) await tokenCatalogRefresh;
       if (checkConfigKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
       const admission = { ...createImageAdmissionContext(), cancelRevision: checkCancelRevision };
-      const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => getTokenDetail(tokenId)));
+      const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => {
+        // Do not mistake the scorer's temporary route for a business-key change.
+        const scoringToken = imageQuality.scoringToken;
+        return scoringToken && Number(scoringToken.id) === Number(tokenId)
+          ? Promise.resolve({ ...scoringToken }) : getTokenDetail(tokenId);
+      }));
       state.tokenResults = [];
       for (let index = 0; index < details.length; index += 1) {
         const tokenId = selectedTokenIds[index];
@@ -5005,6 +5184,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           const message = detail.reason instanceof Error ? detail.reason.message : String(detail.reason);
           state.tokenResults.push({ id: tokenId, name: fallbackName, group: "未知", tone: "error", outcome: "error", message });
           addLog(`${fallbackName}：${message}`, "error");
+          detachAutomaticImageAdmission(tokenId);
           continue;
         }
 
@@ -5015,6 +5195,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           pendingCandidates.delete(tokenId);
+          detachAutomaticImageAdmission(tokenId);
           state.tokenResults.push({
             id: tokenId,
             name: tokenLabel(token),
@@ -5029,6 +5210,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         render();
       }
 
+      if (!automaticImageAdmission.bindings.size && !automaticImageAdmission.active) automaticImageAdmission.context = null;
       refreshCandidateIsolationState();
       state.currentGroup = summarizeTokenGroups(state.tokenResults);
       const failedCount = state.tokenResults.filter((result) => result.outcome === "error").length;
@@ -5366,10 +5548,13 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   function renderCandidates() {
     if (!refs.candidateRows) return;
     const qualityEnabled = imageQualityEnabled(config);
+    const scoringToken = imageQuality.scoringToken;
+    const displayedTokens = tokensCache.map((token) => scoringToken && Number(scoringToken.id) === Number(token.id)
+      ? { ...token, ...scoringToken } : token);
     if (!sectionNeedsRender(refs.candidateRows, [state.candidates, config.selectionMode,
-      tokensCache, ...tokensCache.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
+      tokensCache, ...displayedTokens.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
       config.tokenIds.join(","), running, qualityEnabled, config.imageQualityModel, config.imageQualityTask,
-      ...(qualityEnabled ? state.candidates.map(candidateImageQuality) : [])])) return;
+      ...(qualityEnabled ? state.candidates.flatMap((candidate) => [candidateImageQuality(candidate), automaticImageAdmissionStatus(candidate)]) : [])])) return;
     refs.candidateRows.replaceChildren();
     const rows = IS_AIHUB ? sortCandidateRowsForMode(state.candidates, config.selectionMode) : state.candidates
       .slice()
@@ -5499,7 +5684,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         row.classList.add("candidate-details");
         const heading = document.createElement("div");
         heading.className = "candidate-heading";
-        const currentTokens = candidateCurrentTokens(candidate, tokensCache, config.tokenIds);
+        const currentTokens = candidateCurrentTokens(candidate, displayedTokens, config.tokenIds);
         if (currentTokens.length) {
           row.dataset.current = "true";
           const currentTag = document.createElement("span");
@@ -5686,7 +5871,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     if (!entries.length) {
       const empty = document.createElement("div");
       empty.className = "isolation-empty";
-      empty.textContent = "切换后的健康检查未发现需要隔离的分组";
+      empty.textContent = "当前无健康故障或图片未通过的隔离分组";
       refs.isolationRows.appendChild(empty);
       return;
     }
@@ -5709,7 +5894,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       model.textContent = modelIdentityLabel(entry.model);
       model.title = `模型：${modelIdentityLabel(entry.model)}`;
       const reason = document.createElement("span");
-      reason.textContent = "切换后健康检查失败";
+      reason.textContent = `${entry.type === "image" ? "图片" : "健康"} · ${entry.reason || "切换后健康检查失败"}`;
+      reason.title = reason.textContent;
       const remaining = document.createElement("span");
       remaining.className = "isolation-remaining";
       remaining.textContent = `剩余 ${formatIsolationRemaining(entry.until, now)}`;
@@ -6375,11 +6561,13 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   }
 
   function persistFormConfig() {
+    const previousConfigKey = JSON.stringify(config);
     const previousIdentity = `${config.tokenIds.join(",")}:${targetModelIdentity(config)}`;
     const previousQualityKey = config.imageQualityKeyId;
     const previousQuality = imageQualitySettingsKey(config);
     const wasEnabled = config.enabled;
     config = readFormConfig();
+    if (previousConfigKey !== JSON.stringify(config)) invalidateAutomaticImageAdmission();
     if (previousQuality !== imageQualitySettingsKey(config)) {
       cancelImageQuality();
       imageQuality.status = "";
@@ -7872,7 +8060,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
               <button class="text-button" type="button" data-ref="imageQualityStop" hidden>停止</button>
               <p data-ref="imageQualityStatus" role="status"></p>
             </div>
-            <p title="图片分不参与策略或列表排序；每次自动切换前重新评价并计费，必须严格超过配置门槛。手动指定目标跳过图片检查。">图片分仅用于自动切换准入；手动切换跳过检查</p>
+            <p>正常择优在后台评价图片 · 故障恢复和手动指定分组跳过评价</p>
           </div>
           ${IS_AIHUB ? '<div class="candidate-column-labels" aria-hidden="true"><span>倍率/预估</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span class="candidate-quality-column">效果</span></div>' : ""}
           <div data-ref="candidateRows"></div>
@@ -8029,13 +8217,13 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
             <div class="field"><label for="kf-image-quality-fallback-1">备用评分分组 1（可选）</label><select id="kf-image-quality-fallback-1" data-ref="imageQualityFallback1" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
             <div class="field"><label for="kf-image-quality-fallback-2">备用评分分组 2（可选）</label><select id="kf-image-quality-fallback-2" data-ref="imageQualityFallback2" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
           </div>
-          <p id="kf-image-quality-fallback-help">评分服务不可用时，依次临时切换评分密钥的分组，评价模型保持不变；结束后恢复原组。有效低分不换组重评。</p>
+          <p id="kf-image-quality-fallback-help">评分线路不可用时依次尝试备用分组，模型不变；结束后恢复评分密钥原组。</p>
           <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
           <div class="field">
             <label for="kf-image-quality-min-score">自动切换图片门槛（必须大于）</label>
             <input id="kf-image-quality-min-score" data-ref="imageQualityMinScore" type="number" min="0" max="100" step="1" aria-describedby="kf-image-admission-help">
           </div>
-          <p id="kf-image-admission-help" class="settings-billing-note">先按策略选组，满足连续确认与保持时间后重新评价图片（计费），必须严格超过门槛。所有评分分组合计每轮最多10次请求；同轮跳过已失败分组。无图、图片读取失败、证据不足或未达标按“临时拉黑”时长隔离；评价服务不可用则停止本轮切换。列表手动切换跳过图片检查。</p>
+          <p id="kf-image-admission-help" class="settings-billing-note">正常择优：后台评价通过后，结合最新健康状态切换。当前分组故障时优先恢复服务，跳过图片检查。自动评价会计费。</p>
           <div class="image-quality-toolbar">
             <button class="button" type="button" data-ref="imageQualityTest">测试当前分组1张（计费）</button>
             <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止测试/评分</button>
@@ -8046,7 +8234,10 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
             <summary>评分规则与计算时机</summary>
             <div class="settings-detail-content">
               <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-              <p>协调规则v3：任务20 + 结构40 + 协调25 + 完成15，14项各按六档评分；座位支撑、脚踏传力和车把操控须有具体连接依据。严重缺陷封顶，含糊接触不通过自动准入。每次切换重新评价，不保存或读取评分缓存。页面刷新、普通轮询不请求评价模型。单张测试仅请求当前评分分组1次，不切组。配置备用分组时串行评分，避免同一密钥并发切组；未配置时批量最多2并发。</p>
+              <p>图片分不参与策略排序。达到倒数一次连续确认，且保持期剩余不超过一个轮询周期时，后台预评价候选图片；通过后等待新的健康检查。候选或图片变化会取消过期评价。</p>
+              <p>图片分必须严格高于门槛；无图、读取失败、无法识别、证据不足或低分进入故障隔离。评分服务异常只暂停本次择优，不隔离业务组；调整设置或重新启用自动切换后重试。故障恢复忽略图片隔离，仍遵守健康隔离。</p>
+              <p>同一次待切换决策共用最多10次模型请求，轮询不重置；不保存评分缓存。测试仅当前评分分组1次；手动指定分组不检查图片。</p>
+              <p>评分规则：任务20 + 结构40 + 协调25 + 完成15。14项按六档评分，严重缺陷封顶；座位、脚踏和车把需要可见连接依据。</p>
               <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearPage">清除本页评价</button></div>
             </div>
           </details>
@@ -8089,7 +8280,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
               <div class="field"><label>切换确认次数</label><input data-ref="confirmPolls" type="number" min="1" max="10"></div>
               <div class="field"><label title="保持期间继续检测；当前渠道不可用时立即切换，到期后恢复策略择优">切换后保持（分钟）</label><input data-ref="switchHoldMinutes" type="number" min="0"></div>
               <div class="field"><label>回滚观察次数（0 关闭）</label><input data-ref="rollbackChecks" type="number" min="0" max="10"></div>
-              <div class="field"><label>临时拉黑（分钟，故障/图片）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
+              <div class="field"><label>故障隔离时长（分钟）</label><input data-ref="blacklistMinutes" type="number" min="1"></div>
             </div>
           </details>
           <details class="settings-disclosure isolation-disclosure">
@@ -8098,7 +8289,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
             <div class="section-head isolation-heading">
               <div class="isolation-heading-copy">
                 <h2 class="section-title" id="kf-isolation-title">故障隔离</h2>
-                <p class="isolation-description">切换后的健康检查失败时自动隔离，不影响用户黑白名单</p>
+                <p class="isolation-description">健康检查失败或图片未通过时隔离，到期恢复；不修改用户黑白名单</p>
               </div>
               <span class="isolation-actions">
                 <span class="section-meta" data-ref="isolationCount">当前无隔离</span>
