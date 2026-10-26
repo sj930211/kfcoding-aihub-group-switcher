@@ -27,6 +27,7 @@
   let tokensCache = [];
   let userGroupsCache = {};
   let aihubGroupsCache = [];
+  let aihubPlatformMonitorsCache = [];
   let aihubRatesCache = {};
   let fluxionGroupsCache = [];
   let fluxionRatesCache = {};
@@ -48,7 +49,7 @@
   // Evaluations live only in this page; historical persisted caches are never read or rewritten.
   const imageQuality = {
     records: new Map(), catalogAt: 0, catalogRevision: 0, cancelRevision: 0,
-    controller: null, catalog: [], catalogReady: false, status: "",
+    controller: null, catalog: [], catalogReady: false, status: "", diagnostic: null,
     modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
     sample: null, testStatus: "", testResult: "", recoveryError: "", scoringToken: null,
   };

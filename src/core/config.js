@@ -33,6 +33,16 @@
     return ["saving", "stable", "balanced"].includes(value) ? value : DEFAULT_CONFIG.selectionMode;
   }
 
+  function normalizeAutomaticSwitchMode(value) {
+    return value === "failover" ? "failover" : "strategy";
+  }
+
+  function normalizeBusinessPlatform(value) {
+    const key = String(value || "").normalize("NFKC").trim().toLowerCase().replace(/[\s_-]+/g, "");
+    if (["zhipu", "zhipuglm", "glm"].includes(key)) return "zhipu";
+    return ["openai", "deepseek", "kimi", "grok", "unknown"].includes(key) ? key : "";
+  }
+
   function selectionModeLabel(value) {
     return { saving: "省钱优先", stable: "稳定优先", balanced: "均衡推荐" }[normalizeSelectionMode(value)];
   }
@@ -315,9 +325,36 @@
     return candidate.reasons.some((reason) => healthReasons.has(reason));
   }
 
+  function healthMetricNumber(value) {
+    if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return NaN;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : NaN;
+  }
+
+  function candidateHasExplicitHealthFailure(candidate, settings) {
+    if (!candidate) return false;
+    if (Array.isArray(candidate.modelResults)) {
+      return candidate.modelResults.some((entry) => candidateHasExplicitHealthFailure(entry.candidate, settings));
+    }
+    const evidence = candidate.healthEvidence;
+    if (!evidence || evidence.monitoringActive !== true || evidence.supported !== true) return false;
+    if (!targetModels(settings).some((model) => normalizeAihubModelKey(model) === normalizeAihubModelKey(evidence.model))) return false;
+    const fresh = (age) => Number.isFinite(age) && age >= 0 && age <= settings.maxMetricAgeMinutes;
+    if (evidence.modelHealthFailed === true && fresh(evidence.modelHealthAgeMinutes)) return true;
+    if (settings.requireModelDetection && evidence.modelDetectionFailed === true && evidence.modelDetectionFresh === true) return true;
+    if (evidence.metricsMatchModel !== true) return false;
+    const percentBelow = (value, threshold) => Number.isFinite(value) && value >= 0 && value <= 100 && value < threshold;
+    const latencyAbove = (value, threshold) => threshold > 0 && Number.isFinite(value) && value > 0 && value > threshold * 1000;
+    return (fresh(evidence.ageMinutes) && (
+      percentBelow(candidate.aggregateSuccess, settings.minSuccessRate)
+      || latencyAbove(candidate.firstTokenLatencyMs, settings.maxFirstTokenLatencySeconds)
+      || latencyAbove(candidate.outputLatencyMs, settings.maxOutputDurationSeconds)
+    )) || (fresh(evidence.latestAgeMinutes) && percentBelow(candidate.latestSuccess, settings.minLatestSuccessRate));
+  }
+
   function selectRollbackCandidate(candidates, previousGroup, mode) {
     const previous = candidates.find(
-      (candidate) => candidate.group === previousGroup && candidate.available,
+      (candidate) => candidate.group === previousGroup && candidate.available && candidate.scopeEligible !== false,
     );
     return {
       candidate: previous || selectBestCandidate(candidates, "", mode),
@@ -360,6 +397,8 @@
       tokenIds: parseTokenIds(source.tokenIds, source.tokenId),
       models,
       model: models[0] || "",
+      automaticSwitchMode: normalizeAutomaticSwitchMode(source.automaticSwitchMode),
+      businessPlatform: normalizeBusinessPlatform(source.businessPlatform),
       selectionMode: normalizeSelectionMode(source.selectionMode),
       imageQualityKeyId: Math.max(0, Math.trunc(Number(source.imageQualityKeyId) || 0)),
       imageQualityModel: String(source.imageQualityModel || "").trim().slice(0, 120),
@@ -443,6 +482,7 @@
       "monitor-disabled": "监测已停用",
       "latest-unavailable": "最新监测不可用",
       "model-unavailable": "目标模型不可用",
+      "model-unsupported": "分组不支持目标模型",
       "model-status-unknown": "模型状态未知",
       "model-detection-suspected": "模型检测疑似",
       "model-detection-insufficient": "模型检测证据不足",

@@ -41,7 +41,7 @@ function runtime(overrides = {}) {
     STORAGE_IMAGE_QUALITY_CATALOG_AT:'catalog-at',STORAGE_SWITCH_GUARD:'guard',STORAGE_LAST_SWITCH:'history',STORAGE_LOGS:'logs',MAX_LOG_ENTRIES:50,
     GM_getValue:(key,fallback)=>storage[key]??fallback,GM_setValue:(key,value)=>storage[key]=value,
     render(){},refs:{},
-    ...Object.fromEntries(['targetModelIdentity','targetModels','normalizeSwitchHistory','normalizeSwitchGuardState','pruneSwitchGuardState','applyTemporaryBlacklist','selectRollbackCandidate','selectSwitchCandidate','selectBestCandidate','selectImageQualifiedCandidate','imageQualityAdmissionVerdict','shouldSwitchCandidate','candidateHasHealthFailure','candidateRecommendationLabel','tokenSupportsModel'].map(name=>[name,api[name]])),
+    ...Object.fromEntries(['targetModelIdentity','targetModels','normalizeSwitchHistory','normalizeSwitchGuardState','pruneSwitchGuardState','applyTemporaryBlacklist','selectRollbackCandidate','selectSwitchCandidate','selectBestCandidate','selectImageQualifiedCandidate','imageQualityAdmissionVerdict','shouldSwitchCandidate','candidateMatchesToken','candidateHasExplicitHealthFailure','candidateHasHealthFailure','candidateRecommendationLabel','tokenSupportsModel'].map(name=>[name,api[name]])),
     imageQualityEnabled:settings=>settings.imageQualityKeyId>0&&!!settings.imageQualityModel,
     imageQualityIdentity:api.imageQualityIdentity,
     imageQualityFailureMessage:()=> '评价服务不可用，本次择优暂停',

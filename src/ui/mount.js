@@ -387,10 +387,16 @@
           min-height: 36px;
           border-top: 1px solid var(--line-soft);
         }
-        .automation-bar { padding: 9px 0; }
+        .automation-bar { padding: 9px 0; flex-wrap: wrap; }
         .protection-bar { margin-bottom: 12px; padding: 9px 0; border-bottom: 1px solid var(--line-soft); }
         .automation-name { margin-right: auto; color: var(--text); font-size: 12px; font-weight: 600; }
         .strategy-select { width: 94px; height: 28px; flex: 0 0 auto; font-size: 10px; }
+        .switch-mode-select { width: 118px; height: 28px; flex: 0 0 auto; font-size: 10px; }
+        @media (max-width: 400px) {
+          .automation-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+          .automation-bar select { width: 100%; min-width: 0; }
+          .automation-bar .strategy-select { min-width: 106px; }
+        }
         .toggle { display: inline-flex; align-items: center; margin: 0; cursor: pointer; }
         .toggle input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; }
         .toggle-track {
@@ -426,7 +432,7 @@
         .group-filter-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
         .group-filter-heading > label { margin: 0; }
         .filter-mode-select { width: 78px; height: 26px; font-size: 10px; }
-        input[type="number"], input[type="text"], select, .token-select-trigger {
+        input[type="number"], input[type="text"], input[type="search"], select, .token-select-trigger {
           width: 100%;
           min-width: 0;
           height: 32px;
@@ -474,6 +480,14 @@
         .model-select .token-menu { z-index: 6; }
         .group-filter-select .token-menu { z-index: 5; }
         .token-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 5px; }
+        .selector-search { width: 100%; min-width: 0; margin-bottom: 5px; }
+        .selector-platform { width: 100%; min-width: 0; margin-bottom: 5px; }
+        .candidate-filter-controls { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(0, 1.3fr); gap: 6px; margin-top: 8px; }
+        .candidate-filter-controls > * { min-width: 0; }
+        .candidate-filter-controls .selector-search, .candidate-filter-controls .selector-platform { margin-bottom: 0; }
+        .selector-platform[hidden], .candidate-filter-controls[hidden], .selector-search[hidden], .selector-search-status[hidden] { display: none; }
+        .selector-search-status { min-height: 14px; margin: 0 0 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+        .token-option[hidden], .manual-group-option[hidden], .candidate[hidden], .candidate.candidate-details[hidden] { display: none; }
         .text-button { border: 0; background: transparent; color: var(--accent); padding: 2px; font-size: 10px; }
         .text-button:hover { text-decoration: underline; text-underline-offset: 2px; }
         .text-button:disabled { cursor: wait; opacity: .45; text-decoration: none; }
@@ -920,6 +934,7 @@
         }
         @media (max-width: 390px) {
           .work-nav button { font-size: 9px; }
+          .candidate-filter-controls { grid-template-columns: minmax(0, 1fr); }
           .nav-count { display: none; }
           .statistics-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
           .statistics-overview { grid-template-columns: 1fr; }
@@ -1022,6 +1037,7 @@
         .image-quality-actions[hidden], .image-quality-settings[hidden] { display: none; }
         .image-quality-actions p, .image-quality-settings p { font-size: 10px; line-height: 1.5; color: var(--text-soft); margin: 2px 0; }
         .image-quality-test-result, .detection-image-quality { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .image-quality-diagnostic { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
         .detection-image-quality { font-size: 12px; line-height: 1.6; }
         .image-quality-tooltip { position: fixed; z-index: 2147483001; width: min(288px, calc(100vw - 24px)); box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--native-option-bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; font-size: 11px; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none; box-shadow: 0 6px 20px rgb(0 0 0 / 24%); }
         .image-quality-tooltip[hidden] { display: none; }
@@ -1164,6 +1180,12 @@
         </div>
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
+          <div class="candidate-filter-controls" ${IS_AIHUB ? "" : "hidden"}>
+            <select class="selector-platform" data-ref="candidatePlatform" aria-label="业务平台范围" title="自动择优和故障恢复只选择范围内分组；当前分组始终检查健康" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
+            <input class="selector-search" data-ref="candidateSearch" data-selector-search type="search" placeholder="搜索监控分组" aria-label="搜索监控分组" autocomplete="off" ${IS_AIHUB ? "" : "hidden"}>
+          </div>
+          <p class="selector-search-status" ${IS_AIHUB ? "" : "hidden"}>业务平台范围影响自动选择和故障恢复；保存后下次检查生效。搜索仅筛选显示。</p>
+          <p class="selector-search-status" data-ref="candidateSearchStatus" role="status" ${IS_AIHUB ? "" : "hidden"}></p>
           <div class="candidate-head" ${IS_AIHUB ? "hidden" : ""}><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
           <div class="image-quality-actions" data-ref="imageQualityActions" hidden>
             <div class="image-quality-toolbar">
@@ -1171,6 +1193,7 @@
               <button class="text-button" type="button" data-ref="imageQualityStop" hidden>停止</button>
               <p data-ref="imageQualityStatus" role="status"></p>
             </div>
+            <p class="image-quality-diagnostic" data-ref="imageQualityDiagnostic" aria-live="off" hidden></p>
             <p>正常择优在后台评价图片 · 故障恢复和手动指定分组跳过评价</p>
           </div>
           ${IS_AIHUB ? '<div class="candidate-column-labels" aria-hidden="true"><span>倍率/预估</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span class="candidate-quality-column">效果</span></div>' : ""}
@@ -1243,12 +1266,17 @@
               <input id="kf-enabled" data-ref="enabled" type="checkbox" aria-label="自动切换">
               <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
             </label>
+            <select class="switch-mode-select" data-ref="automaticSwitchMode" aria-label="自动切换模式" aria-describedby="kf-automatic-mode-help" title="自动切换模式">
+              <option value="strategy">正常择优与恢复</option>
+              <option value="failover">仅故障转移</option>
+            </select>
             <select class="strategy-select" data-ref="selectionMode" aria-label="分组选择策略" title="分组选择策略">
               <option value="saving">省钱优先</option>
               <option value="stable">稳定优先</option>
               <option value="balanced">均衡推荐</option>
             </select>
           </div>
+          <p id="kf-automatic-mode-help" class="settings-hint" data-ref="automaticSwitchHint">正常时按策略择优，故障时优先恢复服务。</p>
           <div class="control-grid">
             <div class="field">
               <label id="kf-token-label">API 密钥（可多选）</label>
@@ -1259,9 +1287,11 @@
                   <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
                 </button>
                 <div class="token-menu" data-ref="tokenMenu" hidden>
+                  <input class="selector-search" data-ref="tokenSearch" data-selector-search type="search" placeholder="搜索密钥名称或分组" aria-label="搜索 API 密钥" autocomplete="off">
+                  <p class="selector-search-status" data-ref="tokenSearchStatus" role="status"></p>
                   <div class="token-toolbar">
-                    <button class="text-button" data-ref="selectAllTokens" type="button">全选</button>
-                    <button class="text-button" data-ref="clearTokens" type="button">清空</button>
+                    <button class="text-button" data-ref="selectAllTokens" type="button">全选全部</button>
+                    <button class="text-button" data-ref="clearTokens" type="button">清空全部</button>
                   </div>
                   <div class="token-list" data-ref="tokenList"></div>
                 </div>
@@ -1276,9 +1306,11 @@
                   <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
                 </button>
                 <div class="token-menu" data-ref="modelMenu" hidden>
+                  <input class="selector-search" data-ref="modelSearch" data-selector-search type="search" placeholder="搜索模型或平台" aria-label="搜索目标模型或平台" autocomplete="off">
+                  <p class="selector-search-status" data-ref="modelSearchStatus" role="status"></p>
                   <div class="token-toolbar">
-                    <button class="text-button" data-ref="selectAllModels" type="button">全选</button>
-                    <button class="text-button" data-ref="clearModels" type="button">清空</button>
+                    <button class="text-button" data-ref="selectAllModels" type="button">全选全部</button>
+                    <button class="text-button" data-ref="clearModels" type="button">清空全部</button>
                   </div>
                   <div class="token-list" data-ref="modelList"></div>
                 </div>
@@ -1299,6 +1331,9 @@
                   <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
                 </button>
                 <div class="token-menu" data-ref="groupFilterMenu" hidden>
+                  <select class="selector-platform" data-ref="groupFilterPlatform" aria-label="名单分组平台分类" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
+                  <input class="selector-search" data-ref="groupFilterSearch" data-selector-search type="search" placeholder="搜索分组" aria-label="搜索名单分组" autocomplete="off">
+                  <p class="selector-search-status" data-ref="groupFilterSearchStatus" role="status"></p>
                   <div class="token-toolbar">
                     <button class="text-button" data-ref="clearGroupFilter" type="button">清空当前名单</button>
                   </div>
@@ -1372,7 +1407,9 @@
           <div class="settings-fields">
             <div class="field">
               <label for="kf-image-quality-key">评分密钥</label>
+              <input class="selector-search" data-ref="imageQualityKeySearch" data-selector-search type="search" placeholder="搜索密钥名称或分组" aria-label="搜索评分密钥" autocomplete="off">
               <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">未配置评分密钥</option></select>
+              <p class="selector-search-status" data-ref="imageQualityKeySearchStatus" role="status"></p>
             </div>
             <div class="field">
               <div class="settings-label-row"><label for="kf-image-quality-model">评价模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
@@ -1391,13 +1428,26 @@
             <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止评价</button>
           </div>
           <p data-ref="imageQualityTestStatus" role="status"></p>
+          <p class="image-quality-diagnostic" data-ref="imageQualityTestDiagnostic" aria-live="off" hidden></p>
           <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
           <details class="settings-disclosure">
             <summary>备用评分线路与图片任务</summary>
             <div class="settings-detail-content">
           <div class="settings-fields">
-            <div class="field"><label for="kf-image-quality-fallback-1">备用评分分组 1（可选）</label><select id="kf-image-quality-fallback-1" data-ref="imageQualityFallback1" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
-            <div class="field"><label for="kf-image-quality-fallback-2">备用评分分组 2（可选）</label><select id="kf-image-quality-fallback-2" data-ref="imageQualityFallback2" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select></div>
+            <div class="field">
+              <label for="kf-image-quality-fallback-1">备用评分分组 1（可选）</label>
+              <select class="selector-platform" data-ref="imageQualityFallback1Platform" aria-label="备用评分分组 1 平台分类" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
+              <input class="selector-search" data-ref="imageQualityFallback1Search" data-selector-search type="search" placeholder="搜索备用分组" aria-label="搜索备用评分分组 1" autocomplete="off">
+              <select id="kf-image-quality-fallback-1" data-ref="imageQualityFallback1" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select>
+              <p class="selector-search-status" data-ref="imageQualityFallback1SearchStatus" role="status"></p>
+            </div>
+            <div class="field">
+              <label for="kf-image-quality-fallback-2">备用评分分组 2（可选）</label>
+              <select class="selector-platform" data-ref="imageQualityFallback2Platform" aria-label="备用评分分组 2 平台分类" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
+              <input class="selector-search" data-ref="imageQualityFallback2Search" data-selector-search type="search" placeholder="搜索备用分组" aria-label="搜索备用评分分组 2" autocomplete="off">
+              <select id="kf-image-quality-fallback-2" data-ref="imageQualityFallback2" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select>
+              <p class="selector-search-status" data-ref="imageQualityFallback2SearchStatus" role="status"></p>
+            </div>
           </div>
           <p id="kf-image-quality-fallback-help">评分线路不可用时依次尝试备用分组，模型不变；结束后恢复评分密钥原组。</p>
               <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
@@ -1505,6 +1555,9 @@
           </div>
           <div class="field">
             <label id="kf-manual-group-label">目标分组</label>
+            <select class="selector-platform" data-ref="manualGroupPlatform" aria-label="手动目标分组平台分类" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
+            <input class="selector-search" data-ref="manualGroupSearch" data-selector-search type="search" placeholder="搜索目标分组" aria-label="搜索手动目标分组" autocomplete="off">
+            <p class="selector-search-status" data-ref="manualGroupSearchStatus" role="status"></p>
             <div class="manual-group-list" data-ref="manualGroup" role="radiogroup" aria-labelledby="kf-manual-group-label"></div>
             <p class="dialog-hint" data-ref="manualHint"></p>
           </div>
@@ -1529,8 +1582,10 @@
     `;
 
     const refNames = [
+      "candidatePlatform", "candidateSearch", "candidateSearchStatus", "groupFilterPlatform", "manualGroupPlatform", "imageQualityFallback1Platform", "imageQualityFallback2Platform",
+      "automaticSwitchMode", "automaticSwitchHint", "tokenSearch", "tokenSearchStatus", "modelSearch", "modelSearchStatus", "groupFilterSearch", "groupFilterSearchStatus", "manualGroupSearch", "manualGroupSearchStatus", "imageQualityKeySearch", "imageQualityKeySearchStatus", "imageQualityFallback1Search", "imageQualityFallback1SearchStatus", "imageQualityFallback2Search", "imageQualityFallback2SearchStatus",
       "imageQualityTooltip", "imageQualityList", "imageQualityListSummary", "imageQualityClearPage", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
-      "imageQualityKey", "imageQualityModel", "imageQualityFallback1", "imageQualityFallback2", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "detectionImageQuality",
+      "imageQualityKey", "imageQualityModel", "imageQualityFallback1", "imageQualityFallback2", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "imageQualityDiagnostic", "imageQualityTestDiagnostic", "detectionImageQuality",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
       "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "settingsSave", "strategyMinutes", "lastHealthCheck", "lastStrategyCheck", "confirmationHint", "qualityRecords", "qualityRecordCount", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",

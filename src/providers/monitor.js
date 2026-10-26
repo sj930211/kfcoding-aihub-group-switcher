@@ -46,7 +46,8 @@
       summary: {
         providerVersion: Number(providers.version) || 0,
         generatedAt: providers.generated_at || providers.generatedAt || "",
-        monitoringActive: true,
+        platformTabs: Array.isArray(providers.platform_tabs) ? providers.platform_tabs.slice() : [],
+        monitoringActive: providers.monitoring_active !== false && providers.monitoringActive !== false,
         apis: providerItems.map((item) => ({
           ...item,
           id: String(item.group_id),
@@ -76,9 +77,11 @@
     if (!Array.isArray(point)) return null;
     const timestampMs = Number(point[0]);
     if (!Number.isFinite(timestampMs)) return null;
+    const availability = healthMetricNumber(point[1]);
     return {
       timestampMs,
-      available: Number(point[1]) === 1,
+      available: point[1] === true ? true : point[1] === false ? false
+        : availability === 1 ? true : availability === 0 ? false : null,
       firstTokenLatencyMs: Number.isFinite(Number(point[2])) ? Number(point[2]) : NaN,
       outputTokensPerSecond: Number.isFinite(Number(point[3])) ? Number(point[3]) : NaN,
     };
@@ -177,6 +180,28 @@
     };
   }
 
+  function scopeAihubMonitors(summary, groups, config, models, request = {}) {
+    const groupMap = new Map(groups.map((group) => [Number(group.id), group]));
+    const filter = new Set(activeGroupFilter(config));
+    const platform = normalizeBusinessPlatform(config.businessPlatform);
+    const eligibleIds = new Set();
+    const apis = (summary.apis || []).filter((monitor) => {
+      const id = Number(monitor.group_id);
+      const meta = groupMap.get(id);
+      const group = String(meta?.name || monitor.planType || `#${id}`);
+      const current = (request.currentTokens || []).some((token) => Number(token.groupId) > 0
+        ? Number(token.groupId) === id : token.group === group);
+      const eligible = (!platform || (normalizeBusinessPlatform(monitor.platform || meta?.platform) || "unknown") === platform)
+          && models.every((model) => aihubGroupSupportsModel(monitor, model))
+          && (!filter.size || (config.groupFilterMode === "blacklist" ? !filter.has(group) : filter.has(group)));
+      if (eligible) eligibleIds.add(id);
+      const requested = request.targetGroup ? group === request.targetGroup
+        && (!(Number(request.targetGroupId) > 0) || id === Number(request.targetGroupId)) : eligible;
+      return current || (!request.healthOnly && requested);
+    });
+    return { summary: { ...summary, apis }, eligibleIds };
+  }
+
   function evaluateAihubCandidates(summaryPayload, seriesPayload, groupsPayload, ratesPayload, config, nowMs) {
     const summary = summaryPayload && typeof summaryPayload === "object" ? summaryPayload : {};
     const seriesByApiId = seriesPayload && seriesPayload.seriesByApiId && typeof seriesPayload.seriesByApiId === "object"
@@ -223,6 +248,7 @@
           .sort((left, right) => left.timestampMs - right.timestampMs);
         const latestPoint = parsedSeries.length ? parsedSeries[parsedSeries.length - 1] : null;
         const modelHealthStatus = aihubModelHealthStatus(monitor, config.model);
+        const modelSupported = aihubGroupSupportsModel(monitor, config.model);
         const modelDetection = normalizeAihubModelDetection(
           monitor && (monitor.modelDetection ?? monitor.model_detection),
         );
@@ -264,7 +290,7 @@
         const latestSuccess = useSelectedModelHealth
           ? (modelHealthStatus === "healthy" ? 100 : 0)
           : latestPoint
-            ? (latestPoint.available ? 100 : 0)
+            ? (latestPoint.available === true ? 100 : latestPoint.available === false ? 0 : NaN)
             : monitor.available === true
               ? 100
               : monitor.available === false
@@ -274,6 +300,18 @@
         const ageMinutes = Number.isFinite(checkedAtMs)
           ? Math.max(0, now - checkedAtMs) / 60000
           : Infinity;
+        const modelCard = normalizeAihubModelCards(monitor.modelCards ?? monitor.model_cards)
+          .find((card) => card.modelKey === selectedModelKey);
+        const modelEvaluatedAtValue = modelCard?.health_evaluated_at;
+        const modelEvaluatedAt = Date.parse(modelEvaluatedAtValue || "");
+        const modelAge = Number.isFinite(modelEvaluatedAt) ? Math.max(0, now - modelEvaluatedAt) / 60000
+          : modelEvaluatedAtValue ? Infinity : ageMinutes;
+        const modelExpires = modelCard?.health_expires_at;
+        const modelEvidenceFresh = modelAge <= config.maxMetricAgeMinutes
+          && (!modelExpires || (Number.isFinite(Date.parse(modelExpires)) && Date.parse(modelExpires) > now));
+        const modelDetectionFresh = Boolean(scopedModelDetection && (scopedModelDetection.expiresAt
+          ? Number.isFinite(scopedModelDetection.expiresAtMs) && scopedModelDetection.expiresAtMs > now
+          : ageMinutes <= config.maxMetricAgeMinutes));
         const firstTokenMetric = aihubFirstTokenMetric(monitor);
         const firstTokenLatencyMs = firstTokenMetric.value;
         const outputTokensPerSecond = Number(monitor.outputTokensPerSecond);
@@ -321,6 +359,7 @@
         ).trim();
 
         if (!groupMeta) reasons.push("not-user-selectable");
+        if (!modelSupported) reasons.push("model-unsupported");
         if (
           enforceGroupFilter
           && config.groupFilterMode === "whitelist"
@@ -389,6 +428,7 @@
           effectiveRatioReady: Number.isFinite(effectiveRatio),
           effectiveRatioReason,
           providerId: "aihub",
+          platform: String(monitor.platform || groupMeta?.platform || ""),
           detectionMedia: normalizeAihubDetectionMedia(monitor),
           modelHealthStatus,
           modelHealthBackedByDetection,
@@ -396,6 +436,18 @@
           modelDetectionModelKey: modelDetection ? modelDetection.modelKey : "",
           probeModelKey,
           ageMinutes,
+          healthEvidence: {
+            model: config.model, supported: modelSupported,
+            monitoringActive: summary.monitoringActive !== false && monitor.enabled !== false,
+            metricsMatchModel: seriesMatchesSelectedModel,
+            ageMinutes,
+            latestAgeMinutes: latestPoint ? Math.max(0, now - latestPoint.timestampMs) / 60000 : ageMinutes,
+            modelHealthFailed: modelHealthStatus === "failed" && modelEvidenceFresh,
+            modelHealthAgeMinutes: modelAge,
+            modelDetectionFresh,
+            modelDetectionFailed: Boolean(scopedModelDetection && modelDetectionWarning === "model-detection-failed"
+              && (!scopedModelDetection.expiresAt || Number.isFinite(scopedModelDetection.expiresAtMs))),
+          },
         };
       });
   }

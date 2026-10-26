@@ -12,11 +12,12 @@
       }))
       .filter((entry) => entry.model);
     const models = [...new Set(sets.map((entry) => entry.model))];
-    const groups = [...new Set(sets.flatMap((entry) => entry.candidates.map((candidate) => candidate.group).filter(Boolean)))];
+    const groupKey = (candidate) => Number(candidate.groupId) > 0 ? `id:${candidate.groupId}` : `name:${candidate.group}`;
+    const groups = [...new Set(sets.flatMap((entry) => entry.candidates.filter((candidate) => candidate.group).map(groupKey)))];
 
-    return groups.map((group) => {
+    return groups.map((key) => {
       const modelResults = sets.map((entry) => {
-        const candidate = entry.candidates.find((item) => item.group === group) || null;
+        const candidate = entry.candidates.find((item) => groupKey(item) === key) || null;
         return {
           model: entry.model,
           candidate,
@@ -30,7 +31,7 @@
         };
       });
       const candidates = modelResults.map((entry) => entry.candidate).filter(Boolean);
-      const representative = candidates[0] || { group };
+      const representative = candidates[0];
       const reasons = [...new Set(modelResults.flatMap((entry) => entry.reasons))];
       const warnings = [...new Set(modelResults.flatMap((entry) => entry.warnings))];
       const ratios = finiteCandidateValues(candidates, "ratio", (value) => Number.isFinite(value) && value > 0);
@@ -58,7 +59,7 @@
 
       return {
         ...representative,
-        group,
+        group: representative.group,
         targetModels: models.slice(),
         modelResults,
         available: modelResults.length > 0 && modelResults.every((entry) => entry.available),
@@ -304,9 +305,14 @@
     });
   }
 
+  function candidateMatchesToken(candidate, token) {
+    return Boolean(candidate && (Number(candidate.groupId) > 0 && Number(token.groupId) > 0
+      ? Number(candidate.groupId) === Number(token.groupId) : candidate.group === token.group));
+  }
+
   function selectBestCandidate(candidates, currentGroup, mode) {
     const available = sortCandidatesForMode(
-      candidates.filter((candidate) => candidate.available),
+      candidates.filter((candidate) => candidate.available && candidate.scopeEligible !== false),
       mode,
     );
 
@@ -325,7 +331,8 @@
     const request = options && typeof options === "object" ? options : {};
     if (!target) return selectBestCandidate(candidates, currentGroup, request.mode);
 
-    const candidate = candidates.find((item) => item.group === target);
+    const candidate = candidates.find((item) => item.group === target
+      && (!(Number(request.targetGroupId) > 0) || Number(item.groupId) === Number(request.targetGroupId)));
     if (!candidate) {
       throw new Error(`目标分组 ${target} 不在当前目标模型组合的可选范围内`);
     }
@@ -377,16 +384,17 @@
 
   async function selectImageQualifiedCandidate(candidates, currentGroup, options) {
     const tried = new Set();
+    const identity = (candidate) => Number(candidate.groupId) > 0 ? `id:${candidate.groupId}` : candidate.group;
     let preferred = options.preferred;
     while (true) {
       options.assertCurrent();
-      const eligible = options.eligible(candidates).filter((candidate) => !tried.has(candidate.group));
-      const candidate = preferred && eligible.find((item) => item.group === preferred.group)
+      const eligible = options.eligible(candidates).filter((candidate) => candidate.scopeEligible !== false && !tried.has(identity(candidate)));
+      const candidate = preferred && eligible.find((item) => identity(item) === identity(preferred))
         || selectBestCandidate(eligible, currentGroup, options.mode);
       preferred = null;
       // Keeping the current group is not a switch and does not require a paid check.
-      if (!candidate || candidate.group === currentGroup) return candidate;
-      tried.add(candidate.group);
+      if (!candidate || (options.currentToken ? candidateMatchesToken(candidate, options.currentToken) : candidate.group === currentGroup)) return candidate;
+      tried.add(identity(candidate));
       const verdict = await options.check(candidate);
       options.assertCurrent();
       if (verdict.pass) return candidate;

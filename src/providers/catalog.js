@@ -39,11 +39,11 @@
             .sort((left, right) => Number(left.ts) - Number(right.ts))
         : [];
       const latest = series.length ? series[series.length - 1] : null;
-      const aggregateSuccess = Number(metric && metric.success_rate);
-      const latestSuccess = Number(latest && latest.success_rate);
-      const firstTokenLatencyMs = Number(metric && metric.avg_ttft_ms);
+      const aggregateSuccess = healthMetricNumber(metric && metric.success_rate);
+      const latestSuccess = healthMetricNumber(latest && latest.success_rate);
+      const firstTokenLatencyMs = healthMetricNumber(metric && metric.avg_ttft_ms);
       const outputTokensPerSecond = Number(metric && metric.avg_tps);
-      const outputLatencyMs = Number(metric && metric.avg_latency_ms);
+      const outputLatencyMs = healthMetricNumber(metric && metric.avg_latency_ms);
       const cacheHitRate = parsePercentValue(
         metric && (metric.cache_hit_rate ?? metric.cacheHitRate),
       );
@@ -103,6 +103,8 @@
         outputTokensPerSecond,
         cacheHitRate,
         ageMinutes,
+        healthEvidence: { model: config.model, monitoringActive: true, supported: true,
+          metricsMatchModel: true, ageMinutes, latestAgeMinutes: ageMinutes },
       };
     });
   }
@@ -246,32 +248,46 @@
 
   function buildAihubModelCatalog(summaryPayload) {
     const summary = summaryPayload && typeof summaryPayload === "object" ? summaryPayload : {};
-    const keys = new Set();
-    let hasModelCards = false;
+    const models = new Map();
+    let hasExactModels = false;
     (Array.isArray(summary.apis) ? summary.apis : []).forEach((monitor) => {
-      const modelCards = normalizeAihubModelCards(monitor && (monitor.modelCards ?? monitor.model_cards));
-      if (modelCards.length) {
-        hasModelCards = true;
-        modelCards.forEach((card) => keys.add(card.model));
-        return;
-      }
-      Object.keys(normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health)))
-        .forEach((model) => keys.add(model));
+      const names = aihubGroupModelNames(monitor);
+      const fallback = normalizeAihubModelCards(monitor && (monitor.modelCards ?? monitor.model_cards));
+      if (names !== null || fallback.length) hasExactModels = true;
+      const supported = names !== null ? names : fallback.length ? fallback.map((card) => card.model)
+        : Object.keys(normalizeAihubModelHealth(monitor && (monitor.modelHealth ?? monitor.model_health))).map(aihubModelName);
+      supported.forEach((model) => {
+        const name = aihubModelName(model);
+        if (!models.has(name)) models.set(name, new Set());
+        const platform = String(monitor.platform || "").trim();
+        if (platform) models.get(name).add(platform);
+      });
     });
-    if (hasModelCards) {
-      return { data: [...keys].map((model) => ({ model_name: model })) };
-    }
-    const order = new Map(Object.keys(AIHUB_MODEL_NAMES).map((model, index) => [model, index]));
+    const order = new Map(Object.values(AIHUB_MODEL_NAMES).map((model, index) => [model, index]));
     return {
-      data: [...keys]
-        .sort((left, right) => (order.get(left) ?? 99) - (order.get(right) ?? 99) || left.localeCompare(right))
-        .map((model) => ({ model_name: aihubModelName(model) })),
+      data: (hasExactModels ? [...models.keys()] : [...models.keys()]
+        .sort((left, right) => (order.get(left) ?? 99) - (order.get(right) ?? 99) || left.localeCompare(right)))
+        .map((model) => ({ model_name: model, ...(models.get(model).size ? { platforms: [...models.get(model)].sort() } : {}) })),
     };
+  }
+
+  function aihubGroupModelNames(monitor) {
+    const value = monitor && (monitor.group_models !== undefined ? monitor.group_models : monitor.groupModels);
+    // Missing means legacy API; an explicitly empty list still declares no supported models.
+    if (value === undefined) return null;
+    return [...new Set((Array.isArray(value) ? value : []).map((entry) => String(
+      typeof entry === "string" ? entry : entry && (entry.model ?? entry.model_name ?? entry.name) || "",
+    ).trim()).filter(Boolean))];
+  }
+
+  function aihubGroupSupportsModel(monitor, model) {
+    const names = aihubGroupModelNames(monitor);
+    return names === null || names.some((name) => normalizeAihubModelKey(name) === normalizeAihubModelKey(model));
   }
 
   function aihubModelHealthStatus(monitor, model) {
     const key = normalizeAihubModelKey(model);
-    if (!key) return "";
+    if (!key || !aihubGroupSupportsModel(monitor, model)) return "";
     const selectedModel = String(model || "").trim().toLowerCase();
     const modelCards = normalizeAihubModelCards(monitor && (monitor.modelCards ?? monitor.model_cards));
     if (modelCards.length) {
@@ -317,7 +333,7 @@
         primaryStatus: String(item.primary_status || item.primaryStatus || "").trim().toLowerCase(),
         primaryLatencyMs: Number(item.primary_latency_ms ?? item.primaryLatencyMs),
         primaryPingLatencyMs: Number(item.primary_ping_latency_ms ?? item.primaryPingLatencyMs),
-        availability7d: Number(item.availability_7d ?? item.availability7d),
+        availability7d: healthMetricNumber(item.availability_7d ?? item.availability7d),
         timeline: (Array.isArray(item.timeline) ? item.timeline : [])
           .filter((point) => point && typeof point === "object")
           .map((point) => ({
@@ -513,8 +529,9 @@
           : [];
         const latest = timeline.length ? timeline[timeline.length - 1] : null;
         const latestStatus = latest ? latest.status : monitor && monitor.primaryStatus;
-        const latestSuccess = latestStatus ? (fluxionStatusOperational(latestStatus) ? 100 : 0) : NaN;
-        const aggregateSuccess = Number(monitor && monitor.availability7d);
+        const latestSuccess = fluxionStatusOperational(latestStatus) ? 100
+          : ["error", "failed", "down", "unavailable", "offline"].includes(String(latestStatus || "").toLowerCase()) ? 0 : NaN;
+        const aggregateSuccess = healthMetricNumber(monitor && monitor.availability7d);
         const checkedAtMs = latest ? Date.parse(latest.checkedAt) : NaN;
         const ageMinutes = Number.isFinite(checkedAtMs) ? Math.max(0, now - checkedAtMs) / 60000 : Infinity;
         const outputLatencyMs = Number(
@@ -578,6 +595,9 @@
           cacheHitRate: NaN,
           ageMinutes,
           monitorName: monitor ? monitor.name : "",
+          healthEvidence: { model: config.model, monitoringActive: Boolean(monitor), supported: true,
+            metricsMatchModel: Boolean(monitor && String(monitor.primaryModel).toLowerCase() === String(config.model).toLowerCase()),
+            ageMinutes, latestAgeMinutes: ageMinutes },
         };
       });
   }

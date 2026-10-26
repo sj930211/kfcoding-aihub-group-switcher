@@ -14,6 +14,28 @@ try {
   const build = () => spawnSync(process.execPath, [path.join(temporary, "scripts/build.mjs"), "build"], { encoding: "utf8" });
   const manifest = (version) => fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ type: "module", version }));
   const output = () => fs.readFileSync(path.join(temporary, "kfcoding-group-switcher.user.js"), "utf8");
+  const sourceFiles = (directory) => fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const file = path.join(directory, entry.name);
+    return entry.isDirectory() ? sourceFiles(file) : file.endsWith(".js") ? [file] : [];
+  });
+  const sources = sourceFiles(path.join(temporary, "src")).map((file) => ({
+    file,
+    content: fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n"),
+  }));
+  manifest("0.16.0");
+  let lfOutput;
+  for (const lineEndings of ["LF", "CRLF", "mixed"]) {
+    sources.forEach(({ file, content }, index) => {
+      const crlf = lineEndings === "CRLF" || (lineEndings === "mixed" && index % 2 === 0);
+      fs.writeFileSync(file, crlf ? content.replace(/\n/g, "\r\n") : content);
+    });
+    assert.equal(build().status, 0, `${lineEndings} source files must build successfully`);
+    const artifact = output();
+    assert.equal(artifact.includes("\r"), false, `${lineEndings} source files must produce LF-only output`);
+    if (lineEndings === "LF") lfOutput = artifact;
+    else assert.equal(Buffer.from(artifact).equals(Buffer.from(lfOutput)), true,
+      `${lineEndings} source files must produce the same bytes as LF source files`);
+  }
   for (const version of ["0.16.0", "0.16.10", "1.0.0"]) {
     manifest(version);
     assert.equal(build().status, 0);

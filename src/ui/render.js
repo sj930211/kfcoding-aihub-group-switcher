@@ -418,8 +418,13 @@
     if (refs.lastStrategyCheck) refs.lastStrategyCheck.textContent = state.lastStrategyCheck;
     if (refs.confirmationHint) {
       const minutes = config.strategySeconds / 60;
-      refs.confirmationHint.textContent = `连续确认按每 ${minutes} 分钟一次择优计算${config.confirmPolls > 1 ? `，首次命中后至少再等 ${(config.confirmPolls - 1) * minutes} 分钟` : ""}；回滚观察按故障检测轮次计算。`;
+      refs.confirmationHint.textContent = config.automaticSwitchMode === "failover"
+        ? "仅故障转移：当前组健康时保持不动，原组恢复后不自动切回；故障按检测周期处理。"
+        : `连续确认按每 ${minutes} 分钟一次择优计算${config.confirmPolls > 1 ? `，首次命中后至少再等 ${(config.confirmPolls - 1) * minutes} 分钟` : ""}；回滚观察按故障检测轮次计算。`;
     }
+    if (refs.automaticSwitchHint) refs.automaticSwitchHint.textContent = config.automaticSwitchMode === "failover"
+      ? "只在确认当前组故障时，按所选策略转移；健康时不切换，原组恢复后不自动切回。"
+      : "正常时按策略择优并执行图片准入；故障时优先恢复服务。";
     if (refs.qualityRecordCount) refs.qualityRecordCount.textContent = `${imageQuality.records.size}条${automaticImageAdmission.active ? " · 评价中" : ""}`;
     root.querySelectorAll("[data-settings-target]").forEach((button) => {
       const active = button.dataset.settingsTarget === state.settingsPage;
@@ -524,7 +529,7 @@
       refs.monitorEnabled.checked = config.enabled;
       refs.monitorEnabled.disabled = running;
     }
-    if (refs.monitorMode) refs.monitorMode.textContent = selectionModeLabel(config.selectionMode);
+    if (refs.monitorMode) refs.monitorMode.textContent = `${config.automaticSwitchMode === "failover" ? "仅故障转移 · " : ""}${selectionModeLabel(config.selectionMode)}`;
     if (refs.spendProtectionEnabled) refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
     if (refs.requireModelDetection) refs.requireModelDetection.checked = config.requireModelDetection;
     if (refs.resetSpendProtection) refs.resetSpendProtection.disabled = running || !state.todayUsage.available;
@@ -614,6 +619,8 @@
         .map((checkbox) => checkbox.value),
       models: [...refs.modelList.querySelectorAll('input[data-model-name]:checked')]
         .map((checkbox) => checkbox.dataset.modelName),
+      automaticSwitchMode: refs.automaticSwitchMode?.value || "strategy",
+      businessPlatform: config.businessPlatform,
       selectionMode: refs.selectionMode.value,
       imageQualityKeyId: refs.imageQualityKey.value,
       imageQualityModel: refs.imageQualityModel.value,
@@ -647,6 +654,7 @@
     if (refs.glassTransparency) refs.glassTransparency.value = String(config.glassTransparency);
     if (refs.glassTransparencyValue) refs.glassTransparencyValue.textContent = `${config.glassTransparency}%`;
     refs.enabled.checked = config.enabled;
+    if (refs.automaticSwitchMode) refs.automaticSwitchMode.value = config.automaticSwitchMode || "strategy";
     refs.selectionMode.value = config.selectionMode;
     refs.imageQualityModel.value = config.imageQualityModel;
     refs.imageQualityTask.value = config.imageQualityTask;
@@ -740,18 +748,21 @@
     if (!refs.tokenMenu || !refs.tokenSelectToggle) return;
     refs.tokenMenu.hidden = !open;
     refs.tokenSelectToggle.setAttribute("aria-expanded", String(open));
+    if (open) refs.tokenSearch?.focus();
   }
 
   function setModelMenuOpen(open) {
     if (!refs.modelMenu || !refs.modelSelectToggle) return;
     refs.modelMenu.hidden = !open;
     refs.modelSelectToggle.setAttribute("aria-expanded", String(open));
+    if (open) refs.modelSearch?.focus();
   }
 
   function setGroupFilterMenuOpen(open) {
     if (!refs.groupFilterMenu || !refs.groupFilterSelectToggle) return;
     refs.groupFilterMenu.hidden = !open;
     refs.groupFilterSelectToggle.setAttribute("aria-expanded", String(open));
+    if (open) refs.groupFilterSearch?.focus();
   }
 
   function setActiveView(view, options) {
@@ -811,8 +822,43 @@
     root.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
   }
 
+  function persistBusinessPlatform(value) {
+    const platform = normalizeBusinessPlatform(value);
+    if (platform === config.businessPlatform) return;
+    config = { ...config, businessPlatform: platform };
+    imageQuality.cancelRevision = (imageQuality.cancelRevision || 0) + 1;
+    pendingCandidates.clear();
+    invalidateAutomaticImageAdmission();
+    state.candidates = [];
+    state.bestGroup = "等待检查";
+    GM_setValue(STORAGE_CONFIG, config);
+    setStatus("业务平台范围已保存，下次检查生效", "success");
+    render();
+  }
+
   function bindUi() {
     bindImageQualityTooltip();
+    [
+      [refs.tokenSearch, refs.tokenList, refs.tokenSearchStatus],
+      [refs.modelSearch, refs.modelList, refs.modelSearchStatus],
+      [refs.candidateSearch, refs.candidateRows, refs.candidateSearchStatus, refs.candidatePlatform],
+      [refs.groupFilterSearch, refs.groupFilterList, refs.groupFilterSearchStatus, refs.groupFilterPlatform],
+      [refs.manualGroupSearch, refs.manualGroup, refs.manualGroupSearchStatus, refs.manualGroupPlatform],
+    ].forEach(([input, list, status, platform]) => {
+      const filter = () => filterSelectorList(list, input, status, platform);
+      bindSelectorSearch(input, filter, list);
+      bindPlatformFilter(platform, filter);
+    });
+    if (IS_AIHUB) refs.candidatePlatform.addEventListener("change", () => persistBusinessPlatform(refs.candidatePlatform.value));
+    [
+      [refs.imageQualityKeySearch, refs.imageQualityKey, refs.imageQualityKeySearchStatus],
+      [refs.imageQualityFallback1Search, refs.imageQualityFallback1, refs.imageQualityFallback1SearchStatus, refs.imageQualityFallback1Platform],
+      [refs.imageQualityFallback2Search, refs.imageQualityFallback2, refs.imageQualityFallback2SearchStatus, refs.imageQualityFallback2Platform],
+    ].forEach(([input, select, status, platform]) => {
+      const filter = () => filterSearchableSelect(select, input, status, platform);
+      bindSelectorSearch(input, filter, select);
+      bindPlatformFilter(platform, filter);
+    });
     bindDrag(refs.launcher, refs.launcher, "launcher");
     bindDrag(refs.header, refs.panel, "panel");
     root.querySelectorAll("[data-settings-target]").forEach((button) => {
@@ -937,13 +983,13 @@
       setModelMenuOpen(false);
       setGroupFilterMenuOpen(false);
       renderManualGroups();
-      if (!state.candidates.length) {
+      if (!manualGroupCatalog().length) {
         setStatus("请先执行一次立即检查，再选择手动目标分组", "warning");
       }
       refs.manualDialog.showModal();
       const firstChoice = refs.manualGroup.querySelector('input[data-manual-group]:checked')
         || refs.manualGroup.querySelector('input[data-manual-group]');
-      (firstChoice || refs.manualClose).focus();
+      (refs.manualGroupSearch || firstChoice || refs.manualClose).focus();
     });
     refs.detectionImageClose.addEventListener("click", () => refs.detectionImageDialog.close());
     refs.detectionImageDialog.addEventListener("click", (event) => {
@@ -977,19 +1023,24 @@
       refs.manualConfirm.disabled = running || !refs.manualGroup.querySelector('input[data-manual-group]:checked');
     });
     refs.manualConfirm.addEventListener("click", () => {
-      const targetGroup = refs.manualGroup.querySelector('input[data-manual-group]:checked')?.value || "";
+      const choice = refs.manualGroup.querySelector('input[data-manual-group]:checked');
+      const targetGroup = choice?.value || "";
       if (!targetGroup) return;
       refs.manualDialog.close();
-      runCheck({ manual: true, forceSwitch: true, targetGroup });
+      runCheck({ manual: true, forceSwitch: true, targetGroup, targetGroupId: choice?.dataset.groupId });
     });
     [refs.manualClose, refs.manualCancel].forEach((button) => {
       button.addEventListener("click", () => refs.manualDialog.close());
     });
     root.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || refs.manualDialog.open) return;
+      const trigger = !refs.tokenMenu.hidden ? refs.tokenSelectToggle
+        : !refs.modelMenu.hidden ? refs.modelSelectToggle
+          : !refs.groupFilterMenu.hidden ? refs.groupFilterSelectToggle : null;
       setTokenMenuOpen(false);
       setModelMenuOpen(false);
       setGroupFilterMenuOpen(false);
+      trigger?.focus();
     });
     refs.tokenList.addEventListener("change", () => {
       renderTokenSelectionCount();
@@ -1056,6 +1107,7 @@
       refs.groupFilterList.dispatchEvent(new Event("change", { bubbles: true }));
     });
     refs.settingsSection.addEventListener("change", (event) => {
+      if (event.target.matches("[data-selector-search], .selector-platform")) return;
       if (event.target.closest(".token-list")) return;
       if (event.target === refs.groupFilterMode || event.target.closest(".group-filter-select")) return;
       if (event.target === refs.glassTransparency) return;

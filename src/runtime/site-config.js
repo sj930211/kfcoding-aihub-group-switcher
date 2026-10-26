@@ -80,6 +80,8 @@
     tokenIds: [],
     models: [],
     model: "",
+    automaticSwitchMode: "strategy",
+    businessPlatform: "",
     selectionMode: "saving",
     imageQualityKeyId: 0,
     imageQualityModel: "",

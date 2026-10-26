@@ -307,6 +307,78 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     }
   }
 
+  const IMAGE_QUALITY_STAGES = Object.freeze({ prepare: "准备评分", image: "读取原图", model: "等待模型响应", verify: "校验评分分组", parse: "解析评分", restore: "恢复评分分组" });
+  const IMAGE_QUALITY_DIAGNOSTIC_CODES = Object.freeze({
+    IMAGE_ASSESSED: "已返回有效评分；不代表已经切换分组",
+    IMAGE_LOW_SCORE: "有效评分未严格超过门槛，不是无法识图",
+    IMAGE_EVIDENCE_INSUFFICIENT: "已返回评分但可见证据不足",
+    IMAGE_UNASSESSABLE: "模型明确返回无法识图，不是低分；尚不能确认图片是否被上游正确转发",
+    IMAGE_READ_FAILED: "原图读取失败", IMAGE_RESPONSE_INVALID: "评分响应或分项格式不符",
+    IMAGE_MODEL_TIMEOUT: "等待模型响应超时", IMAGE_AUTH_FAILED: "评分认证失败",
+    IMAGE_ACCESS_DENIED: "评分接口拒绝访问", IMAGE_RATE_LIMITED: "评分接口限流或配额受限",
+    IMAGE_SCORER_UNAVAILABLE: "评分服务或密钥分组协调异常",
+    IMAGE_GROUP_RESTORE_FAILED: "评分密钥恢复未确认，所有切换已暂停",
+    IMAGE_ADMISSION_BUDGET: "已达本轮模型请求预算", IMAGE_CATALOG_STALE: "目录或设置已变更，旧任务已取消",
+    IMAGE_CANCELLED: "评价已停止；已发出的请求可能计费",
+  });
+
+  function imageQualityDiagnosticText() {
+    const d = imageQuality.diagnostic;
+    if (!d) return "";
+    const now = d.finishedAt ?? Date.now();
+    const seconds = (ms) => (Math.max(0, ms) / 1000).toFixed(1) + "秒";
+    const durations = { ...d.durations };
+    for (const { name, startedAt } of d.active.values()) durations[name] = (durations[name] || 0) + Math.max(0, now - startedAt);
+    const stages = [...new Set([...d.active.values()].map(({ name }) => IMAGE_QUALITY_STAGES[name]))];
+    const timing = Object.entries(durations).map(([name, ms]) => (name === "model" ? "模型响应" : IMAGE_QUALITY_STAGES[name]) + "累计" + seconds(ms));
+    const counts = d.assessed ? ` · 已评价${d.assessed}张 · 低分${d.lowScore}张 · 证据不足${d.insufficient}张` : "";
+    const code = Object.prototype.hasOwnProperty.call(IMAGE_QUALITY_DIAGNOSTIC_CODES, d.code) ? ` · [${d.code}] ${IMAGE_QUALITY_DIAGNOSTIC_CODES[d.code]}` : "";
+    return `最近图片任务 · ${d.finishedAt === null ? stages.join(" / ") || "准备评分" : "已结束"} · 总计${seconds(now - d.startedAt)} · 模型请求${d.requests}次${timing.length ? " · " + timing.join(" · ") : ""}${counts}${code}`;
+  }
+
+  function renderImageQualityDiagnostic() {
+    if (typeof refs === "undefined") return;
+    const text = imageQualityDiagnosticText();
+    for (const element of [refs.imageQualityDiagnostic, refs.imageQualityTestDiagnostic]) {
+      if (element) { element.hidden = !text; element.textContent = text; }
+    }
+  }
+
+  function beginImageQualityDiagnostic(settings) {
+    // Only fixed stages, codes, counters and timings. Never retain credentials, images or upstream text.
+    const d = imageQuality.diagnostic = { startedAt: Date.now(), finishedAt: null, active: new Map(), durations: {},
+      requests: 0, assessed: 0, lowScore: 0, insufficient: 0, code: "" };
+    let timer;
+    const tick = () => { renderImageQualityDiagnostic(); timer = setTimeout(tick, 1000); };
+    tick();
+    return {
+      async stage(name, action) {
+        const token = {}; const startedAt = Date.now();
+        d.active.set(token, { name, startedAt }); renderImageQualityDiagnostic();
+        try { return await action(); }
+        finally {
+          d.durations[name] = (d.durations[name] || 0) + Math.max(0, Date.now() - startedAt);
+          d.active.delete(token); renderImageQualityDiagnostic();
+        }
+      },
+      request() { d.requests += 1; },
+      result(entry) {
+        d.assessed += 1;
+        if (entry.confidence === "low") d.insufficient += 1;
+        else if (entry.score <= settings.imageQualityMinScore) d.lowScore += 1;
+      },
+      finish(error, aborted) {
+        clearTimeout(timer); d.finishedAt = Date.now();
+        const code = error?.diagnosticCode || error?.code;
+        d.code = Object.prototype.hasOwnProperty.call(IMAGE_QUALITY_DIAGNOSTIC_CODES, code) ? code
+          : aborted ? "IMAGE_CANCELLED" : error ? "IMAGE_SCORER_UNAVAILABLE"
+            : d.assessed > d.lowScore + d.insufficient ? "IMAGE_ASSESSED"
+              : d.lowScore ? "IMAGE_LOW_SCORE" : "IMAGE_EVIDENCE_INSUFFICIENT";
+        renderImageQualityDiagnostic();
+      },
+    };
+  }
+
   function renderImageQualityControls() {
     if (!refs.imageQualityActions) return;
     const enabled = imageQualityEnabled(config);
@@ -331,6 +403,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     refs.imageQualityRun.textContent = available ? "评价当前图片（计费）" : "暂无图片";
     refs.imageQualityStop.hidden = !imageQuality.controller;
     refs.imageQualityStatus.textContent = imageQuality.recoveryError || imageQuality.status || `本页已评价 ${rows.filter(candidateImageQuality).length} · 刷新列表不调用模型`;
+    renderImageQualityDiagnostic();
   }
 
 
@@ -343,6 +416,8 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       refs.imageQualityKey.add(new Option("已选密钥暂不可用", String(config.imageQualityKeyId)));
     }
     refs.imageQualityKey.value = String(config.imageQualityKeyId);
+    if (refs.imageQualityKeySearch) refreshSearchableSelect(refs.imageQualityKey,
+      refs.imageQualityKeySearch, refs.imageQualityKeySearchStatus);
   }
 
   function renderImageQualityGroupOptions() {
@@ -350,11 +425,20 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       if (!select) return;
       const selected = Number(config.imageQualityFallbackGroupIds[index]) || 0;
       select.replaceChildren(new Option("不使用备用分组", "0"));
-      aihubGroupsCache.forEach((group) => select.add(new Option(group.name || `#${group.id}`, String(group.id))));
+      aihubGroupsCache.forEach((group) => {
+        const option = new Option(group.name || `#${group.id}`, String(group.id));
+        option.dataset.platform = groupPlatformFor(group, aihubPlatformMonitorsCache, state.candidates);
+        select.add(option);
+      });
       if (selected && !aihubGroupsCache.some((group) => Number(group.id) === selected)) {
         select.add(new Option(`分组 #${selected} 暂不可用`, String(selected)));
       }
       select.value = String(selected);
+      const search = index === 0 ? refs.imageQualityFallback1Search : refs.imageQualityFallback2Search;
+      const status = index === 0 ? refs.imageQualityFallback1SearchStatus : refs.imageQualityFallback2SearchStatus;
+      const platform = index === 0 ? refs.imageQualityFallback1Platform : refs.imageQualityFallback2Platform;
+      refreshPlatformFilter(platform);
+      if (search) refreshSearchableSelect(select, search, status, platform);
     });
   }
 
@@ -591,7 +675,9 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           ? "供应商上游拒绝请求（SUPPLIER_UPSTREAM_BLOCKED）" : "评分流失败或未完整完成";
         const unavailable = imageQualityAvailabilityCode(error.code)
           || error.message === "SUPPLIER_UPSTREAM_BLOCKED";
-        throw Object.assign(new Error(`图片评分请求失败：${reason}；未采用图片分。`), { modelUnavailable: unavailable });
+        throw Object.assign(new Error(`图片评分请求失败：${reason}；未采用图片分。`), { modelUnavailable: unavailable,
+          diagnosticCode: error.code === "rate_limit_exceeded" ? "IMAGE_RATE_LIMITED"
+            : unavailable ? "IMAGE_SCORER_UNAVAILABLE" : "IMAGE_RESPONSE_INVALID" });
       }
       if (type !== "response.completed") return null;
       if (event.response?.status !== "completed" || !Array.isArray(event.response.output)) {
@@ -657,18 +743,25 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
                   : "接口未接受请求，请核对模型与请求参数";
         const modelCode = [...prefix.matchAll(/"code"\s*:\s*"([A-Za-z0-9_]+)"/g)].some((match) => imageQualityAvailabilityCode(match[1]));
         throw Object.assign(new Error(`${stage}失败（HTTP ${response.status}）：${reason}；未采用图片分。`), {
+          diagnosticCode: response.status === 401 ? "IMAGE_AUTH_FAILED" : response.status === 403 ? "IMAGE_ACCESS_DENIED"
+            : response.status === 429 ? "IMAGE_RATE_LIMITED" : "IMAGE_SCORER_UNAVAILABLE",
           modelUnavailable: path === "/v1/responses" && (supplierBlocked || modelCode || [404, 408, 429].includes(response.status) || response.status >= 500),
         });
       }
       if (path === "/v1/responses" && /\btext\/event-stream\b/i.test(response.headers.get("content-type") || "")) {
-        return await readImageQualityStream(response, attempt);
+        try { return await readImageQualityStream(response, attempt); }
+        catch (error) {
+          error.diagnosticCode ||= error.modelUnavailable ? "IMAGE_SCORER_UNAVAILABLE" : "IMAGE_RESPONSE_INVALID";
+          throw error;
+        }
       }
       try { return await response.json(); }
-      catch { throw new Error("接口未返回有效JSON，未采用图片分"); }
+      catch { throw Object.assign(new Error("接口未返回有效JSON，未采用图片分"), { diagnosticCode: "IMAGE_RESPONSE_INVALID" }); }
     } catch (error) {
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
       if (timedOut || error?.name === "TypeError") {
         throw Object.assign(new Error(timedOut ? "图片评分请求失败：请求超时，未采用图片分" : "图片评分请求失败：网络连接失败，未采用图片分"), {
+          diagnosticCode: timedOut && path === "/v1/responses" ? "IMAGE_MODEL_TIMEOUT" : "IMAGE_SCORER_UNAVAILABLE",
           modelUnavailable: path === "/v1/responses",
         });
       }
@@ -735,6 +828,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
   function clearImageQualityPage() {
     if (imageQuality.controller || imageQuality.modelsController) return;
     imageQuality.records.clear();
+    imageQuality.diagnostic = null;
     imageQuality.testResult = "";
     imageQuality.testStatus = "";
     imageQuality.status = "本页评价已清除；自动切换仍会重新评价";
@@ -764,6 +858,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     budget.unavailableGroups ||= new Set();
     const controller = new AbortController();
     imageQuality.controller = controller;
+    const diagnostic = beginImageQualityDiagnostic(settings);
     options?.onController?.(controller);
     imageQuality.status = options?.candidate ? `正在后台评价 ${options.candidate.group}（计费）`
       : "正在评价当前图片（计费）";
@@ -777,47 +872,51 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     const published = [];
     const current = () => assertImageQualityRunCurrent(settingsKey, revision, controller);
     const evaluate = async (candidate, image) => {
-      const dataUrl = await imageQualityDataUrl(image.bytes);
+      const dataUrl = await diagnostic.stage("image", () => imageQualityDataUrl(image.bytes));
       const routes = useFallback ? session.routes : session.routes.slice(0, 1);
+      let unavailableDiagnosticCode;
       for (const route of routes) {
         current();
         if (failure) return null;
         const routeKey = JSON.stringify([settings.imageQualityKeyId, settings.imageQualityModel, route.id]);
         if (!test && budget.unavailableGroups.has(routeKey)) continue;
         if (budget.remaining <= 0) throw Object.assign(new Error("图片评分请求失败：本轮已达10次请求上限，保持当前分组"), { code: "IMAGE_ADMISSION_BUDGET" });
-        await session.move(route);
+        await diagnostic.stage("verify", () => session.move(route));
         current();
         if (failure) return null;
         if (budget.remaining <= 0) throw Object.assign(new Error("图片评分请求失败：本轮已达10次请求上限，保持当前分组"), { code: "IMAGE_ADMISSION_BUDGET" });
         budget.remaining -= 1;
+        diagnostic.request();
         let payload;
         try {
-          payload = await imageQualityFetchJson("/v1/responses", {
+          payload = await diagnostic.stage("model", () => imageQualityFetchJson("/v1/responses", {
             method: "POST", credentials: "omit",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.credential}` },
             body: JSON.stringify(buildImageQualityRequest(candidate, settings, dataUrl)),
-          }, controller);
+          }, controller));
         } catch (error) {
           current();
-          if (!error.modelUnavailable) throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_SCORER_UNAVAILABLE" });
+          if (!error.modelUnavailable) throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_SCORER_UNAVAILABLE", diagnosticCode: error.diagnosticCode });
           budget.unavailableGroups.add(routeKey);
+          unavailableDiagnosticCode = error.diagnosticCode;
           imageQuality.status = test ? `当前评分分组 ${route.name} 暂不可用；单张测试不切组`
             : `评分分组 ${route.name} 暂不可用，将尝试已配置的备用分组；评价模型保持不变`;
           render();
           continue;
         }
-        await session.check();
+        await diagnostic.stage("verify", () => session.check());
         let parsed;
-        try { parsed = parseImageQualityResponse(payload); }
+        try { parsed = await diagnostic.stage("parse", () => parseImageQualityResponse(payload)); }
         catch (error) {
           if (error?.code === "IMAGE_UNASSESSABLE") throw error;
-          throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_SCORER_UNAVAILABLE" });
+          throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_SCORER_UNAVAILABLE", diagnosticCode: "IMAGE_RESPONSE_INVALID" });
         }
         const entry = { ...parsed, model: settings.imageQualityModel, scoringGroupId: route.id,
           scoringGroup: route.name, assessedAt: Date.now() };
         imageQuality.records.set(Number(candidate.groupId), { source: imageQualityIdentity(candidate), settingsKey, entry });
         published.push(Number(candidate.groupId));
         analyzed += 1;
+        diagnostic.result(entry);
         imageQuality.status = `本次已评价 ${analyzed} 张 · 评分分组 ${route.name} · 模型 ${settings.imageQualityModel} · 结果仅本页展示`;
         if (test) {
           imageQuality.testStatus = entry.confidence === "low" ? "模型测试通过；证据不足，不通过自动准入。" : "模型测试通过；返回有效分项和依据，未切组。";
@@ -827,7 +926,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
       }
       throw Object.assign(new Error(test
         ? "图片评分请求失败：当前评分分组暂不可用；本次仅请求1次，未切换分组或模型"
-        : "图片评分请求失败：当前及备用评分分组均不可用，本轮停止自动切换；未隔离图片分组"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+        : "图片评分请求失败：当前及备用评分分组均不可用，本轮停止自动切换；未隔离图片分组"), { code: "IMAGE_SCORER_UNAVAILABLE", diagnosticCode: unavailableDiagnosticCode });
     };
     const worker = async () => {
       while (!controller.signal.aborted && !failure && next < batch.length) {
@@ -836,7 +935,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
           current();
           imageQuality.records.delete(Number(candidate.groupId));
           let image;
-          try { image = await readImageQualityImage(candidate, controller); }
+          try { image = await diagnostic.stage("image", () => readImageQualityImage(candidate, controller)); }
           catch (error) {
             current();
             throw Object.assign(new Error(imageQualityFailureMessage(error, controller)), { code: "IMAGE_READ_FAILED" });
@@ -851,12 +950,12 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
     try {
       await withImageQualityKeyLock(settings.imageQualityKeyId, useFallback, async () => {
         try {
-          session = await createImageQualityGroupSession(test ? { ...settings, imageQualityFallbackGroupIds: [] } : settings, controller, current);
+          session = await diagnostic.stage("prepare", () => createImageQualityGroupSession(test ? { ...settings, imageQualityFallbackGroupIds: [] } : settings, controller, current));
           await Promise.all(Array.from({ length: test || options?.candidate || useFallback ? 1 : 2 }, worker));
         } catch (error) { failure ||= error; }
         finally {
           try {
-            const restored = await session?.restore();
+            const restored = session ? await diagnostic.stage("restore", () => session.restore()) : null;
             if (restored && typeof tokensCache !== "undefined") {
               const cached = tokensCache.find((token) => Number(token.id) === settings.imageQualityKeyId);
               if (cached) Object.assign(cached, { groupId: imageQualityGroupId(restored), group: imageQualityGroupName(restored) });
@@ -867,7 +966,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
               const cached = tokensCache.find((token) => Number(token.id) === settings.imageQualityKeyId);
               if (cached) Object.assign(cached, { groupId: 0, group: "" });
             }
-            failure = Object.assign(new Error("图片评分请求失败：未能确认评分密钥已恢复原分组，请手动检查后刷新页面；所有切换已暂停"), { code: "IMAGE_SCORER_UNAVAILABLE" });
+            failure = Object.assign(new Error("图片评分请求失败：未能确认评分密钥已恢复原分组，请手动检查后刷新页面；所有切换已暂停"), { code: "IMAGE_SCORER_UNAVAILABLE", diagnosticCode: "IMAGE_GROUP_RESTORE_FAILED" });
             imageQuality.recoveryError = failure.message;
             published.forEach((id) => imageQuality.records.delete(id));
             selectedEntry = null;
@@ -881,7 +980,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         if (!["IMAGE_READ_FAILED", "IMAGE_UNASSESSABLE", "IMAGE_CATALOG_STALE", "IMAGE_ADMISSION_BUDGET"].includes(failure.code)
           && !controller.signal.aborted) {
           // Key/group coordination failures are infrastructure failures, never bad pictures.
-          failure = Object.assign(new Error(imageQualityFailureMessage(failure, controller)), { code: "IMAGE_SCORER_UNAVAILABLE" });
+          failure = Object.assign(new Error(imageQualityFailureMessage(failure, controller)), { code: "IMAGE_SCORER_UNAVAILABLE", diagnosticCode: failure.diagnosticCode });
         }
         imageQuality.status = imageQualityFailureMessage(failure, failure.code === "IMAGE_SCORER_UNAVAILABLE" ? new AbortController() : controller);
         if (test) imageQuality.testStatus = imageQuality.status;
@@ -890,6 +989,7 @@ connection=verified才允许4/5档，且不能同时给0分（0表示完全不�
         imageQuality.status = "评价已停止；已发出的请求可能已计费，已完成必要的评分分组恢复";
         if (test) imageQuality.testStatus = imageQuality.status;
       }
+      diagnostic.finish(failure, controller.signal.aborted);
       imageQuality.scoringToken = null;
       imageQuality.controller = null;
       render();

@@ -13,7 +13,7 @@ function setup(){
     IS_AIHUB_API:true,IS_FLUXION:false,window:{localStorage:{getItem:()=>null}},state:{candidates:rows,candidateRevision:0,candidateRequestRevision:0,logs:[]},refs:{},tokensCache:[],
     pendingCandidates:new Map(),automaticImageAdmission:{context:null,jobs:new Map(),bindings:new Map(),active:null,draining:null},
     STORAGE_SWITCH_GUARD:'guard',STORAGE_LAST_SWITCH:'history',STORAGE_LOGS:'logs',MAX_LOG_ENTRIES:50,
-    ...Object.fromEntries(['targetModelIdentity','targetModels','normalizeSwitchHistory','normalizeSwitchGuardState','pruneSwitchGuardState','applyTemporaryBlacklist','selectRollbackCandidate','selectSwitchCandidate','selectBestCandidate','selectImageQualifiedCandidate','imageQualityAdmissionVerdict','shouldSwitchCandidate','candidateHasHealthFailure','candidateRecommendationLabel','tokenSupportsModel'].map(name=>[name,api[name]])),
+    ...Object.fromEntries(['targetModelIdentity','targetModels','normalizeSwitchHistory','normalizeSwitchGuardState','pruneSwitchGuardState','applyTemporaryBlacklist','selectRollbackCandidate','selectSwitchCandidate','selectBestCandidate','selectImageQualifiedCandidate','imageQualityAdmissionVerdict','shouldSwitchCandidate','candidateMatchesToken','candidateHasExplicitHealthFailure','candidateHasHealthFailure','candidateRecommendationLabel','tokenSupportsModel'].map(name=>[name,api[name]])),
     fetchJson:async(path,options={})=>ctx.unwrapSiteResponse(await(await ctx.fetch(path,{...options,body:options.body?JSON.stringify(options.body):undefined})).json()),
   });
   vm.runInContext(read('src/runtime/operations.js'),ctx);vm.runInContext('scheduleNext=()=>{};requestHealthCheck=()=>{};',ctx);

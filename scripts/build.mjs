@@ -18,13 +18,14 @@ const modulePaths = [
   "src/runtime/test-api.js",
   "src/runtime/state.js",
   "src/runtime/operations.js",
+  "src/ui/search.js",
   "src/ui/render.js",
   "src/ui/mount.js",
   "src/entry.js",
 ];
 
 function read(relativePath) {
-  return fs.readFileSync(path.join(projectRoot, relativePath), "utf8");
+  return fs.readFileSync(path.join(projectRoot, relativePath), "utf8").replace(/\r\n/g, "\n");
 }
 
 function write(relativePath, content) {
