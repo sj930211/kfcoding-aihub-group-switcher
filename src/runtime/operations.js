@@ -470,7 +470,7 @@
         aihubPlatformMonitorsCache = monitorPayload.summary.apis || [];
         aihubRatesCache = normalizeAihubRates(rates);
         pricingCache = buildAihubModelCatalog(monitorPayload.summary);
-        updateImageQualityCatalog(monitorPayload.summary);
+        applyMonitorScopeMigration();
       }
       renderOptions();
       render();
@@ -585,8 +585,7 @@
     });
     state.candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(now), targetModelIdentity(config), now);
     if (updateRecommendation) {
-      const recommended = selectBestCandidate(state.candidates, "", config.selectionMode);
-      state.bestGroup = candidateRecommendationLabel(recommended);
+      refreshQualityRecommendation();
     }
   }
 
@@ -603,14 +602,15 @@
     }, 8000);
   }
 
-  function clearIsolation(model, group) {
-    const result = removeIsolation(getSwitchGuardState(), model, group, Date.now());
+  function clearIsolation(model, group, groupId) {
+    const result = removeIsolation(getSwitchGuardState(), model, group, Date.now(), groupId);
     if (!result.removed.length) return;
     saveSwitchGuardState(result.state);
     refreshCandidateIsolationState();
     setIsolationUndo(result.removed);
-    addLog(`已解除故障隔离：${group}`, "success");
-    setStatus(`已解除 ${group} 的故障隔离`, "success");
+    const label = groupId ? `${group} #${groupId}` : group;
+    addLog(`已解除故障隔离：${label}`, "success");
+    setStatus(`已解除 ${label} 的故障隔离`, "success");
   }
 
   function clearAllIsolations() {
@@ -640,13 +640,15 @@
     const state = getSwitchGuardState();
     const fromGroup = String(token.group || "").trim();
     const toGroup = String(candidate.group || "").trim();
+    const [fromGroupId] = normalizeMonitorGroupIds([token.groupId]);
+    const [toGroupId] = normalizeMonitorGroupIds([candidate.groupId]);
     if (
       config.rollbackChecks <= 0 ||
       !Number.isFinite(tokenId) ||
       tokenId <= 0 ||
       !fromGroup ||
       !toGroup ||
-      fromGroup === toGroup
+      (fromGroupId && toGroupId ? fromGroupId === toGroupId : fromGroup === toGroup)
     ) {
       delete state.byToken[tokenId];
       saveSwitchGuardState(state);
@@ -656,6 +658,8 @@
       model: targetModelIdentity(config),
       fromGroup,
       toGroup,
+      ...(fromGroupId ? { fromGroupId } : {}),
+      ...(toGroupId ? { toGroupId } : {}),
       remaining: config.rollbackChecks,
       at: Date.now(),
     };
@@ -681,20 +685,26 @@
   }
 
   async function switchTokenGroup(token, candidate, options) {
-    if (IS_AIHUB) {
-      return withImageQualityKeyLock(token.id, false, async () => {
-        const latest = await getTokenDetail(token.id);
-        if (Number(latest.groupId) !== Number(token.groupId)) throw new Error("密钥分组已在其他操作中改变，本次取消切换");
-        return switchTokenGroupUnlocked(token, candidate, options);
+    const perform = async () => {
+      const latest = await getTokenDetail(token.id);
+      options?.beforeSwitch?.();
+      if (!candidateMatchesToken({ group: latest.group, groupId: latest.groupId }, token)) {
+        throw new Error("密钥分组已在其他操作中改变，本次取消切换");
+      }
+      return switchTokenGroupUnlocked(token, candidate, options);
+    };
+    if (globalThis.navigator?.locks) {
+      return navigator.locks.request(STORAGE_PREFIX + ":switch:" + token.id, { ifAvailable: true }, (lock) => {
+        if (!lock) throw new Error("该密钥正由其他页面切换，请稍后重试");
+        return perform();
       });
     }
-    return switchTokenGroupUnlocked(token, candidate, options);
+    return perform();
   }
 
   async function switchTokenGroupUnlocked(token, candidate, options) {
     const switchOptions = options || {};
     switchOptions.beforeSwitch?.();
-    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
     if (IS_AIHUB_API) {
       if (!Number.isFinite(Number(candidate.groupId)) || Number(candidate.groupId) <= 0) {
         throw new Error(`目标分组 ${candidate.group} 缺少有效 ID`);
@@ -746,454 +756,158 @@
     }
   }
 
-  // Only a pending decision owns these results. Display records never grant admission.
-  function automaticImageAdmissionStatus(candidate) {
-    const job = [...automaticImageAdmission.jobs.values()].find((item) => !item.invalid
-      && item.candidate.group === candidate.group && item.source === imageQualityIdentity(candidate));
-    if (!job) return "";
-    if (job.error) return "服务异常";
-    if (!job.verdict) return automaticImageAdmission.active === job ? "评价中" : "待评价";
-    return job.verdict.pass ? "" : "未通过";
+  function invalidateCheckDecisions() {
+    state.checkCancelRevision = (state.checkCancelRevision || 0) + 1;
+    pendingCandidates.clear();
   }
 
-  function detachAutomaticImageAdmission(tokenId) {
-    const binding = automaticImageAdmission.bindings.get(Number(tokenId));
-    if (!binding) return;
-    automaticImageAdmission.bindings.delete(Number(tokenId));
-    const job = binding.job;
-    if (![...automaticImageAdmission.bindings.values()].some((item) => item.job === job)) {
-      job.invalid = true;
-      automaticImageAdmission.jobs.delete(job.key);
-      if (automaticImageAdmission.active === job) job.controller?.abort();
+  function refreshOutOfScopeTokens(tokens = tokensCache) {
+    state.outOfScopeTokens = tokens.filter((token) => config.tokenIds.includes(Number(token.id))
+      && !monitorGroupInScope(config, token.groupId)).map((token) => ({
+        id: Number(token.id), name: tokenLabel(token), group: token.group || "未知", groupId: Number(token.groupId) || 0,
+      }));
+  }
+
+  function saveMonitorScope(mode, ids) {
+    const next = sanitizeConfig({ ...config, monitorScopeMode: mode === "selected" ? "selected" : "all",
+      monitorGroupIds: normalizeMonitorGroupIds(ids), monitorScopeMigrationPending: false, monitorScopeMigrationPlatform: "" });
+    if (JSON.stringify(next) === JSON.stringify(config)) return;
+    config = next;
+    invalidateCheckDecisions();
+    GM_setValue(STORAGE_CONFIG, config);
+    state.candidates = [];
+    state.tokenResults = [];
+    state.bestGroup = "-";
+    refreshOutOfScopeTokens();
+    syncForm();
+    setStatus("监控范围已保存，下次检查生效", "success");
+  }
+
+  function refreshQualityRecommendation() {
+    const selected = tokensCache.filter((token) => config.tokenIds.includes(Number(token.id)));
+    const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)));
+    const currentModels = [...new Set(currentRows.filter(Boolean).map(qualityModel))];
+    const currentGroup = currentRows.length && currentRows.every(Boolean) && currentModels.length === 1 ? currentRows[0] : "";
+    const best = selectBestCandidate(state.candidates, currentGroup, config.selectionMode);
+    state.bestGroup = best ? candidateRecommendationLabel(best)
+      : state.candidates.some((row) => row.available && row.scopeEligible !== false) ? "按模型分别推荐" : "无合格分组";
+  }
+
+  async function manualSwitchToGroup(candidate, action) {
+    if (!candidate || !["once", "add", "add-and-switch"].includes(action)) return;
+    if (action !== "once" && !monitorGroupInScope(config, candidate.groupId)) {
+      saveMonitorScope("selected", [...config.monitorGroupIds, candidate.groupId]);
     }
+    return runCheck({ manual: true, forceSwitch: true, targetGroup: candidate.group, targetGroupId: candidate.groupId,
+      allowUnavailable: candidate.available !== true });
   }
 
-  function invalidateAutomaticImageAdmission() {
-    for (const job of automaticImageAdmission.jobs.values()) job.invalid = true;
-    automaticImageAdmission.active?.controller?.abort();
-    automaticImageAdmission.context = null;
-    automaticImageAdmission.jobs.clear();
-    automaticImageAdmission.bindings.clear();
-  }
-
-  async function stopAutomaticImageAdmission() {
-    invalidateAutomaticImageAdmission();
-    // Restoration runs inside the scorer's finally block, even on abort.
-    await automaticImageAdmission.draining;
-    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
-  }
-
-  function startAutomaticImageAdmissionQueue() {
-    if (automaticImageAdmission.draining) return;
-    const drain = async () => {
-      for (;;) {
-        const job = [...automaticImageAdmission.jobs.values()].find((item) => !item.invalid && !item.started);
-        if (!job) return;
-        job.started = true;
-        automaticImageAdmission.active = job;
-        try {
-          if (job.context.scorerFailure) throw job.context.scorerFailure;
-          job.verdict = await checkCandidateImageAdmission(job.candidate, job.context, () => {
-            if (job.invalid) throw new Error("候选已改变，本次评价已失效");
-          }, (controller) => { job.controller = controller; });
-          // A late result must not affect a business decision abandoned outside this page.
-          for (const [tokenId, binding] of [...automaticImageAdmission.bindings]) {
-            if (binding.job !== job) continue;
-            const latest = Number(imageQuality.scoringToken?.id) === tokenId
-              ? imageQuality.scoringToken : await getTokenDetail(tokenId);
-            if (latest.group !== binding.token.group) detachAutomaticImageAdmission(tokenId);
-          }
-          if (job.invalid) continue;
-          assertImageAdmissionCurrent(job.context);
-          job.completedRevision = state.candidateRequestRevision;
-          if (!job.verdict.pass) isolateImageCandidate(job.candidate, job.verdict.reason);
-          imageQuality.status = `${job.candidate.group} · ${job.verdict.pass ? "图片通过，等待最新健康检查" : job.verdict.reason + "，已故障隔离"}`;
-        } catch (error) {
-          if (!job.invalid) {
-            job.error = error instanceof Error ? error.message : String(error);
-            imageQuality.status = job.error;
-          }
-        } finally {
-          automaticImageAdmission.active = null;
-          render();
-        }
-      }
-    };
-    automaticImageAdmission.draining = drain().finally(() => {
-      automaticImageAdmission.draining = null;
-      if ([...automaticImageAdmission.jobs.values()].some((job) => !job.invalid && !job.started)) startAutomaticImageAdmissionQueue();
-      if (config.enabled) requestHealthCheck(250);
-    });
-  }
-
-  function prepareAutomaticImageAdmission(token, candidate) {
-    let context = automaticImageAdmission.context;
-    if (context) {
-      try { assertImageAdmissionCurrent(context); }
-      catch { invalidateAutomaticImageAdmission(); context = null; }
+  function applyMonitorScopeMigration() {
+    const migrated = migrateAihubMonitorScope(config, aihubGroupsCache, aihubPlatformMonitorsCache);
+    if (migrated.changed) {
+      config = migrated.config;
+      GM_setValue(STORAGE_CONFIG, config);
+      addLog("旧平台范围已映射到监控分组ID", "info");
     }
-    if (!context) automaticImageAdmission.context = context = createImageAdmissionContext();
-    const tokenId = Number(token.id);
-    const previous = automaticImageAdmission.bindings.get(tokenId);
-    const key = JSON.stringify([candidate.groupId, candidate.group, imageQualityIdentity(candidate)]);
-    if (previous && (previous.job.key !== key || previous.token.group !== token.group)) detachAutomaticImageAdmission(tokenId);
-    let job = automaticImageAdmission.jobs.get(key);
-    if (!job) {
-      job = { key, candidate, source: imageQualityIdentity(candidate), context,
-        verdict: null, error: "", invalid: false, started: false };
-      automaticImageAdmission.jobs.set(key, job);
-    }
-    automaticImageAdmission.bindings.set(tokenId, { job, token: { ...token } });
-    startAutomaticImageAdmissionQueue();
-    return job;
+    refreshOutOfScopeTokens();
   }
 
-  function createImageAdmissionContext() {
-    return { remaining: 10, unavailableGroups: new Set(), scorerFailure: null, configKey: JSON.stringify(config), catalogRevision: imageQuality.catalogRevision,
-      cancelRevision: imageQuality.cancelRevision || 0 };
-  }
-
-  function assertImageAdmissionCurrent(context) {
-    if (imageQuality.recoveryError) throw new Error(imageQuality.recoveryError);
-    if (context.configKey !== JSON.stringify(config) || context.catalogRevision !== imageQuality.catalogRevision
-      || context.cancelRevision !== (imageQuality.cancelRevision || 0)
-      || Number(GM_getValue(STORAGE_IMAGE_QUALITY_CATALOG_AT, 0)) > imageQuality.catalogAt) {
-      throw new Error("设置、图片目录已变更或评分已停止，本轮取消切换；未继续隔离");
-    }
-  }
-
-  async function waitForImageAdmissionIdle(context, assertJob) {
-    const deadline = Date.now() + 90000;
-    while (imageQuality.controller || imageQuality.modelsController) {
-      assertJob();
-      assertImageAdmissionCurrent(context);
-      if (Date.now() >= deadline) throw new Error("图片评分任务忙，本轮保持当前分组；未隔离");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    assertImageAdmissionCurrent(context);
-  }
-
-  async function checkCandidateImageAdmission(candidate, context, assertJob = () => {}, onController) {
-    assertJob();
-    assertImageAdmissionCurrent(context);
-    if (!imageQualityIdentity(candidate)) return { pass: false, reason: "没有可用图片" };
-    if (!imageQualityEnabled(config)) throw new Error("请配置评分密钥和模型；正常择优已暂停，故障恢复仍可执行");
-    await waitForImageAdmissionIdle(context, assertJob);
-    if (context.scorerFailure) throw context.scorerFailure;
-    assertJob();
-    let entry;
-    try {
-      entry = await runImageQuality({ candidate, budget: context, onController });
-    } catch (error) {
-      assertJob();
-      assertImageAdmissionCurrent(context);
-      if (error?.code === "IMAGE_CATALOG_STALE") throw new Error("图片目录已在其他页面更新，本轮取消切换；未继续隔离");
-      if (error?.code === "IMAGE_ADMISSION_BUDGET") throw new Error("本轮已达10次请求上限，保持当前分组；未继续隔离");
-      if (error?.code === "IMAGE_SCORER_UNAVAILABLE") {
-        context.scorerFailure = new Error(imageQualityFailureMessage(error, new AbortController()));
-        throw context.scorerFailure;
-      }
-      if (error?.code === "IMAGE_READ_FAILED") return { pass: false, reason: "图片读取失败，没有有效评价" };
-      if (error?.code === "IMAGE_UNASSESSABLE") return { pass: false, reason: "图片无法识别，没有有效评价" };
-      context.scorerFailure = new Error("图片读取或评价失败，本次决策停止；未隔离业务分组");
-      throw context.scorerFailure;
-    }
-    assertJob();
-    assertImageAdmissionCurrent(context);
-    return imageQualityAdmissionVerdict(entry, config.imageQualityMinScore);
-  }
-
-  function isolateImageCandidate(candidate, reason) {
-    const now = Date.now();
-    const model = targetModelIdentity(config);
-    const guard = getSwitchGuardState(now);
-    guard.blacklist = guard.blacklist.filter((entry) => entry.model !== model || entry.group !== candidate.group || entry.type !== "image");
-    guard.blacklist.push({ model, group: candidate.group, type: "image", reason,
-      until: now + config.blacklistMinutes * 60000 });
-    saveSwitchGuardState(guard);
-    refreshCandidateIsolationState();
-    addLog(`${candidate.group}：${reason}，故障隔离 ${config.blacklistMinutes} 分钟`, "warning");
-    render();
-  }
-
-  async function admittedSwitchCandidate(token, candidates, preferred, context) {
-    if (!IS_AIHUB) return preferred;
-    if (context.scorerFailure) throw context.scorerFailure;
-    const candidate = await selectImageQualifiedCandidate(candidates, token.group, {
-      mode: config.selectionMode, preferred, currentToken: token,
-      assertCurrent: () => assertImageAdmissionCurrent(context),
-      eligible: (rows) => applyTemporaryBlacklist(rows, getSwitchGuardState(), targetModelIdentity(config), Date.now())
-        .filter((row) => row.available && row.scopeEligible !== false),
-      check: (row) => checkCandidateImageAdmission(row, context),
-      isolate: isolateImageCandidate,
-    });
-    assertImageAdmissionCurrent(context);
-    if (candidate && !candidateMatchesToken(candidate, token)) {
-      const latest = await getTokenDetail(token.id);
-      assertImageAdmissionCurrent(context);
-      if (!candidateMatchesToken({ group: latest.group, groupId: latest.groupId }, token)) throw new Error("密钥分组已在其他页面改变，本轮取消切换");
-    }
-    return candidate;
-  }
-
-  function imageAdmissionHoldResult(token) {
-    pendingCandidates.delete(Number(token.id));
-    detachAutomaticImageAdmission(token.id);
-    return { outcome: "image-blocked", group: token.group || "未设置", tone: "warning",
-      message: "没有需要切换且通过图片准入的分组，保持当前分组" };
-  }
-
-  async function handleRollbackGuard(token, candidates, admission, observeHealth = true) {
+  async function handleRollbackGuard(token, candidates, assertCurrent, observeHealth = true) {
     const tokenId = Number(token.id);
     const now = Date.now();
     const guardState = getSwitchGuardState(now);
     const guard = guardState.byToken[tokenId];
     if (!guard) return null;
-    if (
-      config.rollbackChecks <= 0 ||
-      guard.model !== targetModelIdentity(config) ||
-      guard.toGroup !== String(token.group || "")
-    ) {
-      delete guardState.byToken[tokenId];
-      saveSwitchGuardState(guardState);
-      return null;
+    const destinationMatches = guard.toGroupId ? Number(guard.toGroupId) === Number(token.groupId)
+      : guard.toGroup === token.group && candidates.filter((row) => row.group === guard.toGroup).length === 1;
+    if (config.rollbackChecks <= 0 || guard.model !== targetModelIdentity(config) || !destinationMatches) {
+      delete guardState.byToken[tokenId]; saveSwitchGuardState(guardState); return null;
     }
-
-    const current = candidates.find((candidate) => candidateMatchesToken(candidate, token));
-    const failoverOnly = config.automaticSwitchMode === "failover";
-    if (current && (current.available || current.scopeEligible === false && !candidateHasExplicitHealthFailure(current, config))) {
+    const current = candidates.find((row) => candidateMatchesToken(row, token));
+    if (current?.available) {
       if (observeHealth) guard.remaining -= 1;
-      if (guard.remaining <= 0) {
-        delete guardState.byToken[tokenId];
-        addLog(`${tokenLabel(token)} 的 ${guard.toGroup} 已通过切换观察`, "success");
-        saveSwitchGuardState(guardState);
-        return {
-          outcome: "observed",
-          group: guard.toGroup,
-          tone: "success",
-          message: "切换观察完成",
-        };
-      }
-      guardState.byToken[tokenId] = guard;
+      if (guard.remaining <= 0) delete guardState.byToken[tokenId];
       saveSwitchGuardState(guardState);
-      return {
-        outcome: "observing",
-        group: guard.toGroup,
-        tone: "warning",
-        message: `切换观察中，剩余 ${guard.remaining} 次`,
-      };
+      return { outcome: guard.remaining <= 0 ? "observed" : "observing", group: token.group,
+        tone: guard.remaining <= 0 ? "success" : "warning", message: guard.remaining <= 0 ? "切换观察完成" : "切换观察中，剩余 " + guard.remaining + " 次" };
     }
-
-    if (failoverOnly && !candidateHasExplicitHealthFailure(current, config)) {
-      return { outcome: "observing", group: guard.toGroup, tone: "warning",
-        message: "观察数据不足或受配置限制，保持当前分组" };
-    }
-
-    if (failoverOnly || candidateHasHealthFailure(current)) {
-      guardState.blacklist = guardState.blacklist.filter(
-        (entry) => entry.model !== targetModelIdentity(config) || entry.group !== guard.toGroup || entry.type === "image",
-      );
-      guardState.blacklist.push({
-        model: targetModelIdentity(config),
-        group: guard.toGroup,
-        until: now + config.blacklistMinutes * 60000,
-        type: "health", reason: "切换后健康检查失败",
-      });
-    }
-    delete guardState.byToken[tokenId];
-    saveSwitchGuardState(guardState);
-
-    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now, { ignoreImage: true });
-    const rollbackTarget = failoverOnly
-      ? { candidate: selectBestCandidate(eligible, token.group, config.selectionMode) }
-      : selectRollbackCandidate(eligible, guard.fromGroup, config.selectionMode);
-    let fallback = rollbackTarget.candidate;
-    if (!fallback) return IS_AIHUB ? imageAdmissionHoldResult(token) : null;
-    await stopAutomaticImageAdmission();
-    assertImageAdmissionCurrent(admission);
-    if (!fallback || candidateMatchesToken(fallback, token)) return imageAdmissionHoldResult(token);
-
-    const destination = fallback.group === guard.fromGroup ? "原分组" : "其他可用分组";
-    await switchTokenGroup(token, fallback, {
-      trackRollback: false,
-      beforeSwitch: () => assertImageAdmissionCurrent(admission),
-      logTone: "warning",
-      logMessage: `${tokenLabel(token)} 的 ${guard.toGroup} 观察失败，已回滚到${destination} ${fallback.group}`,
-    });
-    return {
-      outcome: "rolled-back",
-      group: fallback.group,
-      tone: "warning",
-      message: `观察失败，已回滚到 ${fallback.group}`,
-    };
+    if (!candidateHasExplicitHealthFailure(current, config)) return { outcome: "observing", group: token.group,
+      tone: "warning", message: "观察数据不足或受配置限制，保持当前分组" };
+    guardState.blacklist = guardState.blacklist.filter((entry) => entry.model !== targetModelIdentity(config)
+      || (entry.groupId ? Number(entry.groupId) !== Number(current.groupId) : entry.group !== guard.toGroup));
+    guardState.blacklist.push({ model: targetModelIdentity(config), group: guard.toGroup,
+      ...(Number(current.groupId) > 0 ? { groupId: Number(current.groupId) } : {}),
+      until: now + config.blacklistMinutes * 60000, type: "health", reason: "切换后健康检查失败" });
+    delete guardState.byToken[tokenId]; saveSwitchGuardState(guardState);
+    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now);
+    const modelRows = eligible.filter((row) => qualityModel(row) === qualityModel(current));
+    const fallback = config.automaticSwitchMode === "failover"
+      ? selectBestCandidate(modelRows, token, config.selectionMode)
+      : selectRollbackCandidate(modelRows, { group: guard.fromGroup, groupId: guard.fromGroupId }, config.selectionMode).candidate;
+    if (!fallback || candidateMatchesToken(fallback, token)) return { outcome: "recovery-blocked", group: token.group, tone: "warning", message: "没有范围内合格回滚分组，保持当前组" };
+    await switchTokenGroup(token, fallback, { trackRollback: false, beforeSwitch: assertCurrent,
+      logTone: "warning", logMessage: tokenLabel(token) + " 观察失败，已回滚到 " + fallback.group });
+    return { outcome: "rolled-back", group: fallback.group, tone: "warning", message: "观察失败，已回滚到 " + fallback.group };
   }
 
-  async function processToken(token, candidates, options) {
-    const forceSwitch = Boolean(options && options.forceSwitch);
-    const healthOnly = options?.mode === "health";
-    const targetGroup = String((options && options.targetGroup) || "").trim();
+  async function processToken(token, candidates, options = {}) {
+    const forceSwitch = Boolean(options.forceSwitch);
+    const targetGroup = String(options.targetGroup || "").trim();
     const tokenId = Number(token.id);
-    const admission = options?.admission || createImageAdmissionContext();
-    if (admission.configKey !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
+    const key = JSON.stringify(config);
+    const assertCurrent = options.assertCurrent || (() => {
+      if (key !== JSON.stringify(config)) throw new Error("检查期间设置已变更，本轮取消切换");
+    });
+    assertCurrent();
     validateToken(token);
-    const binding = automaticImageAdmission.bindings.get(tokenId);
-    if (binding && (binding.token.group !== token.group || Number(binding.token.groupId) !== Number(token.groupId))) {
-      detachAutomaticImageAdmission(tokenId);
+    if (!forceSwitch && !monitorGroupInScope(config, token.groupId)) {
       pendingCandidates.delete(tokenId);
+      return { outcome: "scope-hold", group: token.group || "未知", tone: "warning", message: "当前组未纳入监控，自动检查/切换暂停；可在设置中加入或移除密钥勾选" };
     }
-    const recoveryCandidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now(), { ignoreImage: true });
+    const eligible = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
+    const current = eligible.find((row) => candidateMatchesToken(row, token));
     if (config.enabled && !forceSwitch) {
-      const rollback = await handleRollbackGuard(token, recoveryCandidates, admission, options?.observeHealth !== false);
+      const rollback = await handleRollbackGuard(token, eligible, assertCurrent, options.observeHealth !== false);
       if (rollback) return rollback;
     }
-    const healthyCurrent = recoveryCandidates.find((candidate) => candidateMatchesToken(candidate, token));
-    const failoverOnly = config.automaticSwitchMode === "failover";
-    const needsRecovery = failoverOnly || healthyCurrent?.scopeEligible === false
-      ? candidateHasExplicitHealthFailure(healthyCurrent, config)
-      : !healthyCurrent || !healthyCurrent.available;
-    if (config.enabled && !forceSwitch && needsRecovery) {
-      const recovery = selectSwitchCandidate(recoveryCandidates, token.group, "", { mode: config.selectionMode });
-      await stopAutomaticImageAdmission();
-      assertImageAdmissionCurrent(admission);
+    if (config.enabled && !forceSwitch && candidateHasExplicitHealthFailure(current, config)) {
+      const recovery = selectBestCandidate(eligible, token, config.selectionMode);
       pendingCandidates.delete(tokenId);
-      if (!recovery || candidateMatchesToken(recovery, token)) return { outcome: "recovery-blocked", group: token.group || "未设置",
-        tone: "warning", message: "当前分组不可用，没有可恢复的健康分组" };
-      await switchTokenGroup(token, recovery, { beforeSwitch: () => assertImageAdmissionCurrent(admission) });
-      return { outcome: "switched", group: recovery.group, tone: "success", message: "故障恢复，已跳过图片检查" };
+      if (!recovery || candidateMatchesToken(recovery, token)) return { outcome: "recovery-blocked", group: token.group, tone: "warning", message: "当前分组故障，没有同模型合格目标" };
+      await switchTokenGroup(token, recovery, { beforeSwitch: assertCurrent });
+      return { outcome: "switched", group: recovery.group, tone: "success", message: "故障恢复，已切换" };
     }
-    if (failoverOnly && !forceSwitch) {
-      pendingCandidates.delete(tokenId);
-      await stopAutomaticImageAdmission();
-      return { outcome: "healthy", group: token.group || "未设置", tone: healthyCurrent?.available ? "success" : "warning",
-        message: healthyCurrent?.available ? "仅故障转移：当前分组正常，保持不变" : "仅故障转移：未发现明确故障，保持当前分组" };
+    if (!forceSwitch && (config.automaticSwitchMode === "failover" || options.mode === "health")) {
+      if (config.automaticSwitchMode === "failover") pendingCandidates.delete(tokenId);
+      return { outcome: "healthy", group: token.group || "未设置", tone: current?.available ? "success" : "warning",
+        message: current?.available ? "当前分组正常，保持不变" : "未发现明确故障，保持当前分组" };
     }
-    if (!forceSwitch && healthyCurrent?.scopeEligible === false && !needsRecovery) {
-      pendingCandidates.delete(tokenId);
-      detachAutomaticImageAdmission(tokenId);
-      return { outcome: "scope-hold", group: token.group || "未设置", tone: "warning",
-        message: "当前分组在业务范围外，未发现明确故障，保持当前分组" };
-    }
-    // Health ticks may finish an already confirmed decision, but never create one or add confirmations.
-    if (healthOnly && !forceSwitch) {
-      const pending = pendingCandidates.get(tokenId);
-      const bound = automaticImageAdmission.bindings.get(tokenId)?.job;
-      if (!IS_AIHUB || !bound?.verdict?.pass || bound.invalid || !pending || pending.hits < config.confirmPolls) {
-        return { outcome: "healthy", group: token.group || "未设置", tone: bound?.error ? "warning" : "success",
-          message: bound?.error || (bound && !bound.verdict ? "当前分组正常，图片后台评价中" : "当前分组正常，等待择优周期") };
-      }
-    }
-    // Previous tokens in this check may already have isolated an image candidate.
-    candidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
-    let selected = selectSwitchCandidate(candidates, token.group, targetGroup, {
-      mode: config.selectionMode,
-      allowUnavailable: Boolean(targetGroup),
-      targetGroupId: options?.targetGroupId,
+    const selected = selectSwitchCandidate(eligible, token, targetGroup, {
+      mode: config.selectionMode, allowUnavailable: options.allowUnavailable === true, targetGroupId: options.targetGroupId,
     });
-    const current = candidates.find((candidate) => candidateMatchesToken(candidate, token));
-    const holdState = switchHoldState(
-      getSwitchHistory(),
-      tokenId,
-      targetModelIdentity(config),
-      token.group,
-      config.switchHoldMinutes,
-      Date.now(),
-    );
-
     if (!selected) {
-      detachAutomaticImageAdmission(tokenId);
-      if (IS_AIHUB && !targetGroup) return imageAdmissionHoldResult(token);
-      const reasonSummary = summarizeFailures(candidates);
-      throw new Error(`没有满足条件的分组${reasonSummary ? `：${reasonSummary}` : ""}`);
+      pendingCandidates.delete(tokenId);
+      return { outcome: "no-candidate", group: token.group || "未设置", tone: "warning", message: "没有同模型合格候选，保持当前分组" };
     }
     if (candidateMatchesToken(selected, token)) {
       pendingCandidates.delete(tokenId);
-      detachAutomaticImageAdmission(tokenId);
-      if (config.enabled && !forceSwitch && !healthOnly && !targetGroup && holdState.expired) {
-        recordSwitchHoldStart(tokenId, selected);
-        return {
-          outcome: "holding",
-          group: token.group || "未设置",
-          tone: "success",
-          message: "当前仍是策略推荐，已开始下一保持周期",
-        };
-      }
-      return {
-        outcome: "current",
-        group: token.group || "未设置",
-        tone: "success",
-        message: targetGroup ? "已是手动目标分组" : "已是策略推荐分组",
-      };
+      return { outcome: "current", group: token.group, tone: "success", message: targetGroup ? "已是手动目标分组" : "当前已是综合质量推荐" };
     }
     if (forceSwitch) {
-      // An explicit manual destination bypasses image admission, including list buttons.
-      if (!targetGroup) selected = await admittedSwitchCandidate(token, candidates, selected, admission);
-      if (!selected || candidateMatchesToken(selected, token)) return imageAdmissionHoldResult(token);
-      await switchTokenGroup(token, selected, { beforeSwitch: () => assertImageAdmissionCurrent(admission) });
-      return {
-        outcome: "switched",
-        group: selected.group,
-        tone: "success",
-        message: targetGroup ? "已手动切换" : "已立即切换",
-      };
+      await switchTokenGroup(token, selected, { beforeSwitch: assertCurrent });
+      return { outcome: "switched", group: selected.group, tone: "success", message: "已手动切换" };
     }
-    if (healthOnly) {
-      const binding = automaticImageAdmission.bindings.get(tokenId);
-      if (!binding || binding.job.candidate.group !== selected.group || binding.job.source !== imageQualityIdentity(selected)) {
-        detachAutomaticImageAdmission(tokenId);
-        pendingCandidates.delete(tokenId);
-        return { outcome: "healthy", group: token.group || "未设置", tone: "success", message: "候选已变化，等待下次择优" };
-      }
-    }
-    if (!config.enabled) {
-      pendingCandidates.delete(tokenId);
-      detachAutomaticImageAdmission(tokenId);
-      return {
-        outcome: "suggested",
-        group: token.group || "未设置",
-        tone: "warning",
-        message: `建议切换到 ${selected.group}`,
-      };
-    }
-    const oldBinding = automaticImageAdmission.bindings.get(tokenId);
-    if (oldBinding && (oldBinding.job.candidate.group !== selected.group
-      || oldBinding.job.source !== imageQualityIdentity(selected))) detachAutomaticImageAdmission(tokenId);
-    const pending = pendingCandidates.get(tokenId);
-    const nextPending = healthOnly ? pending : pending && pending.group === selected.group
-      ? { group: selected.group, hits: pending.hits + 1 }
-      : { group: selected.group, hits: 1 };
-    pendingCandidates.set(tokenId, nextPending);
-    // Start near the decision, never throughout a long hold or for a transient first hit.
-    const nearHoldEnd = !shouldKeepCurrentDuringHold(current, holdState)
-      || holdState.remainingMs <= config.strategySeconds * 1000;
-    const nearConfirmation = nextPending.hits >= Math.max(1, config.confirmPolls - 1);
-    const job = healthOnly ? automaticImageAdmission.bindings.get(tokenId)?.job
-      : IS_AIHUB && nearHoldEnd && nearConfirmation ? prepareAutomaticImageAdmission(token, selected) : null;
-    if (!nearHoldEnd) detachAutomaticImageAdmission(tokenId);
-    if (nextPending.hits < config.confirmPolls) {
-      return { outcome: "pending", group: token.group || "未设置", tone: "warning",
-        message: `${selected.group} · 确认 ${nextPending.hits}/${config.confirmPolls}${job ? " · " + (job.verdict?.pass ? "图片已通过" : "后台评价中") : ""}` };
-    }
-    if (shouldKeepCurrentDuringHold(current, holdState)) {
-      return { outcome: "holding", group: token.group || "未设置", tone: "success",
-        message: `保持中，${Math.ceil(holdState.remainingMs / 60000)} 分钟后择优${job ? " · 图片预评价中" : ""}` };
-    }
-    if (IS_AIHUB) {
-      if (job?.error) return { outcome: "image-error", group: token.group || "未设置", tone: "warning", message: job.error };
-      if (!job?.verdict?.pass) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
-        message: `${selected.group} · ${job?.verdict ? "图片未通过，已故障隔离" : "等待后台图片评价，继续监控"}` };
-      assertImageAdmissionCurrent(job.context);
-      if (Number(imageQuality.scoringToken?.id) === tokenId) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
-        message: `${selected.group} · 图片通过，等待评分密钥恢复` };
-      if (!(state.candidateRevision > job.completedRevision)) return { outcome: "image-pending", group: token.group || "未设置", tone: "warning",
-        message: `${selected.group} · 图片通过，等待最新健康检查` };
-    }
-    await switchTokenGroup(token, selected, { beforeSwitch: () => {
-      if (IS_AIHUB) {
-        assertImageAdmissionCurrent(job.context);
-        if (job.invalid || job.source !== imageQualityIdentity(selected)) throw new Error("待切换评价已失效，本轮取消切换");
-      }
-    } });
-    detachAutomaticImageAdmission(tokenId);
+    if (!config.enabled) return { outcome: "suggested", group: token.group, tone: "warning", message: "建议切换到 " + selected.group };
+    const previous = pendingCandidates.get(tokenId);
+    const pending = previous?.groupId === selected.groupId ? { ...previous, hits: previous.hits + 1 }
+      : { groupId: selected.groupId, group: selected.group, hits: 1 };
+    pendingCandidates.set(tokenId, pending);
+    if (pending.hits < config.confirmPolls) return { outcome: "pending", group: token.group, tone: "warning",
+      message: selected.group + " · 确认 " + pending.hits + "/" + config.confirmPolls };
+    const hold = switchHoldState(getSwitchHistory(), tokenId, targetModelIdentity(config), token.group, config.switchHoldMinutes, Date.now());
+    if (shouldKeepCurrentDuringHold(current, hold)) return { outcome: "holding", group: token.group, tone: "success",
+      message: "保持中，" + Math.ceil(hold.remainingMs / 60000) + " 分钟后择优" };
+    await switchTokenGroup(token, selected, { beforeSwitch: assertCurrent });
     return { outcome: "switched", group: selected.group, tone: "success", message: "已自动切换" };
   }
 
@@ -1201,7 +915,7 @@
     let monitorFallback = false;
     let candidates;
     if (IS_AIHUB) {
-      const range = aihubMonitorRange(config.metricHours);
+      const range = null;
       const { summary, series, seriesError, groups, rates } = healthOnly && aihubGroupsCache.length
         ? { ...await loadAihubProviderData(fetchJson, range), groups: aihubGroupsCache, rates: aihubRatesCache }
         : await loadAihubMonitorData(fetchJson, range);
@@ -1217,19 +931,11 @@
       aihubPlatformMonitorsCache = summary.apis || [];
       aihubRatesCache = normalizeAihubRates(rates);
       pricingCache = buildAihubModelCatalog(summary);
-      updateImageQualityCatalog(summary);
+      applyMonitorScopeMigration();
       const scoped = scopeAihubMonitors(summary, aihubGroupsCache, config, models, { ...request, healthOnly });
-      candidates = mergeTargetModelCandidates(models.map((model) => ({
-        model,
-        candidates: evaluateAihubCandidates(
-          scoped.summary,
-          series,
-          aihubGroupsCache,
-          aihubRatesCache,
-          { ...config, models: [model], model },
-          Date.now(),
-        ),
-      }))).map((candidate) => ({ ...candidate, scopeEligible: scoped.eligibleIds.has(Number(candidate.groupId)) }));
+      candidates = evaluateAihubCandidates(scoped.summary, series, aihubGroupsCache, aihubRatesCache,
+        { ...config, models, model: models[0] || "" }, Date.now())
+        .map((candidate) => ({ ...candidate, scopeEligible: scoped.eligibleIds.has(Number(candidate.groupId)) }));
     } else if (IS_FLUXION) {
       const [monitors, groups, rates] = await Promise.all([
         fetchJson("/api/v1/channel-monitors"),
@@ -1277,7 +983,7 @@
   async function runCheck(options) {
     const manual = Boolean(options && options.manual);
     const healthOnly = options?.mode === "health" && !manual;
-    let updateRecommendation = !healthOnly;
+    let updateRecommendation = !healthOnly && !options?.targetGroup;
     const forceSwitch = Boolean(options && options.forceSwitch);
     const targetGroup = String((options && options.targetGroup) || "").trim();
     // A manual check must refresh account-level usage even when group checks cannot start yet.
@@ -1296,10 +1002,10 @@
       return;
     }
     const selectedTokenIds = config.tokenIds.slice();
-    const checkConfigKey = JSON.stringify(config);
-    const checkCancelRevision = imageQuality.cancelRevision || 0;
+    let checkConfigKey = JSON.stringify(config);
+    const checkCancelRevision = state.checkCancelRevision || 0;
     const assertCheckCurrent = () => {
-      if (checkConfigKey !== JSON.stringify(config) || checkCancelRevision !== (imageQuality.cancelRevision || 0)) {
+      if (checkConfigKey !== JSON.stringify(config) || checkCancelRevision !== (state.checkCancelRevision || 0)) {
         throw new Error("检查期间设置已变更或任务已取消，本轮取消切换");
       }
     };
@@ -1324,16 +1030,11 @@
       "running",
     );
     let monitorFallback = false;
+    let manualRiskCandidate = null;
     try {
-      if (forceSwitch) await stopAutomaticImageAdmission();
       if (IS_AIHUB) await tokenCatalogRefresh;
       assertCheckCurrent();
-      const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => {
-        // The scorer's temporary route must never replace the actual business group.
-        const scoringToken = imageQuality.scoringToken;
-        return scoringToken && Number(scoringToken.id) === Number(tokenId)
-          ? Promise.resolve({ ...scoringToken }) : getTokenDetail(tokenId);
-      }));
+      const details = await Promise.allSettled(selectedTokenIds.map((tokenId) => getTokenDetail(tokenId)));
       assertCheckCurrent();
       const candidateRequest = { targetGroup, targetGroupId: options?.targetGroupId,
         currentTokens: details.filter((detail) => detail.status === "fulfilled").map((detail) => detail.value) };
@@ -1354,13 +1055,18 @@
       state.lastCheck = checkedAt;
       state.lastHealthCheck = checkedAt;
       state.candidateRevision = candidateRequestRevision;
-      if (!healthOnly || !state.candidates.length) {
+      if (!targetGroup && (!healthOnly || !state.candidates.length)) {
         state.candidates = candidates;
-        state.bestGroup = candidateRecommendationLabel(recommendedCandidate);
+        refreshQualityRecommendation();
         state.lastStrategyCheck = checkedAt;
       }
       if (targetGroup) {
-        selectSwitchCandidate(candidates, "", targetGroup, { allowUnavailable: true, targetGroupId: options?.targetGroupId });
+        const target = selectSwitchCandidate(candidates, "", targetGroup, { allowUnavailable: true, targetGroupId: options?.targetGroupId });
+        if (target.available !== true && options?.allowUnavailable !== true) {
+          manualRiskCandidate = target;
+          setStatus("目标分组状态已变化，请确认最新风险后再切换", "warning");
+          return;
+        }
       }
       if (!targetGroup && !recommendedCandidate && !selectedTokenIds.length) {
         const reasonSummary = summarizeFailures(candidates);
@@ -1381,24 +1087,11 @@
       }
 
       if (healthOnly) {
-        const healthCandidates = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now(), { ignoreImage: true });
-        const needsRecovery = details.some((detail) => {
-          if (detail.status !== "fulfilled") return false;
-          const current = healthCandidates.find((row) => candidateMatchesToken(row, detail.value));
-          return config.automaticSwitchMode === "failover" || current?.scopeEligible === false
-            ? candidateHasExplicitHealthFailure(current, config) : !current || !current.available;
-        });
-        const readyForAdmission = config.automaticSwitchMode !== "failover" && details.some((detail) => {
-          if (detail.status !== "fulfilled") return false;
-          const token = detail.value;
-          const job = automaticImageAdmission.bindings.get(Number(token.id))?.job;
-          const pending = pendingCandidates.get(Number(token.id));
-          const current = healthCandidates.find((row) => candidateMatchesToken(row, token));
-          const hold = switchHoldState(getSwitchHistory(), token.id, targetModelIdentity(config), token.group, config.switchHoldMinutes, Date.now());
-          return job?.verdict?.pass && !job.invalid && pending?.hits >= config.confirmPolls
-            && state.candidateRevision > job.completedRevision && !shouldKeepCurrentDuringHold(current, hold);
-        });
-        if (needsRecovery || readyForAdmission) {
+        const healthCandidates = candidates;
+        const needsRecovery = details.some((detail) => detail.status === "fulfilled"
+          && monitorGroupInScope(config, detail.value.groupId)
+          && candidateHasExplicitHealthFailure(healthCandidates.find((row) => candidateMatchesToken(row, detail.value)), config));
+        if (needsRecovery) {
           updateRecommendation = true;
           // Recovery never waits for the next strategy tick and never writes using an old account catalog.
           candidateRequestRevision = ++state.candidateRequestRevision;
@@ -1408,7 +1101,7 @@
           monitorFallback = refreshed.monitorFallback;
           state.candidates = candidates;
           state.candidateRevision = candidateRequestRevision;
-          state.bestGroup = candidateRecommendationLabel(selectBestCandidate(candidates, "", config.selectionMode));
+          refreshQualityRecommendation();
         } else {
           const currentTokens = details.filter((detail) => detail.status === "fulfilled").map((detail) => detail.value);
           state.candidates = state.candidates.map((row) => currentTokens.some((token) => candidateMatchesToken(row, token))
@@ -1416,7 +1109,7 @@
         }
       }
       assertCheckCurrent();
-      const admission = { ...createImageAdmissionContext(), cancelRevision: checkCancelRevision };
+      refreshOutOfScopeTokens(details.filter((detail) => detail.status === "fulfilled").map((detail) => detail.value));
       state.tokenResults = [];
       for (let index = 0; index < details.length; index += 1) {
         const tokenId = selectedTokenIds[index];
@@ -1428,18 +1121,16 @@
           const message = detail.reason instanceof Error ? detail.reason.message : String(detail.reason);
           state.tokenResults.push({ id: tokenId, name: fallbackName, group: "未知", tone: "error", outcome: "error", message });
           addLog(`${fallbackName}：${message}`, "error");
-          detachAutomaticImageAdmission(tokenId);
           continue;
         }
 
         const token = detail.value;
         try {
-          const result = await processToken(token, candidates, { forceSwitch, targetGroup, targetGroupId: options?.targetGroupId, admission, mode: healthOnly ? "health" : "strategy", observeHealth: options?.observeHealth });
+          const result = await processToken(token, candidates, { forceSwitch, targetGroup, targetGroupId: options?.targetGroupId, allowUnavailable: options?.allowUnavailable === true, assertCurrent: assertCheckCurrent, mode: healthOnly ? "health" : "strategy", observeHealth: options?.observeHealth });
           state.tokenResults.push({ id: tokenId, name: tokenLabel(token), ...result });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           pendingCandidates.delete(tokenId);
-          detachAutomaticImageAdmission(tokenId);
           state.tokenResults.push({
             id: tokenId,
             name: tokenLabel(token),
@@ -1454,7 +1145,7 @@
         render();
       }
 
-      if (!automaticImageAdmission.bindings.size && !automaticImageAdmission.active) automaticImageAdmission.context = null;
+      refreshOutOfScopeTokens();
       refreshCandidateIsolationState(updateRecommendation);
       state.currentGroup = summarizeTokenGroups(state.tokenResults);
       const failedCount = state.tokenResults.filter((result) => result.outcome === "error").length;
@@ -1494,6 +1185,7 @@
       await Promise.all([usageRefresh, tokenCatalogRefresh]);
       running = false;
       render();
+      if (manualRiskCandidate) requestManualSwitch(manualRiskCandidate);
     }
   }
 
@@ -1657,8 +1349,6 @@
     });
     if (refs.tokenSearch) filterSelectorList(refs.tokenList, refs.tokenSearch, refs.tokenSearchStatus);
     renderTokenSelectionCount();
-    renderImageQualityKeyOptions();
-    renderImageQualityGroupOptions();
 
     refs.modelList.replaceChildren();
     const models = [...new Set([
@@ -1836,204 +1526,46 @@
 
   function renderCandidates() {
     if (!refs.candidateRows) return;
-    if (IS_AIHUB) {
-      refreshPlatformFilter(refs.candidatePlatform);
-      refs.candidatePlatform.value = config.businessPlatform;
-    }
-    const qualityEnabled = imageQualityEnabled(config);
-    const scoringToken = imageQuality.scoringToken;
-    const displayedTokens = tokensCache.map((token) => scoringToken && Number(scoringToken.id) === Number(token.id)
-      ? { ...token, ...scoringToken } : token);
-    if (!sectionNeedsRender(refs.candidateRows, [state.candidates, config.selectionMode,
-      tokensCache, ...displayedTokens.map((token) => JSON.stringify([token.id, token.groupId, token.group, token.name])),
-      config.tokenIds.join(","), running, qualityEnabled, config.imageQualityModel, config.imageQualityTask,
-      ...(qualityEnabled ? state.candidates.flatMap((candidate) => [candidateImageQuality(candidate), automaticImageAdmissionStatus(candidate)]) : [])])) return;
+    refreshPlatformFilter(refs.candidatePlatform);
+    const rows = sortCandidateRowsForMode(state.candidates, config.selectionMode);
+    if (!sectionNeedsRender(refs.candidateRows, [state.candidates, tokensCache, config.tokenIds.join(","), running])) { applyCandidateDisplayControls(); return; }
+    const openIds = new Set([...refs.candidateRows.querySelectorAll("details[open]")].map((node) => node.dataset.groupId));
     refs.candidateRows.replaceChildren();
-    const rows = IS_AIHUB ? sortCandidateRowsForMode(state.candidates, config.selectionMode) : state.candidates
-      .slice()
-      .sort((left, right) => {
-        if (left.available !== right.available) return left.available ? -1 : 1;
-        return (left.ratio || Infinity) - (right.ratio || Infinity);
-      });
-
+    const element = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
     if (!rows.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "暂无检查结果";
-      refs.candidateRows.appendChild(empty);
-      if (IS_AIHUB) filterSelectorList(refs.candidateRows, refs.candidateSearch, refs.candidateSearchStatus, refs.candidatePlatform);
-      return;
+      const empty = element("div", config.monitorScopeMode === "selected" && !config.monitorGroupIds.length ? "未选择监控分组。请在设置中配置范围。" : "暂无检查结果。请立即检查或调整监控范围。", "empty");
+      const button = element("button", "设置监控范围");button.type = "button";button.addEventListener("click", () => { state.settingsPage = "routing"; setActiveView("settings"); });
+      empty.appendChild(button);refs.candidateRows.appendChild(empty);applyCandidateDisplayControls();return;
     }
-
     rows.forEach((candidate) => {
-      const row = document.createElement("div");
-      const warnings = Array.isArray(candidate.warnings) ? candidate.warnings : [];
-      const warningText = warnings.map(reasonLabel).join("、");
-      row.className = `candidate ${candidate.available ? "candidate-ok" : "candidate-off"}${candidate.available && warningText ? " candidate-warning" : ""}`;
-      row.dataset.group = candidate.group;
-      if (IS_AIHUB) row.dataset.platform = normalizeGroupPlatform(candidate.platform);
-      const name = document.createElement("span");
-      name.className = "candidate-name";
-      const signal = document.createElement("span");
-      signal.className = "candidate-signal";
-      signal.setAttribute("aria-hidden", "true");
-      const nameLabel = document.createElement(IS_AIHUB ? "button" : "span");
-      nameLabel.className = "candidate-name-label";
-      nameLabel.textContent = candidate.group;
-      nameLabel.title = candidate.group;
-      if (IS_AIHUB) {
-        nameLabel.type = "button";
-        nameLabel.title = `${candidate.group} · 点击复制完整名称`;
-        nameLabel.setAttribute("aria-label", `复制完整分组名称：${candidate.group}`);
-        nameLabel.addEventListener("click", async () => {
-          try {
-            await navigator.clipboard.writeText(candidate.group);
-            setStatus(`已复制完整分组名称：${candidate.group}`, "success");
-          } catch { setStatus("复制失败，可在图片弹窗标题查看完整名称", "warning"); }
-        });
-        name.classList.add("candidate-name-with-media");
-        name.append(createDetectionImageThumbnail(candidate), nameLabel);
-      } else {
-        name.append(signal, nameLabel);
-      }
-      const ratio = document.createElement("span");
-      ratio.className = "candidate-ratio mono";
-      const nominalRatio = document.createElement("span");
-      nominalRatio.textContent = formatRatio(candidate.ratio);
-      const effectiveInputPrice = document.createElement("small");
-      const hasEffectiveInputPrice = Number.isFinite(candidate.effectiveInputPricePerMillion)
-        && candidate.effectiveInputPricePerMillion >= 0;
-      effectiveInputPrice.textContent = IS_AIHUB && hasEffectiveInputPrice
-        ? `￥${candidate.effectiveInputPricePerMillion.toFixed(2)}/M`
-        : "";
-      effectiveInputPrice.className = "candidate-price";
-      const effectiveRatio = document.createElement("small");
-      const hasEffectiveEstimate = hasEffectiveRatioEstimate(candidate);
-      const hasPublicRatio = Number.isFinite(candidate.publicRatio) && candidate.publicRatio > 0;
-      const routeRatioLabel = candidate.ratioSource === "account" ? "账号倍率" : "页面倍率";
-      const multiModelPrefix = Array.isArray(candidate.targetModels) && candidate.targetModels.length > 1
-        ? "全部目标模型最不利值；"
-        : "";
-      effectiveRatio.textContent = hasEffectiveEstimate
-        ? `≈${formatRatio(candidateEffectiveRatio(candidate))}`
-        : "≈-";
-      ratio.append(nominalRatio);
-      if (IS_AIHUB) ratio.append(effectiveInputPrice);
-      ratio.append(effectiveRatio);
-      ratio.title = hasEffectiveEstimate
-        ? `${multiModelPrefix}${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `；页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}；真实输入价格 ${hasEffectiveInputPrice ? `${candidate.effectiveInputPricePerMillion.toFixed(4)}/M` : "暂无"}；平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
-        : `${multiModelPrefix}${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `；页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}；平台预测倍率暂不可用（${effectiveRatioReasonLabel(candidate.effectiveRatioReason)}）`;
-      ratio.setAttribute(
-        "aria-label",
-        hasEffectiveEstimate
-          ? `${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `，页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}，真实输入价格 ${hasEffectiveInputPrice ? `${candidate.effectiveInputPricePerMillion.toFixed(2)}/M` : "暂无"}，平台预测倍率 ${formatRatio(candidateEffectiveRatio(candidate))}`
-          : `${routeRatioLabel} ${formatRatio(candidate.ratio)}${hasPublicRatio && candidate.ratio !== candidate.publicRatio ? `，页面倍率 ${formatRatio(candidate.publicRatio)}` : ""}，平台预测倍率待统计`,
-      );
-      const success = document.createElement("span");
-      success.className = "mono";
-      success.textContent = formatPercent(candidate.aggregateSuccess);
-      success.title = candidateAggregateSuccessTitle(candidate);
-      const recentSuccess = document.createElement("span");
-      recentSuccess.className = "mono health-value";
-      recentSuccess.textContent = formatPercent(candidate.recentMinSuccess);
-      recentSuccess.title = "最近一次成功率";
-      recentSuccess.style.setProperty(
-        "--health",
-        `${Math.max(0, Math.min(100, Number(candidate.recentMinSuccess) || 0))}%`,
-      );
-      const firstTokenLatency = document.createElement("span");
-      firstTokenLatency.className = "mono";
-      firstTokenLatency.textContent = candidate.providerId === "aihub"
-        ? formatAihubLatency(candidate.firstTokenLatencyMs)
-        : formatLatency(candidate.firstTokenLatencyMs);
-      firstTokenLatency.title = candidateFirstTokenLatencyTitle(candidate);
-      const outputLatency = document.createElement("span");
-      outputLatency.className = "mono";
-      outputLatency.textContent = formatLatency(candidate.outputLatencyMs);
-      const outputDetails = [];
-      if (Number.isFinite(candidate.outputTokens)) {
-        outputDetails.push(`${candidate.outputTokens.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 输出 Token`);
-      }
-      if (Number.isFinite(candidate.outputTokensPerSecond)) {
-        outputDetails.push(`${candidate.outputTokensPerSecond.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} Token/s`);
-      }
-      outputLatency.title = outputDetails.length
-        ? `完整输出耗时 · ${outputDetails.join(" / ")}`
-        : "完整输出耗时";
-      const cacheHitRate = document.createElement("span");
-      cacheHitRate.className = "mono";
-      cacheHitRate.textContent = formatPercent(candidate.cacheHitRate);
-      cacheHitRate.title = Number.isFinite(candidate.cacheHitRate)
-        ? `${Array.isArray(candidate.targetModels) && candidate.targetModels.length > 1 ? "全部目标模型最低 · " : ""}缓存命中率`
-        : `${SITE_LABEL} 当前分组指标未提供缓存命中率`;
-      const verdict = document.createElement("span");
-      verdict.className = "verdict";
-      const issueText = candidateIssueText(candidate);
-      verdict.textContent = candidate.available
-        ? (warningText ? "可用·检测警告" : "可用")
-        : reasonLabel(candidate.reasons[0] || "不可用");
-      verdict.title = candidate.available
-        ? (issueText ? `不阻断切换：${issueText}` : "符合全部目标模型的自动切换条件")
-        : issueText || candidate.reasons.map(reasonLabel).join("、") || "不可用";
-      if (IS_AIHUB) {
-        row.classList.add("candidate-details");
-        const heading = document.createElement("div");
-        heading.className = "candidate-heading";
-        const currentTokens = candidateCurrentTokens(candidate, displayedTokens, config.tokenIds);
-        if (currentTokens.length) {
-          row.dataset.current = "true";
-          const currentTag = document.createElement("span");
-          currentTag.className = "candidate-current-tag";
-          currentTag.textContent = currentTokens.length > 1 ? `当前×${currentTokens.length}` : "当前";
-          currentTag.title = `当前使用：${currentTokens.map(tokenLabel).join("、")}`;
-          currentTag.setAttribute("aria-label", currentTag.title);
-          heading.append(currentTag);
-        }
-        heading.prepend(name);
-        heading.append(verdict);
-        const switchButton = document.createElement("button");
-        switchButton.type = "button";
-        switchButton.className = "candidate-row-switch";
-        const allCurrent = config.tokenIds.length > 0 && currentTokens.length === config.tokenIds.length;
-        switchButton.textContent = allCurrent ? "使用中" : "切换";
-        switchButton.disabled = running || !config.tokenIds.length || allCurrent || candidate.reasons.includes("not-user-selectable");
-        switchButton.title = allCurrent ? "全部已选密钥正在使用此分组" : !config.tokenIds.length ? "请先选择需要切换的 API 密钥"
-          : `将已选密钥手动切换到 ${candidate.group}；跳过图片检查`;
-        switchButton.setAttribute("aria-label", switchButton.title);
-        switchButton.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true, targetGroup: candidate.group, targetGroupId: candidate.groupId }));
-        heading.append(switchButton);
-        const metrics = document.createElement("dl");
-        metrics.className = "candidate-metrics";
-        ratio.textContent = `${formatRatio(candidate.ratio).replace(/x$/, "")}/${hasEffectiveEstimate ? formatRatio(candidateEffectiveRatio(candidate)) : "—"}`;
-        firstTokenLatency.textContent = formatLatency(candidate.firstTokenLatencyMs);
-        firstTokenLatency.title = `${candidateFirstTokenLatencyTitle(candidate)} · ${formatAihubLatency(candidate.firstTokenLatencyMs)}`;
-        [
-          ["倍率", ratio], ["整体", success], ["近期", recentSuccess],
-          ["首字", firstTokenLatency], ["输出", outputLatency], ["缓存", cacheHitRate],
-        ].forEach(([label, value]) => {
-          const metric = document.createElement("div");
-          metric.className = "candidate-metric";
-          const term = document.createElement("dt");
-          term.textContent = label;
-          const definition = document.createElement("dd");
-          definition.append(value);
-          metric.append(term, definition);
-          metrics.appendChild(metric);
-        });
-        const thumbnail = name.querySelector(".candidate-pelican");
-        const media = document.createElement("div");
-        media.className = "candidate-media";
-        media.append(thumbnail);
-        if (imageQualityEnabled(config)) {
-          heading.insertBefore(createImageQualityScore(candidate), verdict);
-        }
-        row.append(media, heading, metrics);
-      } else {
-        row.append(name, ratio, success, recentSuccess, firstTokenLatency, outputLatency, cacheHitRate, verdict);
-      }
-      refs.candidateRows.appendChild(row);
+      const entry = element("div", undefined, "candidate-entry");
+      const reason = candidate.modelDetectionReason || "";
+      const status = reason === "model-detection-model-mismatch" ? "notmatch" : !reason ? "pass" : reason.includes("failed") ? "fail" : reason.includes("expired") ? "stale" : candidate.modelDetection?.refreshing || reason.includes("incomplete") ? "pending" : "unknown";
+      Object.assign(entry.dataset, { groupId: String(candidate.groupId), group: candidate.group, model: qualityModel(candidate), platform: normalizeGroupPlatform(candidate.platform), status, scope: candidate.inMonitorScope ? "in" : "out", available: String(candidate.available), searchText: [candidate.group, candidate.groupId, candidate.platform, candidate.aihubMetricModel].join(" ") });
+      [["ratio", candidate.ratio], ["success", candidate.aggregateSuccess], ["cache", candidate.cacheHitRate], ["tps", candidate.outputTokensPerSecond], ["score", candidate.qualityScore]].forEach(([key, value]) => { entry.dataset[key] = Number.isFinite(value) ? String(value) : ""; });
+      const row = element("div", undefined, "candidate-row-v2");const name = element("div");const title = element("strong", candidate.group);
+      const currentTokens = candidateCurrentTokens(candidate, tokensCache, config.tokenIds);
+      if (currentTokens.length) { entry.dataset.current = "true";title.textContent += " · 当前"; }
+      name.append(title, element("small", "#" + candidate.groupId + " · " + (groupPlatforms[normalizeGroupPlatform(candidate.platform)] || "未知平台")));
+      const detection = element("div");detection.append(element("span", {pass:"检测通过",fail:"检测未通过",stale:"检测过期",pending:"检测中",notmatch:"模型不匹配",unknown:"检测未知"}[status], "candidate-status"), element("small", candidate.aihubMetricModel || "未匹配启用模型"));
+      const action = element("div");const button = element("button", "切换", "candidate-row-switch");button.type = "button";
+      const allCurrent = config.tokenIds.length > 0 && currentTokens.length === config.tokenIds.length;
+      if (allCurrent) button.textContent="使用中";
+      button.disabled=running || !config.tokenIds.length || allCurrent || candidate.reasons.includes("not-user-selectable");
+      button.setAttribute("aria-label", "手动切换到 " + candidate.group);button.addEventListener("click", () => requestManualSwitch(candidate));
+      action.append(button, element("small", Number.isFinite(candidate.qualityScore) ? "质量 " + candidate.qualityScore.toFixed(1) : "不参与自动排序"));
+      row.append(name, element("div", formatRatio(candidate.ratio), "mono"), detection, element("div", formatPercent(candidate.cacheHitRate), "mono"), element("div", formatPercent(candidate.aggregateSuccess), "mono"), element("div", Number.isFinite(candidate.outputTokensPerSecond) ? candidate.outputTokensPerSecond.toFixed(1) : "—", "mono"), action);
+      const details = element("details", undefined, "candidate-inspection");details.dataset.groupId=String(candidate.groupId);details.open=openIds.has(String(candidate.groupId));
+      const summary = element("summary", "检测详情 · " + (candidate.available ? "符合自动切换条件" : candidateIssueText(candidate)));details.appendChild(summary);
+      const lines = ["检测模型：" + (candidate.modelDetection?.model || "未知"), "详情结果：" + (candidate.modelDetection?.presentationResult === true ? "通过" : candidate.modelDetection?.presentationResult === false ? "未通过" : "未知"), "完成时间：" + (candidate.modelDetection?.detectedAt || "未知"), "有效期：" + (candidate.modelDetection?.expiresAt || "按完成时间60分钟"), "模型样本：" + (Number.isFinite(candidate.aihubMetricSampleCount) ? candidate.aihubMetricSampleCount : "未知") + " · 缓存样本：" + (Number.isFinite(candidate.aihubCacheSampleCount) ? candidate.aihubCacheSampleCount : "未知")];
+      (candidate.modelDetection?.stages || []).forEach((stage,index)=>lines.push((stage.name || "阶段" + (index+1)) + "：" + (stage.status || "未知") + (stage.executionComplete ? " · 已完成" : " · 未完成")));
+      if (candidate.qualityPercentiles) lines.push("同模型池分位：成功 " + candidate.qualityPercentiles.success.toFixed(1) + " / 缓存 " + candidate.qualityPercentiles.cache.toFixed(1) + " / TPS " + candidate.qualityPercentiles.tps.toFixed(1) + " / 成本 " + candidate.qualityPercentiles.cost.toFixed(1));
+      lines.forEach(text=>details.appendChild(element("p",text)));
+      if (candidate.detectionMedia?.url) details.appendChild(createDetectionImageThumbnail(candidate));
+      details.addEventListener("keydown", (event)=>{if(event.key==="Escape" && details.open){event.preventDefault();event.stopPropagation();details.open=false;summary.focus();}});
+      entry.append(row,details);refs.candidateRows.appendChild(entry);
     });
-    if (IS_AIHUB) filterSelectorList(refs.candidateRows, refs.candidateSearch, refs.candidateSearchStatus, refs.candidatePlatform);
+    applyCandidateDisplayControls();
   }
 
   function manualGroupCatalog() {
@@ -2184,7 +1716,7 @@
     if (!entries.length) {
       const empty = document.createElement("div");
       empty.className = "isolation-empty";
-      empty.textContent = "当前无健康故障或图片未通过的隔离分组";
+      empty.textContent = "当前无健康故障的隔离分组";
       refs.isolationRows.appendChild(empty);
       return;
     }
@@ -2198,8 +1730,9 @@
       const signal = document.createElement("span");
       signal.className = "candidate-signal isolation-signal";
       const strong = document.createElement("strong");
-      strong.textContent = entry.group;
-      strong.title = entry.group;
+      const groupLabel = entry.groupId ? `${entry.group} #${entry.groupId}` : entry.group;
+      strong.textContent = groupLabel;
+      strong.title = groupLabel;
       name.append(signal, strong);
       const meta = document.createElement("div");
       meta.className = "isolation-meta";
@@ -2207,7 +1740,7 @@
       model.textContent = modelIdentityLabel(entry.model);
       model.title = `模型：${modelIdentityLabel(entry.model)}`;
       const reason = document.createElement("span");
-      reason.textContent = `${entry.type === "image" ? "图片" : "健康"} · ${entry.reason || "切换后健康检查失败"}`;
+      reason.textContent = `健康 · ${entry.reason || "切换后健康检查失败"}`;
       reason.title = reason.textContent;
       const remaining = document.createElement("span");
       remaining.className = "isolation-remaining";
@@ -2218,8 +1751,8 @@
       clear.className = "isolation-unlock";
       clear.type = "button";
       clear.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 9.5-2.1"></path><rect x="5" y="11" width="14" height="10" rx="2"></rect></svg><span>立即解除</span>';
-      clear.setAttribute("aria-label", `立即解除 ${entry.group} 的故障隔离`);
-      clear.addEventListener("click", () => clearIsolation(entry.model, entry.group));
+      clear.setAttribute("aria-label", `立即解除 ${groupLabel} 的故障隔离`);
+      clear.addEventListener("click", () => clearIsolation(entry.model, entry.group, entry.groupId));
       row.append(copy, clear);
       refs.isolationRows.appendChild(row);
     });

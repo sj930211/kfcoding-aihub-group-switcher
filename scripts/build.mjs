@@ -10,8 +10,6 @@ const modulePaths = [
   "src/providers/catalog.js",
   "src/providers/monitor.js",
   "src/core/selection.js",
-  "src/core/md5.js",
-  "src/providers/image-quality.js",
   "src/core/http.js",
   "src/statistics/usage.js",
   "src/runtime/version.js",

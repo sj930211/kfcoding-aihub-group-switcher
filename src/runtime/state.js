@@ -1,3 +1,5 @@
+  // Non-AIHub sites must stop before reading or migrating their legacy storage.
+  if (!globalThis.__KFCODING_GROUP_SWITCHER_PREVIEW__ && !IS_AIHUB) return;
   const storedConfig = GM_getValue(STORAGE_CONFIG, {});
   let config = sanitizeConfig(storedConfig);
   if (IS_AIHUB) {
@@ -13,6 +15,7 @@
       GM_setValue(STORAGE_SWITCH_GUARD, migrated.guard);
     }
   }
+  if (JSON.stringify(storedConfig) !== JSON.stringify(config)) GM_setValue(STORAGE_CONFIG, config);
   const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let scheduler = null;
   const checkSchedule = { healthAt: 0, strategyAt: 0, revision: 0 };
@@ -42,18 +45,10 @@
     }),
   }) : null;
   const pendingCandidates = new Map();
-  const automaticImageAdmission = {
-    context: null, jobs: new Map(), bindings: new Map(), active: null, draining: null,
-  };
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
-  // Evaluations live only in this page; historical persisted caches are never read or rewritten.
-  const imageQuality = {
-    records: new Map(), catalogAt: 0, catalogRevision: 0, cancelRevision: 0,
-    controller: null, catalog: [], catalogReady: false, status: "", diagnostic: null,
-    modelsController: null, models: [], modelsKeyId: 0, modelsStatus: "",
-    sample: null, testStatus: "", testResult: "", recoveryError: "", scoringToken: null,
-  };
   const state = {
+    checkCancelRevision: 0,
+    outOfScopeTokens: [],
     tone: "idle",
     status: config.enabled ? "等待首次检查" : "自动切换已暂停",
     currentGroup: "-",
@@ -106,8 +101,8 @@
     logs: normalizeLogs(GM_getValue(STORAGE_LOGS, [])),
     positions: normalizeUiPositions(GM_getValue(STORAGE_POSITIONS, {})),
     activeView: normalizeActiveView(storedUi.activeView),
-    settingsPage: ["routing", "protection", "quality", "spending", "appearance"].includes(storedUi.settingsPage)
-      && (IS_AIHUB || storedUi.settingsPage !== "quality") ? storedUi.settingsPage : "routing",
+    settingsPage: ["routing", "protection", "spending", "appearance"].includes(storedUi.settingsPage)
+ ? storedUi.settingsPage : "routing",
     settingsScroll: {},
     collapsed: false,
     update: {

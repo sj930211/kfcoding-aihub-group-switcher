@@ -78,8 +78,9 @@ for (const invalidDraft of [true, false]) {
       ? [{ checkValidity: () => false, setAttribute() {}, closest: () => null, getAttribute: () => '故障检测间隔', validationMessage: 'too small' }] : [] } },
     pendingCandidates: pending, IS_AIHUB: true,
     GM_setValue: (key, value) => writes.push(value), STORAGE_CONFIG: 'config',
-    invalidateAutomaticImageAdmission: () => { invalidated++; }, targetModelIdentity: () => 'fixture', imageQualitySettingsKey: () => 'same',
+    invalidateCheckDecisions: () => { invalidated++; }, targetModelIdentity: () => 'fixture',
     selectBestCandidate: () => null, candidateRecommendationLabel: () => '-',
+    refreshQualityRecommendation: () => {},
   };
   vm.createContext(ctx); vm.runInContext(read('src/ui/render.js'), ctx);
   vm.runInContext('render=()=>{};scheduleNext=()=>{};setStatus=()=>{};readFormConfig=()=>({...config,strategySeconds:600});', ctx);
@@ -91,7 +92,7 @@ for (const invalidDraft of [true, false]) {
   } else assert.equal(ctx.config.strategySeconds,600);
 }
 {
-  const r=runtime();Object.assign(r.ctx, { state: { candidates: [{group:'new', reasons:[]}], bestGroup:'previous' },
+  const r=runtime();Object.assign(r.ctx, { tokensCache: [], qualityModel: ()=> 'fixture', state: { candidates: [{group:'new', reasons:[]}], bestGroup:'previous' },
     applyTemporaryBlacklist: rows=>rows, targetModelIdentity: ()=>'fixture',
     selectBestCandidate: rows=>rows[0], candidateRecommendationLabel: row=>row.group });
   vm.runInContext('getSwitchGuardState=()=>({blacklist:[],byToken:{}});',r.ctx);

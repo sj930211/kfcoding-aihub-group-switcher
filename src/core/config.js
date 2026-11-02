@@ -30,7 +30,7 @@
   }
 
   function normalizeSelectionMode(value) {
-    return ["saving", "stable", "balanced"].includes(value) ? value : DEFAULT_CONFIG.selectionMode;
+    return "quality";
   }
 
   function normalizeAutomaticSwitchMode(value) {
@@ -44,7 +44,12 @@
   }
 
   function selectionModeLabel(value) {
-    return { saving: "省钱优先", stable: "稳定优先", balanced: "均衡推荐" }[normalizeSelectionMode(value)];
+    return "1h 综合质量";
+  }
+
+  function normalizeMonitorGroupIds(value) {
+    return [...new Set((Array.isArray(value) ? value : []).map(Number)
+      .filter((id) => Number.isSafeInteger(id) && id > 0))];
   }
 
   function resolveThemeMode(value, prefersDark) {
@@ -109,11 +114,6 @@
         .map((item) => Math.trunc(Number(item) || 0))
         .filter((item) => item > 0),
     )];
-  }
-
-  function normalizeImageQualityFallbackGroups(value) {
-    return [...new Set((Array.isArray(value) ? value : []).map(Number)
-      .filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, 2);
   }
 
   function normalizeTargetModels(value, legacyModel) {
@@ -213,23 +213,29 @@
       if (id <= 0 || !entry || typeof entry !== "object") return;
       const fromGroup = String(entry.fromGroup || "").trim();
       const toGroup = String(entry.toGroup || "").trim();
+      const [fromGroupId] = normalizeMonitorGroupIds([entry.fromGroupId]);
+      const [toGroupId] = normalizeMonitorGroupIds([entry.toGroupId]);
       const remaining = Math.trunc(clampNumber(entry.remaining, 0, 0, 10));
-      if (!fromGroup || !toGroup || fromGroup === toGroup || remaining <= 0) return;
+      const sameGroup = fromGroupId && toGroupId ? fromGroupId === toGroupId : fromGroup === toGroup;
+      if (!fromGroup || !toGroup || sameGroup || remaining <= 0) return;
       byToken[id] = {
         model: String(entry.model || ""),
         fromGroup,
         toGroup,
+        ...(fromGroupId ? { fromGroupId } : {}),
+        ...(toGroupId ? { toGroupId } : {}),
         remaining,
         at: Math.max(0, Number(entry.at) || 0),
       };
     });
     const blacklist = (Array.isArray(source.blacklist) ? source.blacklist : [])
-      .filter((entry) => entry && typeof entry === "object")
+      .filter((entry) => entry && typeof entry === "object" && entry.type !== "image")
       .map((entry) => ({
         model: String(entry.model || ""),
         group: String(entry.group || "").trim(),
+        ...(Number.isSafeInteger(Number(entry.groupId)) && Number(entry.groupId) > 0 ? { groupId: Number(entry.groupId) } : {}),
         until: Math.max(0, Number(entry.until) || 0),
-        ...(entry.type === "image" || entry.type === "health" ? { type: entry.type,
+        ...(entry.type === "health" ? { type: entry.type,
           reason: String(entry.reason || "").slice(0, 180) } : {}),
       }))
       .filter((entry) => entry.model && entry.group && entry.until > 0)
@@ -250,16 +256,18 @@
       .sort((left, right) => left.until - right.until || left.model.localeCompare(right.model) || left.group.localeCompare(right.group));
   }
 
-  function removeIsolation(value, model, group, now) {
+  function removeIsolation(value, model, group, now, groupId) {
     const state = pruneSwitchGuardState(value, Number.isFinite(Number(now)) ? Number(now) : Date.now());
     const targetModel = String(model || "");
     const targetGroup = String(group || "").trim();
-    const removed = state.blacklist.filter(
-      (entry) => entry.model === targetModel && entry.group === targetGroup,
-    );
-    state.blacklist = state.blacklist.filter(
-      (entry) => entry.model !== targetModel || entry.group !== targetGroup,
-    );
+    const hasId = groupId !== undefined && groupId !== null;
+    const targetId = Number(groupId);
+    const validId = Number.isSafeInteger(targetId) && targetId > 0;
+    const matches = state.blacklist.filter((entry) => entry.model === targetModel
+      && (hasId ? validId && entry.groupId === targetId : entry.group === targetGroup));
+    // Legacy callers may use a unique name; an ambiguous name must never clear siblings.
+    const removed = hasId || matches.length === 1 ? matches : [];
+    state.blacklist = state.blacklist.filter((entry) => !removed.includes(entry));
     return { state, removed };
   }
 
@@ -276,10 +284,10 @@
     const restored = normalizeSwitchGuardState({ blacklist: entries }).blacklist
       .filter((entry) => entry.until > timestamp);
     const byKey = new Map(
-      state.blacklist.map((entry) => [`${entry.model}\u0000${entry.group}\u0000${entry.type || "health"}`, entry]),
+      state.blacklist.map((entry) => [`${entry.model}\u0000${entry.groupId ? "id:" + entry.groupId : "name:" + entry.group}\u0000${entry.type || "health"}`, entry]),
     );
     restored.forEach((entry) => {
-      const key = `${entry.model}\u0000${entry.group}\u0000${entry.type || "health"}`;
+      const key = `${entry.model}\u0000${entry.groupId ? "id:" + entry.groupId : "name:" + entry.group}\u0000${entry.type || "health"}`;
       const current = byKey.get(key);
       if (!current || current.until < entry.until) byKey.set(key, entry);
     });
@@ -288,15 +296,13 @@
   }
 
   function applyTemporaryBlacklist(candidates, guardState, model, now, options) {
-    const blocked = new Set(
-      normalizeSwitchGuardState(guardState).blacklist
-        .filter((entry) => entry.model === model && entry.until > now
-          && !(options?.ignoreImage && entry.type === "image"))
-        .map((entry) => entry.group),
-    );
+    const blocked = normalizeSwitchGuardState(guardState).blacklist
+      .filter((entry) => entry.model === model && entry.until > now);
     return candidates.map((candidate) => {
       const reasons = candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted");
-      if (blocked.has(candidate.group)) reasons.unshift("temporarily-blacklisted");
+      if (blocked.some((entry) => entry.groupId ? Number(candidate.groupId) === entry.groupId : candidate.group === entry.group)) {
+        reasons.unshift("temporarily-blacklisted");
+      }
       return { ...candidate, reasons,
         available: reasons.length === 0 && (candidate.available || candidate.reasons.includes("temporarily-blacklisted")) };
     });
@@ -336,6 +342,16 @@
     if (Array.isArray(candidate.modelResults)) {
       return candidate.modelResults.some((entry) => candidateHasExplicitHealthFailure(entry.candidate, settings));
     }
+    if (candidate.providerId === "aihub") {
+      const evidence = candidate.healthEvidence;
+      if (!evidence || evidence.providerVersionValid !== true || !evidence.supported || !evidence.monitoringActive
+        || !targetModels(settings).includes(evidence.model)) return false;
+      if (evidence.modelDetectionFresh === true && evidence.modelDetectionFailed === true) return true;
+      return candidate.aggregateSuccessWindow === "1h" && evidence.metricsMatchModel === true && evidence.sufficientSamples === true
+        && Number.isFinite(evidence.ageMinutes) && evidence.ageMinutes >= 0 && evidence.ageMinutes <= 60
+        && Number.isFinite(candidate.aggregateSuccess) && candidate.aggregateSuccess >= 0
+        && candidate.aggregateSuccess < settings.minSuccessRate;
+    }
     const evidence = candidate.healthEvidence;
     if (!evidence || evidence.monitoringActive !== true || evidence.supported !== true) return false;
     if (!targetModels(settings).some((model) => normalizeAihubModelKey(model) === normalizeAihubModelKey(evidence.model))) return false;
@@ -353,9 +369,10 @@
   }
 
   function selectRollbackCandidate(candidates, previousGroup, mode) {
-    const previous = candidates.find(
-      (candidate) => candidate.group === previousGroup && candidate.available && candidate.scopeEligible !== false,
-    );
+    const matches = candidates.filter((candidate) => Number(previousGroup?.groupId) > 0
+      ? Number(candidate.groupId) === Number(previousGroup.groupId)
+      : candidate.group === String(previousGroup?.group || previousGroup || ""));
+    const previous = matches.length === 1 && matches[0].available && matches[0].scopeEligible !== false ? matches[0] : null;
     return {
       candidate: previous || selectBestCandidate(candidates, "", mode),
       usedPrevious: Boolean(previous),
@@ -390,6 +407,10 @@
         ? source.groupBlacklist
         : (hasModeAwareLegacyFilter && groupFilterMode === "blacklist" ? legacyGroupFilter : []),
     );
+    const legacyPlatform = normalizeBusinessPlatform(source.businessPlatform);
+    const hasMonitorScope = source.monitorScopeMode !== undefined || Array.isArray(source.monitorGroupIds);
+    const monitorScopeMigrationPending = source.monitorScopeMigrationPending === true
+      || (!hasMonitorScope && Boolean(legacyPlatform));
     return {
       theme: normalizeThemeMode(source.theme),
       glassTransparency: normalizeGlassTransparency(source.glassTransparency),
@@ -400,15 +421,18 @@
       automaticSwitchMode: normalizeAutomaticSwitchMode(source.automaticSwitchMode),
       businessPlatform: normalizeBusinessPlatform(source.businessPlatform),
       selectionMode: normalizeSelectionMode(source.selectionMode),
-      imageQualityKeyId: Math.max(0, Math.trunc(Number(source.imageQualityKeyId) || 0)),
-      imageQualityModel: String(source.imageQualityModel || "").trim().slice(0, 120),
-      imageQualityFallbackGroupIds: normalizeImageQualityFallbackGroups(source.imageQualityFallbackGroupIds),
-      imageQualityTask: String(source.imageQualityTask || DEFAULT_CONFIG.imageQualityTask).trim().slice(0, 300),
-      imageQualityMinScore: clampNumber(source.imageQualityMinScore, DEFAULT_CONFIG.imageQualityMinScore, 0, 100),
+      monitorScopeMode: hasMonitorScope ? (source.monitorScopeMode === "selected" ? "selected" : "all")
+        : (legacyPlatform ? "selected" : "all"),
+      monitorGroupIds: normalizeMonitorGroupIds(source.monitorGroupIds),
+      monitorScopeMigrationPending,
+      monitorScopeMigrationPlatform: monitorScopeMigrationPending
+        ? normalizeBusinessPlatform(source.monitorScopeMigrationPlatform || legacyPlatform) : "",
+      minMetricSamples: Math.trunc(clampNumber(source.minMetricSamples, DEFAULT_CONFIG.minMetricSamples, 1, 1000000)),
+      minCacheSamples: Math.trunc(clampNumber(source.minCacheSamples, DEFAULT_CONFIG.minCacheSamples, 1, 1000000)),
       groupFilterMode,
       groupWhitelist,
       groupBlacklist,
-      requireModelDetection: Boolean(source.requireModelDetection),
+      requireModelDetection: true,
       spendProtectionEnabled: Boolean(source.spendProtectionEnabled),
       dailySpendLimit: clampNumber(source.dailySpendLimit, DEFAULT_CONFIG.dailySpendLimit, 0, 1000000000),
       pollSeconds: clampNumber(source.pollSeconds, DEFAULT_CONFIG.pollSeconds, 15, 3600),
@@ -475,7 +499,7 @@
       "ratio-too-high": "超过倍率上限",
       "metrics-missing": "无性能数据",
       "metrics-stale": "指标已过期",
-      "success-low": "总成功率不足",
+      "success-low": "1h 成功率不足",
       "latest-success-low": "最新成功率不足",
       "first-token-latency-high": "首字延迟过高",
       "output-latency-high": "输出延迟过高",
@@ -490,6 +514,18 @@
       "model-detection-expired": "模型检测已过期",
       "model-detection-incomplete": "模型检测未完成",
       "model-detection-unknown": "模型检测状态未知",
+      "model-detection-missing": "缺少模型检测详情",
+      "model-detection-model-mismatch": "检测模型与启用模型不匹配",
+      "model-detection-not-applicable": "模型检测不适用",
+      "metrics-window-invalid": "1h 指标窗口无效",
+      "metrics-provider-version": "非 v2 监控数据，暂停自动准入",
+      "metrics-sample-insufficient": "1h 指标样本不足",
+      "cache-metrics-missing": "缓存指标缺失",
+      "cache-stale": "缓存统计尚未就绪或已过期",
+      "cache-sample-insufficient": "缓存样本不足",
+      "tps-missing": "TPS 指标缺失",
+      "scope-migration-pending": "旧平台范围尚未映射到分组",
+      "outside-monitor-scope": "未纳入监控范围",
       "temporarily-blacklisted": "故障隔离",
     };
     return labels[reason] || reason;

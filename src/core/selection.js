@@ -121,85 +121,6 @@
       .join("；");
   }
 
-  function boundedPercent(value, fallback) {
-    return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : fallback;
-  }
-
-  function inverseLatencyScore(value, referenceMs) {
-    if (!Number.isFinite(value) || value <= 0) return 25;
-    return 100 / (1 + value / referenceMs);
-  }
-
-  function candidateHealthScore(candidate) {
-    if (!candidate) return 0;
-    const recent = boundedPercent(candidate.recentMinSuccess, 0);
-    const aggregate = boundedPercent(candidate.aggregateSuccess, 0);
-    const firstToken = inverseLatencyScore(candidate.firstTokenLatencyMs, 2000);
-    const output = inverseLatencyScore(candidate.outputLatencyMs, 10000);
-    const cache = boundedPercent(candidate.cacheHitRate, 50);
-    return recent * 0.35 + aggregate * 0.15 + firstToken * 0.2 + output * 0.2 + cache * 0.1;
-  }
-
-  function candidatePriceScore(candidate, candidates) {
-    if (candidate && candidate.providerId === "aihub") {
-      return candidateSavingScore(candidate, candidates.filter((item) => item.providerId === "aihub"));
-    }
-    const ratios = candidates
-      .map((item) => Number(item.ratio))
-      .filter((ratio) => Number.isFinite(ratio) && ratio > 0);
-    const minimum = ratios.length ? Math.min(...ratios) : NaN;
-    const ratio = Number(candidate && candidate.ratio);
-    if (!Number.isFinite(minimum) || !Number.isFinite(ratio) || ratio <= 0) return 0;
-    return Math.min(100, minimum / ratio * 100);
-  }
-
-  /*
-   * Legacy local effective-ratio estimator retained for reference.
-   * AIHub now returns its own runtime-window estimate, so this formula is no longer executed.
-  function hasValidCacheHitRate(candidate) {
-    const cacheHitRate = candidate && candidate.cacheHitRate;
-    return Number.isFinite(cacheHitRate) && cacheHitRate >= 0 && cacheHitRate <= 100;
-  }
-
-  function normalizeCachePricingModel(value) {
-    if (!value || typeof value !== "object") return null;
-    const baselineHitRate = Number(value.baselineHitRate);
-    const hitUnitPrice = Number(value.hitUnitPrice);
-    const missUnitPrice = Number(value.missUnitPrice);
-    if (
-      !Number.isFinite(baselineHitRate)
-      || baselineHitRate < 0
-      || baselineHitRate > 100
-      || !Number.isFinite(hitUnitPrice)
-      || hitUnitPrice < 0
-      || !Number.isFinite(missUnitPrice)
-      || missUnitPrice < 0
-      || hitUnitPrice >= missUnitPrice
-    ) return null;
-    return { baselineHitRate, hitUnitPrice, missUnitPrice };
-  }
-
-  function hasEffectiveRatioEstimate(candidate) {
-    return hasValidCacheHitRate(candidate)
-      && Boolean(normalizeCachePricingModel(candidate && candidate.cachePricingModel));
-  }
-
-  function cacheUnitCost(cacheHitRate, pricingModel = AIHUB_CACHE_PRICING) {
-    const model = normalizeCachePricingModel(pricingModel) || AIHUB_CACHE_PRICING;
-    const hitRatio = boundedPercent(cacheHitRate, model.baselineHitRate) / 100;
-    return hitRatio * model.hitUnitPrice + (1 - hitRatio) * model.missUnitPrice;
-  }
-
-  function candidateEffectiveRatio(candidate) {
-    const nominalRatio = Number(candidate && candidate.ratio);
-    if (!Number.isFinite(nominalRatio) || nominalRatio <= 0) return NaN;
-    const pricingModel = normalizeCachePricingModel(candidate && candidate.cachePricingModel);
-    if (!hasValidCacheHitRate(candidate) || !pricingModel) return nominalRatio;
-    const baselineCost = cacheUnitCost(pricingModel.baselineHitRate, pricingModel);
-    return nominalRatio * cacheUnitCost(candidate.cacheHitRate, pricingModel) / baselineCost;
-  }
-  */
-
   function hasEffectiveRatioEstimate(candidate) {
     const effectiveRatio = Number(candidate && candidate.effectiveRatio);
     return candidate && candidate.effectiveRatioReady === true
@@ -246,51 +167,69 @@
     return `${targetPrefix}${labels[candidate.firstTokenLatencySource] || labels.unknown}`;
   }
 
-  function candidateSavingRatio(candidate, candidates) {
-    const population = Array.isArray(candidates) ? candidates : [];
-    const hasReadyEstimate = population.some(hasEffectiveRatioEstimate);
-    if (hasReadyEstimate && !hasEffectiveRatioEstimate(candidate)) return Infinity;
-    return candidateEffectiveRatio(candidate);
+  function qualityModel(candidate) {
+    return String(candidate.aihubMetricModel || candidate.targetModels?.[0] || "");
   }
 
-  function candidateSavingScore(candidate, candidates) {
-    const population = Array.isArray(candidates) ? candidates : [];
-    const effectiveRatios = population
-      .map((item) => candidateSavingRatio(item, population))
-      .filter((ratio) => Number.isFinite(ratio) && ratio > 0);
-    const minimum = effectiveRatios.length ? Math.min(...effectiveRatios) : NaN;
-    const effectiveRatio = candidateSavingRatio(candidate, population);
-    if (!Number.isFinite(minimum) || !Number.isFinite(effectiveRatio) || effectiveRatio <= 0) return 0;
-    return Math.min(100, minimum / effectiveRatio * 100);
+  function qualityMetricValid(candidate) {
+    return Number.isFinite(candidate.aggregateSuccess) && candidate.aggregateSuccess >= 0 && candidate.aggregateSuccess <= 100
+      && Number.isFinite(candidate.cacheHitRate) && candidate.cacheHitRate >= 0 && candidate.cacheHitRate <= 100
+      && Number.isFinite(candidate.outputTokensPerSecond) && candidate.outputTokensPerSecond >= 0
+      && Number.isFinite(candidate.ratio) && candidate.ratio > 0;
   }
 
-  function candidateStrategyScore(candidate, candidates, mode) {
-    const selectionMode = normalizeSelectionMode(mode);
-    const health = candidateHealthScore(candidate);
-    const price = candidatePriceScore(candidate, candidates);
-    if (selectionMode === "stable") return health;
-    if (selectionMode === "balanced") return health * 0.7 + price * 0.3;
-    return candidateSavingScore(candidate, candidates);
+  function candidateQualityTie(left, right) {
+    return right.aggregateSuccess - left.aggregateSuccess || right.cacheHitRate - left.cacheHitRate
+      || right.outputTokensPerSecond - left.outputTokensPerSecond
+      || candidateEffectiveRatio(left) - candidateEffectiveRatio(right)
+      || Number(left.groupId || 0) - Number(right.groupId || 0) || left.group.localeCompare(right.group);
   }
 
-  function sortCandidatesForMode(candidates, mode) {
-    const selectionMode = normalizeSelectionMode(mode);
-    const population = candidates.slice();
-    return population.sort((left, right) => {
-      const scoreDifference = candidateStrategyScore(right, population, selectionMode)
-        - candidateStrategyScore(left, population, selectionMode);
-      if (Math.abs(scoreDifference) > 0.0001) return scoreDifference;
-      const healthDifference = candidateHealthScore(right) - candidateHealthScore(left);
-      if (Math.abs(healthDifference) > 0.0001) return healthDifference;
-      return left.ratio - right.ratio;
+  function scoreAihubQualityCandidates(candidates) {
+    const pools = new Map();
+    const result = candidates.map((candidate) => ({ ...candidate, qualityScore: NaN, qualityPercentiles: null }));
+    result.forEach((candidate) => {
+      if (!candidate.available || candidate.scopeEligible === false || !qualityMetricValid(candidate)) return;
+      const model = qualityModel(candidate);
+      if (!pools.has(model)) pools.set(model, []);
+      pools.get(model).push(candidate);
     });
+    const metrics = [["success", (row) => row.aggregateSuccess, 0.4], ["cache", (row) => row.cacheHitRate, 0.3],
+      ["tps", (row) => row.outputTokensPerSecond, 0.2], ["cost", (row) => -row.ratio, 0.1]];
+    pools.forEach((pool) => {
+      pool.forEach((row) => { row.qualityPercentiles = {}; row.qualityScore = 0; });
+      metrics.forEach(([name, value, weight]) => {
+        const sorted = pool.slice().sort((left, right) => value(left) - value(right));
+        for (let start = 0; start < sorted.length;) {
+          let end = start + 1;
+          while (end < sorted.length && value(sorted[end]) === value(sorted[start])) end += 1;
+          const score = sorted.length === 1 ? 100 : 100 * ((start + end - 1) / 2) / (sorted.length - 1);
+          for (let index = start; index < end; index += 1) {
+            sorted[index].qualityPercentiles[name] = score;
+            sorted[index].qualityScore += weight * score;
+          }
+          start = end;
+        }
+      });
+    });
+    return result.sort((left, right) => qualityModel(left).localeCompare(qualityModel(right))
+      || (Number.isFinite(right.qualityScore) ? right.qualityScore : -1) - (Number.isFinite(left.qualityScore) ? left.qualityScore : -1)
+      || candidateQualityTie(left, right));
   }
 
-  function sortCandidateRowsForMode(candidates, mode) {
-    return [
-      ...sortCandidatesForMode(candidates.filter((candidate) => candidate.available), mode),
-      ...sortCandidatesForMode(candidates.filter((candidate) => !candidate.available), mode),
-    ];
+  function candidateStrategyScore(candidate, candidates) {
+    const scored = scoreAihubQualityCandidates(candidates).find((row) => Number(candidate.groupId) > 0
+      ? Number(row.groupId) === Number(candidate.groupId) : row.group === candidate.group);
+    return scored?.qualityScore ?? NaN;
+  }
+
+  function sortCandidatesForMode(candidates) {
+    return scoreAihubQualityCandidates(candidates);
+  }
+
+  function sortCandidateRowsForMode(candidates) {
+    const scored = scoreAihubQualityCandidates(candidates);
+    return [...scored.filter((row) => row.available), ...scored.filter((row) => !row.available)];
   }
 
   function candidateCurrentTokens(candidate, tokens, selectedIds) {
@@ -311,19 +250,17 @@
   }
 
   function selectBestCandidate(candidates, currentGroup, mode) {
-    const available = sortCandidatesForMode(
-      candidates.filter((candidate) => candidate.available && candidate.scopeEligible !== false),
-      mode,
-    );
-
-    if (!available.length) return null;
-    const current = available.find((candidate) => candidate.group === currentGroup);
-    if (normalizeSelectionMode(mode) === "saving" && current) {
-      const scoreDifference = candidateSavingScore(available[0], available)
-        - candidateSavingScore(current, available);
-      if (Math.abs(scoreDifference) <= 0.0001) return current;
-    }
-    return available[0];
+    let available = candidates.filter((candidate) => candidate.available && candidate.scopeEligible !== false && qualityMetricValid(candidate));
+    const matching = candidates.filter((candidate) => typeof currentGroup === "object"
+      ? candidateMatchesToken(candidate, currentGroup) : candidate.group === currentGroup);
+    if (matching.length > 1) return null;
+    const current = matching[0];
+    const currentModel = current && qualityModel(current);
+    const models = [...new Set(available.map(qualityModel))];
+    // Relative scores from different models are never compared. No matching current model is ambiguous.
+    if (currentModel) available = available.filter((candidate) => qualityModel(candidate) === currentModel);
+    else if (models.length > 1) return null;
+    return scoreAihubQualityCandidates(available)[0] || null;
   }
 
   function selectSwitchCandidate(candidates, currentGroup, targetGroup, options) {
@@ -380,31 +317,4 @@
       group,
       cross_group_retry: group === "auto" && Boolean(token.cross_group_retry),
     };
-  }
-
-  async function selectImageQualifiedCandidate(candidates, currentGroup, options) {
-    const tried = new Set();
-    const identity = (candidate) => Number(candidate.groupId) > 0 ? `id:${candidate.groupId}` : candidate.group;
-    let preferred = options.preferred;
-    while (true) {
-      options.assertCurrent();
-      const eligible = options.eligible(candidates).filter((candidate) => candidate.scopeEligible !== false && !tried.has(identity(candidate)));
-      const candidate = preferred && eligible.find((item) => identity(item) === identity(preferred))
-        || selectBestCandidate(eligible, currentGroup, options.mode);
-      preferred = null;
-      // Keeping the current group is not a switch and does not require a paid check.
-      if (!candidate || (options.currentToken ? candidateMatchesToken(candidate, options.currentToken) : candidate.group === currentGroup)) return candidate;
-      tried.add(identity(candidate));
-      const verdict = await options.check(candidate);
-      options.assertCurrent();
-      if (verdict.pass) return candidate;
-      await options.isolate(candidate, verdict.reason);
-    }
-  }
-
-  function imageQualityAdmissionVerdict(entry, minimum) {
-    if (!validImageQuality(entry)) return { pass: false, reason: "没有有效图片评价" };
-    if (entry.confidence === "low") return { pass: false, reason: "图片评价证据不足" };
-    return entry.score > minimum ? { pass: true, reason: "" }
-      : { pass: false, reason: `图片分${entry.score}未超过门槛${minimum}` };
   }

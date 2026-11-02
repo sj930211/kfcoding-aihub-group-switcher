@@ -40,7 +40,7 @@ class Option {
 }
 {
   const select = {
-    options: [new Option("不使用备用分组", "0"), new Option("OpenAI 常用", "1"), new Option("Kimi 备用", "2")],
+    options: [new Option("自动选择", "0"), new Option("OpenAI 常用", "1"), new Option("Kimi 备用", "2")],
     value: "1",
     replaceChildren(...options) { this.options = options; this.value = options[0]?.value || ""; },
   };
@@ -78,14 +78,14 @@ class Option {
 }
 
 {
-  const refs = new Proxy({ automaticSwitchMode: { value: "failover" }, selectionMode: { value: "stable" } }, {
+  const refs = new Proxy({ automaticSwitchMode: { value: "failover" } }, {
     get(target, key) { return target[key] || { value: "", checked: false, querySelectorAll: () => [] }; },
   });
   const form = vm.createContext({ refs, config: {}, IS_AIHUB: true, sanitizeConfig: value => value });
   vm.runInContext(fs.readFileSync(new URL("../src/ui/render.js", import.meta.url), "utf8"), form);
   const result = form.readFormConfig();
   assert.equal(result.automaticSwitchMode, "failover", "form persistence keeps the chosen automatic mode independent from the ranking strategy");
-  assert.equal(result.selectionMode, "stable");
+  assert.equal(result.selectionMode, "quality", "form persistence uses the sole 1h quality algorithm");
 }
 
 {
@@ -113,7 +113,6 @@ class Option {
     config: { tokenIds: [1], models: ["model-a"] }, targetModels: value => value.models,
     tokensCache: [{ id: 1, name: "主密钥", group: "OpenAI" }, { id: 2, name: "备用密钥", group: "Kimi" }],
     pricingCache: { data: [{ model_name: "model-a", platforms: ["OpenAI"] }, { model_name: "model-b", platforms: ["智谱"] }] },
-    renderImageQualityKeyOptions() {}, renderImageQualityGroupOptions() {},
   });
   vm.runInContext(fs.readFileSync(source, "utf8"), app);
   vm.runInContext(fs.readFileSync(new URL("../src/runtime/operations.js", import.meta.url), "utf8"), app);

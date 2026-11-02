@@ -10,8 +10,6 @@
     refs.detectionImage.hidden = true;
     refs.detectionImage.alt = `${candidate.group} 的${media.title}`;
     refs.detectionImageOriginal.href = media.url;
-    refs.detectionImageQuality.hidden = !imageQualityEnabled(config);
-    refs.detectionImageQuality.textContent = imageQualityDescription(candidateImageQuality(candidate));
     dialog.showModal();
     refs.detectionImageClose.focus();
     refs.detectionImage.src = media.url;
@@ -402,8 +400,6 @@
 
   function render() {
     if (!root) return;
-    if (refs.imageQualityTooltip?.trigger && !refs.imageQualityTooltip.trigger.isConnected) refs.imageQualityTooltip.hidden = true;
-    root.host.dataset.imageQuality = String(imageQualityEnabled(config));
     if (refs.panel) refs.panel.hidden = state.collapsed;
     if (refs.launcher) refs.launcher.hidden = !state.collapsed;
     positionElement(state.collapsed ? refs.launcher : refs.panel, state.collapsed ? "launcher" : "panel", false);
@@ -424,8 +420,7 @@
     }
     if (refs.automaticSwitchHint) refs.automaticSwitchHint.textContent = config.automaticSwitchMode === "failover"
       ? "只在确认当前组故障时，按所选策略转移；健康时不切换，原组恢复后不自动切回。"
-      : "正常时按策略择优并执行图片准入；故障时优先恢复服务。";
-    if (refs.qualityRecordCount) refs.qualityRecordCount.textContent = `${imageQuality.records.size}条${automaticImageAdmission.active ? " · 评价中" : ""}`;
+      : "正常时按 1h 综合质量择优；故障时优先恢复服务。";
     root.querySelectorAll("[data-settings-target]").forEach((button) => {
       const active = button.dataset.settingsTarget === state.settingsPage;
       button.setAttribute("aria-selected", String(active));
@@ -461,7 +456,7 @@
     if (refs.candidateSummary) {
       const availableCount = state.candidates.filter((candidate) => candidate.available).length;
       refs.candidateSummary.textContent = state.candidates.length
-        ? `${IS_AIHUB ? `${selectionModeLabel(config.selectionMode)} · ` : ""}${availableCount} 可用 / ${state.candidates.length} 总计`
+        ? `1h 综合质量 · ${availableCount} 可用 / ${state.candidates.length} 总计`
         : "等待检查";
     }
     if (refs.candidateCount) refs.candidateCount.textContent = String(state.candidates.length);
@@ -471,7 +466,19 @@
       refs.currentGroup.textContent = state.currentGroup;
       refs.currentGroup.title = state.currentGroup;
     }
-    if (refs.bestGroup) refs.bestGroup.textContent = state.bestGroup;
+    if (refs.bestGroup) {
+      const selected = tokensCache.filter((token) => config.tokenIds.includes(Number(token.id)));
+      const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)));
+      const currentModels = [...new Set(currentRows.filter(Boolean).map(qualityModel))];
+      const current = currentRows.length && currentRows.every(Boolean) && currentModels.length === 1 ? currentRows[0] : "";
+      const best = selectBestCandidate(state.candidates, current, config.selectionMode);
+      const detail = best
+        ? `${qualityModel(best) || "模型未匹配"} · ${Number.isFinite(best.qualityScore) ? `同模型质量 ${best.qualityScore.toFixed(1)}` : "质量待评估"}`
+        : state.candidates.length ? "按检测详情与同模型 1h 指标评估" : "等待检查";
+      refs.bestGroup.textContent = best ? best.group : state.bestGroup;
+      refs.bestGroup.title = best ? `${best.group} · ${detail}` : state.bestGroup;
+      if (refs.bestGroupMeta) { refs.bestGroupMeta.textContent = detail; refs.bestGroupMeta.title = detail; }
+    }
     if (refs.lastCheck) refs.lastCheck.textContent = state.lastCheck;
     const usageLoadingText = state.todayUsage.loading ? "..." : "";
     if (refs.balance) {
@@ -529,9 +536,8 @@
       refs.monitorEnabled.checked = config.enabled;
       refs.monitorEnabled.disabled = running;
     }
-    if (refs.monitorMode) refs.monitorMode.textContent = `${config.automaticSwitchMode === "failover" ? "仅故障转移 · " : ""}${selectionModeLabel(config.selectionMode)}`;
+    if (refs.monitorMode) refs.monitorMode.textContent = `${config.automaticSwitchMode === "failover" ? "仅故障转移 · " : ""}1h 综合质量`;
     if (refs.spendProtectionEnabled) refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
-    if (refs.requireModelDetection) refs.requireModelDetection.checked = config.requireModelDetection;
     if (refs.resetSpendProtection) refs.resetSpendProtection.disabled = running || !state.todayUsage.available;
     if (refs.check) refs.check.disabled = running;
     if (refs.switchNow) refs.switchNow.disabled = running;
@@ -574,7 +580,7 @@
         refs.isolationSummaryCount.textContent = `${entries.length}条`;
         if (refs.isolationRecords.open) renderIsolations();
       }
-      if (state.settingsPage === "quality" && refs.qualityRecords.open) renderImageQualityList();
+      if (state.settingsPage === "routing") renderMonitorScope();
     }
     if (refs.isolationToast) {
       const undoAvailable = state.isolationUndo.entries.length > 0 && state.isolationUndo.expiresAt > Date.now();
@@ -585,8 +591,11 @@
           : `已解除 ${state.isolationUndo.entries.length} 个分组`;
       }
     }
-    renderImageQualityControls();
-    if (!state.collapsed && state.activeView === "monitor") renderCandidates();
+    renderCurrentScopeWarning();
+    if (!state.collapsed && state.activeView === "monitor") {
+      renderCandidates();
+      applyCandidateDisplayControls();
+    }
     if (!state.collapsed && state.activeView === "statistics") renderStatistics();
     if (!state.collapsed && state.activeView === "diagnostics") {
       renderTokenResults();
@@ -600,7 +609,7 @@
     root.host.dataset.theme = config.theme;
     root.host.dataset.resolvedTheme = resolvedTheme;
     root.host.style.setProperty("--glass-transparency", `${config.glassTransparency}%`);
-    root.host.style.setProperty("--panel-glass", resolveGlassMaterial(resolvedTheme, config.glassTransparency));
+    root.host.style.setProperty("--panel-glass", resolvedTheme === "light" ? "#ffffff" : "#192324");
     if (refs.theme) {
       refs.theme.value = config.theme;
       const labels = { system: "跟随系统", light: "浅色", dark: "深色" };
@@ -621,26 +630,27 @@
         .map((checkbox) => checkbox.dataset.modelName),
       automaticSwitchMode: refs.automaticSwitchMode?.value || "strategy",
       businessPlatform: config.businessPlatform,
-      selectionMode: refs.selectionMode.value,
-      imageQualityKeyId: refs.imageQualityKey.value,
-      imageQualityModel: refs.imageQualityModel.value,
-      imageQualityTask: refs.imageQualityTask.value,
-      imageQualityFallbackGroupIds: [refs.imageQualityFallback1.value, refs.imageQualityFallback2.value],
-      imageQualityMinScore: refs.imageQualityMinScore.value,
+      selectionMode: "quality",
+      monitorScopeMode: config.monitorScopeMode,
+      monitorGroupIds: config.monitorGroupIds,
+      monitorScopeMigrationPending: config.monitorScopeMigrationPending,
+      monitorScopeMigrationPlatform: config.monitorScopeMigrationPlatform,
       groupFilterMode: config.groupFilterMode,
       groupWhitelist: config.groupWhitelist,
       groupBlacklist: config.groupBlacklist,
-      requireModelDetection: IS_AIHUB && refs.requireModelDetection.checked,
+      requireModelDetection: true,
       spendProtectionEnabled: refs.spendProtectionEnabled.checked,
       dailySpendLimit: refs.dailySpendLimit.value,
       pollSeconds: refs.pollSeconds.value,
       strategySeconds: Number(refs.strategyMinutes.value) * 60,
-      metricHours: refs.metricHours.value,
+      metricHours: config.metricHours,
       minSuccessRate: refs.minSuccessRate.value,
-      minLatestSuccessRate: refs.minLatestSuccessRate.value,
-      maxMetricAgeMinutes: refs.maxMetricAgeMinutes.value,
-      maxFirstTokenLatencySeconds: refs.maxFirstTokenLatencySeconds.value,
-      maxOutputDurationSeconds: refs.maxOutputDurationSeconds.value,
+      minMetricSamples: refs.minMetricSamples.value,
+      minCacheSamples: refs.minCacheSamples.value,
+      minLatestSuccessRate: config.minLatestSuccessRate,
+      maxMetricAgeMinutes: config.maxMetricAgeMinutes,
+      maxFirstTokenLatencySeconds: config.maxFirstTokenLatencySeconds,
+      maxOutputDurationSeconds: config.maxOutputDurationSeconds,
       maxGroupRatio: refs.maxGroupRatio.value,
       confirmPolls: refs.confirmPolls.value,
       switchHoldMinutes: refs.switchHoldMinutes.value,
@@ -655,23 +665,15 @@
     if (refs.glassTransparencyValue) refs.glassTransparencyValue.textContent = `${config.glassTransparency}%`;
     refs.enabled.checked = config.enabled;
     if (refs.automaticSwitchMode) refs.automaticSwitchMode.value = config.automaticSwitchMode || "strategy";
-    refs.selectionMode.value = config.selectionMode;
-    refs.imageQualityModel.value = config.imageQualityModel;
-    refs.imageQualityTask.value = config.imageQualityTask;
-    renderImageQualityGroupOptions();
-    refs.imageQualityMinScore.value = String(config.imageQualityMinScore);
-    refs.requireModelDetection.checked = config.requireModelDetection;
+    renderMonitorScope();
     refs.spendProtectionEnabled.checked = config.spendProtectionEnabled;
     refs.dailySpendLimit.value = String(config.dailySpendLimit);
     renderGroupFilterOptions();
     refs.pollSeconds.value = String(config.pollSeconds);
     refs.strategyMinutes.value = String(config.strategySeconds / 60);
-    refs.metricHours.value = String(config.metricHours);
     refs.minSuccessRate.value = String(config.minSuccessRate);
-    refs.minLatestSuccessRate.value = String(config.minLatestSuccessRate);
-    refs.maxMetricAgeMinutes.value = String(config.maxMetricAgeMinutes);
-    refs.maxFirstTokenLatencySeconds.value = String(config.maxFirstTokenLatencySeconds);
-    refs.maxOutputDurationSeconds.value = String(config.maxOutputDurationSeconds);
+    refs.minMetricSamples.value = String(config.minMetricSamples);
+    refs.minCacheSamples.value = String(config.minCacheSamples);
     refs.maxGroupRatio.value = String(config.maxGroupRatio);
     refs.confirmPolls.value = String(config.confirmPolls);
     refs.switchHoldMinutes.value = String(config.switchHoldMinutes);
@@ -685,7 +687,7 @@
     if (wasEnabled && !refs.enabled.checked) {
       config = { ...config, enabled: false };
       pendingCandidates.clear();
-      invalidateAutomaticImageAdmission();
+      invalidateCheckDecisions();
       GM_setValue(STORAGE_CONFIG, config);
       scheduleNext();
       setStatus("自动切换已暂停", "warning");
@@ -704,24 +706,10 @@
     state.settingsError = "";
     const previousConfigKey = JSON.stringify(config);
     const previousIdentity = `${config.tokenIds.join(",")}:${targetModelIdentity(config)}`;
-    const previousQualityKey = config.imageQualityKeyId;
-    const previousQuality = imageQualitySettingsKey(config);
     config = readFormConfig();
     if (previousConfigKey !== JSON.stringify(config)) {
-      invalidateAutomaticImageAdmission();
+      invalidateCheckDecisions();
       pendingCandidates.clear();
-    }
-    if (previousQuality !== imageQualitySettingsKey(config)) {
-      cancelImageQuality();
-      imageQuality.status = "";
-      imageQuality.testStatus = "";
-      imageQuality.testResult = "";
-      if (previousQualityKey !== config.imageQualityKeyId) {
-        imageQuality.models = [];
-        imageQuality.modelsKeyId = 0;
-        imageQuality.modelsStatus = "";
-        renderImageQualityModelOptions();
-      }
     }
     GM_setValue(STORAGE_CONFIG, config);
     if (state.todayUsage.available) syncSpendProtection({ notify: true });
@@ -732,7 +720,7 @@
       state.currentGroup = "-";
     }
     if (IS_AIHUB) {
-      state.bestGroup = candidateRecommendationLabel(selectBestCandidate(state.candidates, "", config.selectionMode));
+      refreshQualityRecommendation();
     }
     if (config.enabled !== wasEnabled) {
       scheduleNext(config.enabled ? 250 : undefined);
@@ -794,54 +782,200 @@
     });
   }
 
-  function bindImageQualityTooltip() {
-    let trigger = null;
-    const hide = () => { refs.imageQualityTooltip.hidden = true; trigger = null; };
-    const show = (target) => {
-      const score = target.closest?.(".candidate-image-score");
-      if (!score || score === trigger) return;
-      trigger = score;
-      const tooltip = refs.imageQualityTooltip;
-      tooltip.trigger = score;
-      tooltip.textContent = score.dataset.qualityDetail;
-      tooltip.hidden = false;
-      const bounds = score.getBoundingClientRect();
-      const tip = tooltip.getBoundingClientRect();
-      tooltip.style.left = `${Math.max(8, Math.min(window.innerWidth - tip.width - 8, bounds.right - tip.width))}px`;
-      tooltip.style.top = `${Math.max(8, bounds.top >= tip.height + 8 ? bounds.top - tip.height - 6
-        : Math.min(window.innerHeight - tip.height - 8, bounds.bottom + 6))}px`;
-    };
-    root.addEventListener("pointerover", (event) => show(event.target));
-    root.addEventListener("focusin", (event) => show(event.target));
-    root.addEventListener("pointerout", (event) => {
-      if (trigger && event.target.closest?.(".candidate-image-score") === trigger
-        && !trigger.contains(event.relatedTarget)) hide();
-    });
-    root.addEventListener("focusout", hide);
-    root.addEventListener("scroll", hide, true);
-    root.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
+  let monitorScopeDraftKey = null;
+  let monitorScopeDraftMode = "all";
+  let monitorScopeDraftIds = new Set();
+  let pendingManualScopeCandidate = null;
+  const candidateDisplayOrder = new WeakMap();
+
+  function monitorScopeCatalog() {
+    const monitors = new Map((Array.isArray(aihubPlatformMonitorsCache) ? aihubPlatformMonitorsCache : [])
+      .map((monitor) => [Number(monitor.group_id), monitor]));
+    return (Array.isArray(aihubGroupsCache) ? aihubGroupsCache : [])
+      .filter((group) => Number(group.id) > 0)
+      .map((group) => {
+        const monitor = monitors.get(Number(group.id));
+        return { ...group, platform: group.platform || monitor?.platform || "",
+          models: aihubGroupModelNames({ group_models: group.models }) ?? aihubGroupModelNames(monitor) ?? [] };
+      })
+      .slice().sort((left, right) => String(left.name).localeCompare(String(right.name), "zh-CN"));
   }
 
-  function persistBusinessPlatform(value) {
-    const platform = normalizeBusinessPlatform(value);
-    if (platform === config.businessPlatform) return;
-    config = { ...config, businessPlatform: platform };
-    imageQuality.cancelRevision = (imageQuality.cancelRevision || 0) + 1;
+  function renderMonitorScope() {
+    if (!refs.monitorScopeList) return;
+    const configKey = JSON.stringify([config.monitorScopeMode, config.monitorGroupIds]);
+    if (monitorScopeDraftKey !== configKey) {
+      monitorScopeDraftKey = configKey;
+      monitorScopeDraftMode = config.monitorScopeMode === "selected" ? "selected" : "all";
+      monitorScopeDraftIds = new Set((config.monitorGroupIds || []).map(Number));
+    }
+    refs.monitorScopeMode.value = monitorScopeDraftMode;
+    const catalog = monitorScopeCatalog();
+    const listKey = JSON.stringify([catalog, [...monitorScopeDraftIds], monitorScopeDraftMode, running]);
+    if (refs.monitorScopeList.dataset.renderKey !== listKey) {
+      const focusedGroupId = Number(root?.activeElement?.dataset?.monitorGroupId);
+      const scrollTop = refs.monitorScopeList.scrollTop;
+      refs.monitorScopeList.dataset.renderKey = listKey;
+      refs.monitorScopeList.replaceChildren();
+      if (!catalog.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "尚未读取分组目录。请回到监控页执行立即检查。";
+        refs.monitorScopeList.appendChild(empty);
+      }
+      catalog.forEach((group) => {
+        const id = Number(group.id);
+        const label = document.createElement("label");
+        label.className = "monitor-scope-option";
+        const models = Array.isArray(group.models) ? group.models.join(" · ") : String(group.models || "");
+        label.dataset.searchText = `${group.name} ${id} ${models} ${group.platform || ""}`;
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.dataset.monitorGroupId = String(id);
+        input.checked = monitorScopeDraftMode === "all" || monitorScopeDraftIds.has(id);
+        input.disabled = monitorScopeDraftMode === "all" || running;
+        const copy = document.createElement("span");
+        copy.textContent = group.name;
+        const detail = document.createElement("small");
+        detail.textContent = `#${id} · ${groupPlatforms[normalizeGroupPlatform(group.platform)]}${models ? ` · ${models}` : ""}`;
+        copy.appendChild(detail);
+        label.append(input, copy);
+        refs.monitorScopeList.appendChild(label);
+      });
+      refs.monitorScopeList.scrollTop = scrollTop;
+      if (focusedGroupId > 0 && !running) {
+        refs.monitorScopeList.querySelector(`[data-monitor-group-id="${focusedGroupId}"]`)?.focus({ preventScroll: true });
+      }
+    }
+    const selected = monitorScopeDraftMode === "all" ? catalog.length : monitorScopeDraftIds.size;
+    refs.monitorScopeCount.textContent = monitorScopeDraftMode === "all" ? "全部分组" : `已选 ${selected} 个`;
+    refs.monitorScopeCountDetail.textContent = `${selected} / ${catalog.length} 个分组`;
+    refs.monitorScopeSelectAll.disabled = running;
+    refs.monitorScopeClear.disabled = running;
+    refs.monitorScopeSave.disabled = running;
+    refs.monitorScopeMode.disabled = running;
+    const changed = monitorScopeDraftMode !== config.monitorScopeMode
+      || JSON.stringify([...monitorScopeDraftIds].sort((a, b) => a - b)) !== JSON.stringify([...(config.monitorGroupIds || [])].map(Number).sort((a, b) => a - b));
+    refs.monitorScopeStatus.textContent = changed ? "有未保存的范围修改；点击保存后下次检查生效。"
+      : monitorScopeDraftMode === "selected" && !selected ? "未选择分组：自动检查暂停，不会将空范围解释为全部。"
+        : "已保存。立即检查和计划检查只处理此范围；公开目录接口仍可能返回全站目录。";
+    filterSelectorList(refs.monitorScopeList, refs.monitorScopeSearch, refs.monitorScopeSearchStatus);
+  }
+
+  function removeTokenSelections(ids) {
+    if (running) return;
+    const removed = new Set(ids.map(Number));
+    config = { ...config, tokenIds: config.tokenIds.filter((id) => !removed.has(Number(id))) };
+    refs.tokenList.querySelectorAll("input[data-token-id]").forEach((input) => {
+      if (removed.has(Number(input.value))) input.checked = false;
+    });
+    state.outOfScopeTokens = (state.outOfScopeTokens || []).filter((token) => !removed.has(Number(token.id)));
     pendingCandidates.clear();
-    invalidateAutomaticImageAdmission();
-    state.candidates = [];
-    state.bestGroup = "等待检查";
+    invalidateCheckDecisions();
     GM_setValue(STORAGE_CONFIG, config);
-    setStatus("业务平台范围已保存，下次检查生效", "success");
+    renderTokenSelectionCount();
+    setStatus("已从插件选择中移除密钥；AIHub 密钥和分组未修改", "success");
     render();
   }
 
+  function renderCurrentScopeWarning() {
+    if (!refs.currentScopeWarning) return;
+    const tokens = state.outOfScopeTokens || [];
+    refs.currentScopeWarning.hidden = !tokens.length;
+    if (!tokens.length || !sectionNeedsRender(refs.outOfScopeTokenList, [tokens, config.tokenIds.join(","), running])) return;
+    refs.outOfScopeTokenList.replaceChildren();
+    tokens.forEach((token) => {
+      const item = document.createElement("div");
+      item.className = "scope-notice-item";
+      const label = document.createElement("span");
+      label.textContent = `${token.name || `密钥 #${token.id}`} · ${token.group || "未设置分组"}`;
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "text-button";
+      add.textContent = "加入监控";
+      add.disabled = !(Number(token.groupId) > 0) || running;
+      add.addEventListener("click", () => saveMonitorScope("selected", [...new Set([...(config.monitorGroupIds || []), Number(token.groupId)])]));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "text-button";
+      remove.textContent = "移除选择";
+      remove.disabled = running;
+      remove.addEventListener("click", () => removeTokenSelections([token.id]));
+      item.append(label, add, remove);
+      refs.outOfScopeTokenList.appendChild(item);
+    });
+    refs.removeOutOfScopeToken.disabled = running;
+  }
+
+  function applyCandidateDisplayControls() {
+    if (!refs.candidateRows) return;
+    const rows = [...refs.candidateRows.children].filter((row) => row.dataset.groupId);
+    const query = normalizeSelectorQuery(refs.candidateSearch?.value);
+    const status = refs.candidateStatus?.value || "";
+    const availability = refs.candidateAvailabilityFilter?.value || "";
+    let visible = 0;
+    rows.forEach((row, index) => {
+      if (!candidateDisplayOrder.has(row)) candidateDisplayOrder.set(row, index);
+      row.hidden = !matchesPlatform(row, refs.candidatePlatform)
+        || Boolean(query) && !normalizeSelectorQuery(row.dataset.searchText || row.textContent).includes(query)
+        || Boolean(status) && row.dataset.status !== status
+        || availability === "available" && row.dataset.available !== "true"
+        || availability === "unavailable" && row.dataset.available === "true";
+      if (!row.hidden) visible++;
+    });
+    const sort = refs.candidateSort?.value || "quality";
+    const numeric = (row) => {
+      const raw = row.dataset[sort === "quality" ? "score" : sort];
+      return raw === undefined || raw === "" || !Number.isFinite(Number(raw)) ? null : Number(raw);
+    };
+    rows.sort((left, right) => {
+      if (sort === "quality" && left.dataset.model !== right.dataset.model) {
+        return String(left.dataset.model || "").localeCompare(String(right.dataset.model || ""));
+      }
+      const a = numeric(left);
+      const b = numeric(right);
+      if (a === null || b === null) {
+        if (a !== b) return a === null ? 1 : -1;
+      } else if (a !== b) return sort === "ratio" ? a - b : b - a;
+      return candidateDisplayOrder.get(left) - candidateDisplayOrder.get(right);
+    }).forEach((row) => refs.candidateRows.appendChild(row));
+    if (refs.candidateSearchStatus) refs.candidateSearchStatus.textContent = rows.length
+      ? `显示 ${visible} / ${rows.length} 个分组 · ${sort === "quality" ? "按模型分池推荐 · " : ""}排序和筛选仅影响显示` : "尚无检查结果";
+    if (refs.candidateResetFilters) refs.candidateResetFilters.hidden = !rows.length || visible > 0;
+    root?.querySelectorAll("[data-candidate-sort]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.candidateSort === sort));
+      button.dataset.sortDirection = sort === "ratio" ? "ascending" : "descending";
+    });
+  }
+
+  function requestManualSwitch(candidate) {
+    if (!candidate || running) return;
+    const inScope = monitorGroupInScope(config, candidate.groupId);
+    if (inScope && candidate.available === true) {
+      void manualSwitchToGroup(candidate, "once");
+      return;
+    }
+    pendingManualScopeCandidate = candidate;
+    const eligible = candidate.available === true;
+    const issue = candidateIssueText(candidate) || (candidate.catalogOnly
+      ? "仅有目录信息，尚未检查检测详情和 1h 指标" : "尚未通过本轮模型检测与质量门槛");
+    refs.manualScopeTitle.textContent = inScope ? "确认切换到未准入分组" : "目标分组未纳入监控";
+    refs.manualScopeTarget.textContent = `${candidate.group || "未命名分组"}${Number(candidate.groupId) > 0 ? ` · #${candidate.groupId}` : ""}`;
+    refs.manualScopeRisk.hidden = eligible;
+    refs.manualScopeRisk.textContent = eligible ? "" : `风险：${issue}。手动切换可能影响服务可用性，请确认后继续。`;
+    refs.manualScopeHint.textContent = inScope
+      ? "仅本次覆盖自动准入限制；后续自动检查仍遵守保存的监控范围和质量门槛。"
+      : "请选择如何处理。仅本次切换不会修改保存的监控范围；后续自动检查不会包含此范围外分组。";
+    refs.manualScopeAdd.hidden = inScope || !(Number(candidate.groupId) > 0);
+    refs.manualScopeOnce.textContent = inScope ? "仍然切换一次" : "仅切换一次";
+    refs.manualScopeDialog.showModal();
+    refs.manualScopeCancel.focus();
+  }
+
   function bindUi() {
-    bindImageQualityTooltip();
     [
       [refs.tokenSearch, refs.tokenList, refs.tokenSearchStatus],
       [refs.modelSearch, refs.modelList, refs.modelSearchStatus],
-      [refs.candidateSearch, refs.candidateRows, refs.candidateSearchStatus, refs.candidatePlatform],
       [refs.groupFilterSearch, refs.groupFilterList, refs.groupFilterSearchStatus, refs.groupFilterPlatform],
       [refs.manualGroupSearch, refs.manualGroup, refs.manualGroupSearchStatus, refs.manualGroupPlatform],
     ].forEach(([input, list, status, platform]) => {
@@ -849,16 +983,48 @@
       bindSelectorSearch(input, filter, list);
       bindPlatformFilter(platform, filter);
     });
-    if (IS_AIHUB) refs.candidatePlatform.addEventListener("change", () => persistBusinessPlatform(refs.candidatePlatform.value));
-    [
-      [refs.imageQualityKeySearch, refs.imageQualityKey, refs.imageQualityKeySearchStatus],
-      [refs.imageQualityFallback1Search, refs.imageQualityFallback1, refs.imageQualityFallback1SearchStatus, refs.imageQualityFallback1Platform],
-      [refs.imageQualityFallback2Search, refs.imageQualityFallback2, refs.imageQualityFallback2SearchStatus, refs.imageQualityFallback2Platform],
-    ].forEach(([input, select, status, platform]) => {
-      const filter = () => filterSearchableSelect(select, input, status, platform);
-      bindSelectorSearch(input, filter, select);
-      bindPlatformFilter(platform, filter);
+    bindSelectorSearch(refs.candidateSearch, applyCandidateDisplayControls, refs.candidateRows);
+    [refs.candidatePlatform, refs.candidateSort, refs.candidateStatus, refs.candidateAvailabilityFilter].forEach((control) => {
+      control.addEventListener("change", applyCandidateDisplayControls);
     });
+    refs.candidateResetFilters.addEventListener("click", () => {
+      [refs.candidateSearch, refs.candidatePlatform, refs.candidateStatus, refs.candidateAvailabilityFilter].forEach((control) => { control.value = ""; });
+      applyCandidateDisplayControls();
+      refs.candidateSearch.focus();
+    });
+    root.querySelectorAll("[data-candidate-sort]").forEach((button) => {
+      button.addEventListener("click", () => {
+        refs.candidateSort.value = button.dataset.candidateSort;
+        applyCandidateDisplayControls();
+      });
+    });
+    bindSelectorSearch(refs.monitorScopeSearch, renderMonitorScope, refs.monitorScopeList);
+    refs.monitorScopeMode.addEventListener("change", () => { monitorScopeDraftMode = refs.monitorScopeMode.value; renderMonitorScope(); });
+    refs.monitorScopeList.addEventListener("change", (event) => {
+      const id = Number(event.target.dataset.monitorGroupId);
+      if (!(id > 0)) return;
+      if (event.target.checked) monitorScopeDraftIds.add(id); else monitorScopeDraftIds.delete(id);
+      renderMonitorScope();
+    });
+    refs.monitorScopeSelectAll.addEventListener("click", () => {
+      monitorScopeDraftMode = "selected";
+      monitorScopeDraftIds = new Set(monitorScopeCatalog().map((group) => Number(group.id)));
+      renderMonitorScope();
+    });
+    refs.monitorScopeClear.addEventListener("click", () => {
+      monitorScopeDraftMode = "selected"; monitorScopeDraftIds.clear(); renderMonitorScope();
+    });
+    refs.monitorScopeSave.addEventListener("click", () => saveMonitorScope(monitorScopeDraftMode, [...monitorScopeDraftIds]));
+    refs.removeOutOfScopeToken.addEventListener("click", () => removeTokenSelections((state.outOfScopeTokens || []).map((token) => token.id)));
+    [[refs.manualScopeAdd, "add-and-switch"], [refs.manualScopeOnce, "once"], [refs.manualScopeCancel, "cancel"]].forEach(([button, action]) => {
+      button.addEventListener("click", () => {
+        const candidate = pendingManualScopeCandidate;
+        pendingManualScopeCandidate = null;
+        refs.manualScopeDialog.close();
+        if (candidate) void manualSwitchToGroup(candidate, action);
+      });
+    });
+    refs.manualScopeDialog.addEventListener("cancel", () => { pendingManualScopeCandidate = null; });
     bindDrag(refs.launcher, refs.launcher, "launcher");
     bindDrag(refs.header, refs.panel, "panel");
     root.querySelectorAll("[data-settings-target]").forEach((button) => {
@@ -885,15 +1051,20 @@
         activate(tabs[next], true);
       });
     });
-    refs.qualityRecords.addEventListener("toggle", () => {
-      if (refs.qualityRecords.open) renderImageQualityList();
-    });
     refs.isolationRecords.addEventListener("toggle", () => {
       if (refs.isolationRecords.open) renderIsolations();
     });
     refs.collapse.addEventListener("click", () => {
       state.collapsed = true;
       render();
+    });
+    refs.fullscreen.addEventListener("click", () => {
+      const expanded = refs.panel.dataset.fullscreen !== "true";
+      refs.panel.dataset.fullscreen = String(expanded);
+      refs.fullscreen.setAttribute("aria-pressed", String(expanded));
+      refs.fullscreen.setAttribute("aria-label", expanded ? "退出全屏工作台" : "全屏工作台");
+      refs.fullscreen.title = expanded ? "退出全屏工作台" : "全屏工作台";
+      positionElement(refs.panel, "panel", false);
     });
     refs.launcher.addEventListener("click", () => {
       if (refs.launcher.dataset.dragged === "true") {
@@ -908,14 +1079,14 @@
         setActiveView(button.dataset.viewTarget);
       });
       button.addEventListener("keydown", (event) => {
-        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
         const tabs = [...root.querySelectorAll("[data-view-target]")];
         const currentIndex = tabs.indexOf(button);
         const targetIndex = event.key === "Home"
           ? 0
           : event.key === "End"
             ? tabs.length - 1
-            : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+            : (currentIndex + (["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1) + tabs.length) % tabs.length;
         event.preventDefault();
         setActiveView(tabs[targetIndex].dataset.viewTarget, { focus: true });
       });
@@ -934,15 +1105,6 @@
     });
     refs.statisticsRefresh.addEventListener("click", () => refreshStatistics());
     refs.checkUpdate.addEventListener("click", handleUpdateAction);
-    refs.imageQualityRun.addEventListener("click", () => runImageQuality());
-    refs.imageQualityModel.addEventListener("input", persistFormConfig);
-    refs.imageQualityFallback1.addEventListener("change", persistFormConfig);
-    refs.imageQualityFallback2.addEventListener("change", persistFormConfig);
-    refs.imageQualityLoadModels.addEventListener("click", loadImageQualityModels);
-    refs.imageQualityTest.addEventListener("click", () => runImageQuality({ test: true }));
-    refs.imageQualityTestStop.addEventListener("click", cancelImageQuality);
-    refs.imageQualityClearPage.addEventListener("click", clearImageQualityPage);
-    refs.imageQualityStop.addEventListener("click", cancelImageQuality);
     refs.switchNow.addEventListener("click", () => runCheck({ manual: true, forceSwitch: true }));
     refs.resetSpendProtection.addEventListener("click", resetSpendProtection);
     refs.clearAllIsolations.addEventListener("click", clearAllIsolations);
@@ -1026,14 +1188,23 @@
       const choice = refs.manualGroup.querySelector('input[data-manual-group]:checked');
       const targetGroup = choice?.value || "";
       if (!targetGroup) return;
+      const candidate = manualGroupCatalog().find((group) => Number(group.groupId) === Number(choice.dataset.groupId))
+        || { group: targetGroup, groupId: Number(choice.dataset.groupId) };
       refs.manualDialog.close();
-      runCheck({ manual: true, forceSwitch: true, targetGroup, targetGroupId: choice?.dataset.groupId });
+      requestManualSwitch(candidate);
     });
     [refs.manualClose, refs.manualCancel].forEach((button) => {
       button.addEventListener("click", () => refs.manualDialog.close());
     });
     root.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape" || refs.manualDialog.open) return;
+      if (event.key !== "Escape" || refs.manualDialog.open || refs.manualScopeDialog.open || refs.detectionImageDialog.open) return;
+      const expanded = [...refs.candidateRows.querySelectorAll("details[open]")];
+      if (expanded.length) {
+        expanded.forEach((detail) => { detail.open = false; });
+        expanded[0].querySelector("summary")?.focus();
+        event.preventDefault();
+        return;
+      }
       const trigger = !refs.tokenMenu.hidden ? refs.tokenSelectToggle
         : !refs.modelMenu.hidden ? refs.modelSelectToggle
           : !refs.groupFilterMenu.hidden ? refs.groupFilterSelectToggle : null;
@@ -1041,6 +1212,11 @@
       setModelMenuOpen(false);
       setGroupFilterMenuOpen(false);
       trigger?.focus();
+      if (!trigger && refs.panel.dataset.fullscreen === "true") {
+        event.preventDefault();
+        refs.fullscreen.click();
+        refs.fullscreen.focus({ preventScroll: true });
+      }
     });
     refs.tokenList.addEventListener("change", () => {
       renderTokenSelectionCount();
@@ -1084,6 +1260,7 @@
         groupFilterMode: refs.groupFilterMode.value === "blacklist" ? "blacklist" : "whitelist",
       };
       pendingCandidates.clear();
+      invalidateCheckDecisions();
       GM_setValue(STORAGE_CONFIG, config);
       renderGroupFilterOptions();
       scheduleNext(config.enabled ? 250 : undefined, { immediateStrategy: false });
@@ -1095,6 +1272,7 @@
         .map((checkbox) => checkbox.dataset.groupName);
       config = { ...config, [key]: parseAllowedGroups(groups) };
       pendingCandidates.clear();
+      invalidateCheckDecisions();
       GM_setValue(STORAGE_CONFIG, config);
       updateGroupFilterSummary();
       scheduleNext(config.enabled ? 250 : undefined, { immediateStrategy: false });
@@ -1108,6 +1286,7 @@
     });
     refs.settingsSection.addEventListener("change", (event) => {
       if (event.target.matches("[data-selector-search], .selector-platform")) return;
+      if (event.target === refs.monitorScopeMode || event.target.closest(".monitor-scope-panel")) return;
       if (event.target.closest(".token-list")) return;
       if (event.target === refs.groupFilterMode || event.target.closest(".group-filter-select")) return;
       if (event.target === refs.glassTransparency) return;

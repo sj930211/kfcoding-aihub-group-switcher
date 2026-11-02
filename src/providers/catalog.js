@@ -189,21 +189,54 @@
 
   function normalizeAihubModelDetection(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const model = aihubModelName(value.model ?? value.model_name ?? value.target_model);
+    const model = String(value.model ?? value.model_name ?? value.target_model ?? "").trim();
+    const hasExpiresAt = Object.prototype.hasOwnProperty.call(value, "expires_at")
+      || Object.prototype.hasOwnProperty.call(value, "expiresAt");
     const expiresAt = String(value.expires_at ?? value.expiresAt ?? "").trim();
     const expiresAtMs = Date.parse(expiresAt);
+    const detectedAt = String(value.detected_at ?? value.detectedAt ?? "").trim();
+    const detectedAtMs = Date.parse(detectedAt);
+    const presentation = value.presentation && typeof value.presentation === "object" ? value.presentation : {};
+    const text = presentation.text && typeof presentation.text === "object" ? presentation.text : {};
+    const enabled = value.stage_enabled && typeof value.stage_enabled === "object" ? value.stage_enabled : {};
+    const namedStages = value.stages && typeof value.stages === "object" && !Array.isArray(value.stages) ? value.stages : null;
+    const rawStages = namedStages || (!Array.isArray(value.stages) && Object.values(enabled).some((flag) => flag === true)) ? [...new Set([...Object.keys(namedStages || {}), ...Object.keys(enabled)])]
+      .filter((name) => enabled[name] !== false).map((name) => ({ ...namedStages?.[name], name, named: true }))
+      : Array.isArray(value.stages) ? value.stages.filter((stage) => stage?.enabled !== false) : [];
+    Object.keys(enabled).filter((name) => enabled[name] === true && !rawStages.some((stage) => stage?.name === name))
+      .forEach((name) => rawStages.push({ name, named: true }));
     return {
       applicable: value.applicable === true,
+      refreshing: value.refreshing === true,
       status: String(value.status || "").trim().toLowerCase(),
       model,
       modelKey: normalizeAihubModelKey(model),
+      presentationResult: typeof text.result === "boolean" ? text.result
+        : typeof value.presentationResult === "boolean" ? value.presentationResult : null,
       confidence: String(value.confidence || "").trim().toLowerCase(),
-      executionComplete: value.execution_complete === undefined && value.executionComplete === undefined
-        ? null
-        : Boolean(value.execution_complete ?? value.executionComplete),
-      allTargetsPassed: value.all_targets_passed === undefined && value.allTargetsPassed === undefined
-        ? null
-        : Boolean(value.all_targets_passed ?? value.allTargetsPassed),
+      executionComplete: typeof value.execution_complete !== "boolean" && typeof value.executionComplete !== "boolean"
+        ? null : value.execution_complete === true || value.executionComplete === true,
+      allTargetsPassed: typeof value.all_targets_passed !== "boolean" && typeof value.allTargetsPassed !== "boolean"
+        ? null : value.all_targets_passed === true || value.allTargetsPassed === true,
+      detectedAt,
+      detectedAtMs: Number.isFinite(detectedAtMs) ? detectedAtMs : NaN,
+      stages: rawStages.map((stage) => {
+        const item = stage && typeof stage === "object" ? stage : {};
+        const stagePresentation = item.presentation && typeof item.presentation === "object" ? item.presentation : {};
+        const stageText = stagePresentation.text && typeof stagePresentation.text === "object" ? stagePresentation.text : {};
+        const published = String(item.published_state ?? item.status ?? item.result_status ?? "").trim().toLowerCase();
+        const completed = item.named === true && published === "completed" && item.state === "completed";
+        return {
+          name: String(item.name || ""),
+          status: published,
+          result: typeof item.result === "boolean" ? item.result
+            : typeof stageText.result === "boolean" ? stageText.result
+              : typeof item.passed === "boolean" ? item.passed : completed ? true : null,
+          executionComplete: typeof item.execution_complete !== "boolean" && typeof item.executionComplete !== "boolean"
+            ? (item.named === true ? completed : null) : item.execution_complete === true || item.executionComplete === true,
+        };
+      }),
+      hasExpiresAt: value.hasExpiresAt === undefined ? hasExpiresAt : value.hasExpiresAt === true,
       expiresAt,
       expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : NaN,
     };
@@ -223,16 +256,33 @@
   }
 
   function aihubModelDetectionReason(monitor, model, nowMs) {
-    const detection = aihubScopedModelDetection(monitor, model);
-    if (!detection) return "";
+    const raw = monitor && (monitor.modelDetection ?? monitor.model_detection);
+    const detection = normalizeAihubModelDetection(raw);
+    if (!detection) {
+      return "model-detection-missing";
+    }
     const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
-    if (Number.isFinite(detection.expiresAtMs) && detection.expiresAtMs <= now) {
+    if (detection.applicable !== true) return "model-detection-not-applicable";
+    if (!normalizeAihubModelKey(model) || detection.model !== String(model || "").trim()) {
+      return "model-detection-model-mismatch";
+    }
+    if (detection.hasExpiresAt
+      ? (!Number.isFinite(detection.expiresAtMs) || detection.expiresAtMs <= now)
+      : (!Number.isFinite(detection.detectedAtMs) || detection.detectedAtMs > now
+        || now - detection.detectedAtMs > 60 * 60 * 1000)) {
       return "model-detection-expired";
     }
-    if (detection.status === "passed") {
-      return detection.executionComplete === false || detection.allTargetsPassed === false
-        ? "model-detection-incomplete"
-        : "";
+    if (detection.refreshing) return "model-detection-unknown";
+    if (detection.stages.some((stage) => stage.result === false
+      || ["failed", "failure", "error", "detection_failed"].includes(stage.status))) return "model-detection-failed";
+    if (detection.status === "passed" && detection.executionComplete === true
+      && detection.presentationResult === true && detection.allTargetsPassed !== false
+      && detection.stages.every((stage) => stage.executionComplete === true
+        && stage.result === true && ["passed", "pass", "success", "completed"].includes(stage.status))) return "";
+    if (detection.status === "passed" && (detection.executionComplete !== true
+      || detection.presentationResult !== true || detection.allTargetsPassed === false
+      || detection.stages.some((stage) => stage.executionComplete !== true || stage.result !== true))) {
+      return "model-detection-incomplete";
     }
     if (detection.status === "suspected") return "model-detection-suspected";
     if (detection.status === "insufficient_evidence") return "model-detection-insufficient";

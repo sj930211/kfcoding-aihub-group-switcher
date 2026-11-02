@@ -46,6 +46,8 @@
       summary: {
         providerVersion: Number(providers.version) || 0,
         generatedAt: providers.generated_at || providers.generatedAt || "",
+        summaryRange: String(providers.summary_range ?? providers.summaryRange ?? "").trim().toLowerCase(),
+        summaryModels: normalizeAihubSummaryModels(providers.summary_models ?? providers.summaryModels),
         platformTabs: Array.isArray(providers.platform_tabs) ? providers.platform_tabs.slice() : [],
         monitoringActive: providers.monitoring_active !== false && providers.monitoringActive !== false,
         apis: providerItems.map((item) => ({
@@ -71,6 +73,84 @@
       },
       series: { seriesByApiId },
     };
+  }
+
+  function normalizeAihubSummaryModels(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).map(([model, entry]) => [String(model).trim(), { ...entry, sampleCount: aihubMetricNumber(entry?.sample_count ?? entry?.sampleCount) }])
+      .filter(([model, entry]) => model && entry && typeof entry === "object" && !Array.isArray(entry)));
+  }
+
+  function aihubMetricNumber(value) {
+    if (typeof value !== "number" && typeof value !== "string") return NaN;
+    if (typeof value === "string" && !value.trim()) return NaN;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : NaN;
+  }
+
+  function aihubMetricPercent(value) {
+    const number = aihubMetricNumber(value);
+    return Number.isFinite(number) && number >= 0 && number <= 1
+      ? number * 100
+      : Number.isFinite(number) && number > 1 && number <= 100 ? number : NaN;
+  }
+
+  function aihubSummaryModelGroup(entry, groupId) {
+    const groups = entry && (entry.groups ?? entry.items ?? entry.by_group ?? entry.byGroup);
+    if (Array.isArray(groups)) return groups.find((item) => Number(item?.group_id ?? item?.groupId) === Number(groupId)) || null;
+    if (groups && typeof groups === "object") return groups[String(groupId)] || null;
+    return entry;
+  }
+
+  function aihubModelMetrics(summary, model, groupId, monitor) {
+    const localModels = monitor?.summary_models ?? monitor?.summaryModels ?? {};
+    const local = localModels[model];
+    const global = summary.summaryModels?.[model];
+    // Only a model metric attached to this provider (or explicitly indexed by group) is comparable.
+    const indexedGlobal = global && (global.groups || global.items || global.by_group || global.byGroup)
+      ? aihubSummaryModelGroup(global, groupId) : null;
+    const source = local && typeof local === "object" ? local : indexedGlobal || {};
+    const modelName = local || indexedGlobal ? model : "";
+    const cache = source.range_cache ?? source.rangeCache ?? {};
+    const timestamp = String(cache.refreshed_at ?? cache.refreshedAt ?? "").trim();
+    const parsedTimestamp = Date.parse(timestamp);
+    const successValue = source.success_rate ?? source.successRate;
+    const cacheValue = cache.cache_hit_rate ?? cache.cacheHitRate ?? source.cache_hit_rate ?? source.cacheHitRate;
+    const tps = aihubMetricNumber(source.tps ?? source.output_tps ?? source.outputTps);
+    const sampleCount = aihubMetricNumber(source.sample_count ?? source.sampleCount);
+    const cacheSampleCount = aihubMetricNumber(cache.usage_records ?? cache.usageRecords);
+    return {
+      successRate: aihubMetricPercent(successValue),
+      tps: Number.isFinite(tps) && tps >= 0 ? tps : NaN,
+      sampleCount: Number.isInteger(sampleCount) && sampleCount >= 0 ? sampleCount : NaN,
+      cacheHitRate: aihubMetricPercent(cacheValue),
+      cacheSampleCount: Number.isInteger(cacheSampleCount) && cacheSampleCount >= 0 ? cacheSampleCount : NaN,
+      cacheReady: cache.ready === true,
+      cacheStale: cache.stale === false,
+      cacheRefreshedAt: timestamp,
+      cacheRefreshedAtMs: Number.isFinite(parsedTimestamp) ? parsedTimestamp : NaN,
+      model: modelName || "",
+    };
+  }
+
+  function migrateAihubMonitorScope(config, groups, monitors) {
+    const source = sanitizeConfig(config);
+    if (!source.monitorScopeMigrationPending) return { config: source, changed: false };
+    const platform = source.monitorScopeMigrationPlatform;
+    const monitorPlatforms = new Map((Array.isArray(monitors) ? monitors : []).map((monitor) => [
+      Number(monitor.group_id), normalizeBusinessPlatform(monitor.platform) || "unknown",
+    ]));
+    const catalog = Array.isArray(groups) ? groups : [];
+    const platformFor = (group) => normalizeBusinessPlatform(group.platform) || monitorPlatforms.get(Number(group.id)) || "unknown";
+    if (!catalog.length || catalog.some((group) => !Number.isSafeInteger(Number(group.id)) || Number(group.id) <= 0 || platformFor(group) === "unknown")) {
+      return { config: { ...source, monitorScopeMode: "selected", monitorGroupIds: [], monitorScopeMigrationPending: true }, changed: false };
+    }
+    const matching = catalog.filter((group) => platformFor(group) === platform)
+      .map((group) => Number(group.id)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (!matching.length) return { config: { ...source, monitorScopeMode: "selected", monitorGroupIds: [], monitorScopeMigrationPending: true }, changed: false };
+    const migrated = { ...source, monitorScopeMode: "selected", monitorGroupIds: [...new Set(matching)],
+      monitorScopeMigrationPending: false, monitorScopeMigrationPlatform: "" };
+    return { config: migrated, changed: JSON.stringify(source) !== JSON.stringify(migrated) };
   }
 
   function aihubSeriesPoint(point) {
@@ -111,8 +191,8 @@
           }
         }
         const normalized = normalizeAihubProviderData(providers, providerSeries);
-        normalized.summary.providerVersion = version;
-        return { ...normalized, seriesError, source: "providers", providerVersion: version };
+        return { ...normalized, seriesError, source: "providers",
+          providerVersion: normalized.summary.providerVersion, endpointVersion: version };
       } catch (error) {
         providerError = error;
       }
@@ -180,274 +260,114 @@
     };
   }
 
-  function scopeAihubMonitors(summary, groups, config, models, request = {}) {
+  function monitorGroupInScope(settings, groupId) {
+    return !settings.monitorScopeMigrationPending && (settings.monitorScopeMode !== "selected"
+      || normalizeMonitorGroupIds(settings.monitorGroupIds).includes(Number(groupId)));
+  }
+
+  function scopeAihubMonitors(summary, groups, settings, models, request = {}) {
     const groupMap = new Map(groups.map((group) => [Number(group.id), group]));
-    const filter = new Set(activeGroupFilter(config));
-    const platform = normalizeBusinessPlatform(config.businessPlatform);
+    const filter = new Set(activeGroupFilter(settings));
     const eligibleIds = new Set();
+    const currentIds = new Set((request.currentTokens || []).map((token) => Number(token.groupId)));
     const apis = (summary.apis || []).filter((monitor) => {
       const id = Number(monitor.group_id);
       const meta = groupMap.get(id);
-      const group = String(meta?.name || monitor.planType || `#${id}`);
-      const current = (request.currentTokens || []).some((token) => Number(token.groupId) > 0
-        ? Number(token.groupId) === id : token.group === group);
-      const eligible = (!platform || (normalizeBusinessPlatform(monitor.platform || meta?.platform) || "unknown") === platform)
-          && models.every((model) => aihubGroupSupportsModel(monitor, model))
-          && (!filter.size || (config.groupFilterMode === "blacklist" ? !filter.has(group) : filter.has(group)));
+      const name = String(meta?.name || monitor.planType || "#" + id);
+      const inScope = monitorGroupInScope(settings, id);
+      const eligible = inScope && (!filter.size || (settings.groupFilterMode === "blacklist" ? !filter.has(name) : filter.has(name)))
+        && models.some((model) => aihubGroupSupportsModel(monitor, model));
       if (eligible) eligibleIds.add(id);
-      const requested = request.targetGroup ? group === request.targetGroup
-        && (!(Number(request.targetGroupId) > 0) || id === Number(request.targetGroupId)) : eligible;
-      return current || (!request.healthOnly && requested);
+      // Explicit manual checks are limited to the chosen destination and current group(s).
+      if (request.targetGroup) return currentIds.has(id) || (name === request.targetGroup
+        && (!(Number(request.targetGroupId) > 0) || id === Number(request.targetGroupId)));
+      return inScope && (!request.healthOnly || currentIds.has(id));
     });
     return { summary: { ...summary, apis }, eligibleIds };
   }
 
-  function evaluateAihubCandidates(summaryPayload, seriesPayload, groupsPayload, ratesPayload, config, nowMs) {
+  function evaluateAihubCandidates(summaryPayload, seriesPayload, groupsPayload, ratesPayload, settings, nowMs) {
     const summary = summaryPayload && typeof summaryPayload === "object" ? summaryPayload : {};
-    const seriesByApiId = seriesPayload && seriesPayload.seriesByApiId && typeof seriesPayload.seriesByApiId === "object"
-      ? seriesPayload.seriesByApiId
-      : {};
-    const groups = normalizeAihubGroups(groupsPayload);
-    const groupMap = new Map(groups.map((group) => [Number(group.id), group]));
+    const groupMap = new Map(normalizeAihubGroups(groupsPayload).map((group) => [Number(group.id), group]));
     const rates = normalizeAihubRates(ratesPayload);
-    const filteredGroups = new Set(activeGroupFilter(config));
-    const enforceGroupFilter = filteredGroups.size > 0;
+    const filter = new Set(activeGroupFilter(settings));
     const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-    const seenGroups = new Set();
-
-    return (Array.isArray(summary.apis) ? summary.apis : [])
-      .filter((monitor) => {
-        const groupId = Number(monitor && monitor.group_id);
-        if (!Number.isFinite(groupId) || groupId <= 0 || seenGroups.has(groupId)) return false;
-        seenGroups.add(groupId);
-        return true;
-      })
-      .map((monitor) => {
-        const reasons = [];
-        const warnings = [];
-        const groupId = Number(monitor.group_id);
-        const groupMeta = groupMap.get(groupId);
-        const group = String((groupMeta && groupMeta.name) || monitor.planType || `#${groupId}`);
-        const userRatio = Number(rates[groupId]);
-        const groupRatio = Number(groupMeta && groupMeta.rate_multiplier);
-        const publicRatio = Number(monitor.priceMultiplier);
-        const ratio = Number.isFinite(userRatio) && userRatio > 0
-          ? userRatio
-          : Number.isFinite(groupRatio) && groupRatio > 0
-            ? groupRatio
-            : publicRatio;
-        const ratioSource = Number.isFinite(userRatio) && userRatio > 0
-          ? "account"
-          : Number.isFinite(groupRatio) && groupRatio > 0
-            ? "group"
-            : "public";
-        const rawSeries = Array.isArray(seriesByApiId[monitor.id]) ? seriesByApiId[monitor.id] : [];
-        const parsedSeries = rawSeries
-          .map(aihubSeriesPoint)
-          .filter(Boolean)
-          .sort((left, right) => left.timestampMs - right.timestampMs);
-        const latestPoint = parsedSeries.length ? parsedSeries[parsedSeries.length - 1] : null;
-        const modelHealthStatus = aihubModelHealthStatus(monitor, config.model);
-        const modelSupported = aihubGroupSupportsModel(monitor, config.model);
-        const modelDetection = normalizeAihubModelDetection(
-          monitor && (monitor.modelDetection ?? monitor.model_detection),
-        );
-        const scopedModelDetection = aihubScopedModelDetection(monitor, config.model);
-        const modelDetectionWarning = aihubModelDetectionReason(monitor, config.model, now);
-        const modelDetectionFailure = config.requireModelDetection
-          ? aihubRequiredModelDetectionReason(monitor, config.model, now)
-          : "";
-        const modelHealthBackedByDetection = modelHealthStatus === "stale"
-          && config.requireModelDetection
-          && Boolean(scopedModelDetection)
-          && !modelDetectionFailure;
-        const selectedModelKey = normalizeAihubModelKey(config.model);
-        const probeModelKey = normalizeAihubModelKey(
-          (groupMeta && (groupMeta.probe_model ?? groupMeta.probeModel))
-            ?? monitor.probe_model
-            ?? monitor.probeModel,
-        );
-        const modelHealthKnown = modelHealthStatus === "healthy" || modelHealthStatus === "failed";
-        const seriesMatchesSelectedModel = Boolean(
-          selectedModelKey && probeModelKey && selectedModelKey === probeModelKey,
-        );
-        const useSelectedModelHealth = modelHealthKnown && !seriesMatchesSelectedModel;
-        const successKey = aihubMonitorRange(config.metricHours);
-        const successRates = monitor.successRates || {};
-        const hasSuccessWindow = (key) => Object.prototype.hasOwnProperty.call(successRates, key);
-        const aggregateSuccessWindow = Number(summary.providerVersion) >= 2
-          ? "1h"
-          : hasSuccessWindow(successKey) ? successKey
-            : hasSuccessWindow("24h") ? "24h" : "1h";
-        const successValue = successRates[aggregateSuccessWindow];
-        const summarySuccess = typeof successValue === "number"
-          || (typeof successValue === "string" && successValue.trim() !== "")
-          ? Number(successValue)
-          : NaN;
-        const aggregateSuccess = Number.isFinite(summarySuccess) && summarySuccess >= 0 && summarySuccess <= 1
-          ? summarySuccess * 100
-          : NaN;
-        const latestSuccess = useSelectedModelHealth
-          ? (modelHealthStatus === "healthy" ? 100 : 0)
-          : latestPoint
-            ? (latestPoint.available === true ? 100 : latestPoint.available === false ? 0 : NaN)
-            : monitor.available === true
-              ? 100
-              : monitor.available === false
-                ? 0
-                : NaN;
-        const checkedAtMs = Date.parse(monitor.checkedAt || summary.generatedAt || "");
-        const ageMinutes = Number.isFinite(checkedAtMs)
-          ? Math.max(0, now - checkedAtMs) / 60000
-          : Infinity;
-        const modelCard = normalizeAihubModelCards(monitor.modelCards ?? monitor.model_cards)
-          .find((card) => card.modelKey === selectedModelKey);
-        const modelEvaluatedAtValue = modelCard?.health_evaluated_at;
-        const modelEvaluatedAt = Date.parse(modelEvaluatedAtValue || "");
-        const modelAge = Number.isFinite(modelEvaluatedAt) ? Math.max(0, now - modelEvaluatedAt) / 60000
-          : modelEvaluatedAtValue ? Infinity : ageMinutes;
-        const modelExpires = modelCard?.health_expires_at;
-        const modelEvidenceFresh = modelAge <= config.maxMetricAgeMinutes
-          && (!modelExpires || (Number.isFinite(Date.parse(modelExpires)) && Date.parse(modelExpires) > now));
-        const modelDetectionFresh = Boolean(scopedModelDetection && (scopedModelDetection.expiresAt
-          ? Number.isFinite(scopedModelDetection.expiresAtMs) && scopedModelDetection.expiresAtMs > now
-          : ageMinutes <= config.maxMetricAgeMinutes));
-        const firstTokenMetric = aihubFirstTokenMetric(monitor);
-        const firstTokenLatencyMs = firstTokenMetric.value;
-        const outputTokensPerSecond = Number(monitor.outputTokensPerSecond);
-        const outputTokens = Number(monitor.outputTokens);
-        const outputLatencyMs = Number.isFinite(outputTokens)
-          && outputTokens > 0
-          && Number.isFinite(outputTokensPerSecond)
-          && outputTokensPerSecond > 0
-          ? outputTokens / outputTokensPerSecond * 1000
-          : NaN;
-        const cacheHitRate = parsePercentValue(monitor.cacheHitRate);
-        const effectiveRatioReady = (
-          monitor.effective_multiplier_ready
-            ?? monitor.effectiveMultiplierReady
-        ) === true;
-        const rawEffectiveRatio = Number(
-          monitor.effective_multiplier
-            ?? monitor.effectiveMultiplier,
-        );
-        const effectiveInputPriceValue = (
-          monitor.effective_input_price_per_million_1h
-            ?? monitor.effectiveInputPricePerMillion1h
-        );
-        const rawEffectiveInputPrice = (
-          effectiveInputPriceValue !== null
-          && effectiveInputPriceValue !== undefined
-          && String(effectiveInputPriceValue).trim() !== ""
-        )
-          ? Number(effectiveInputPriceValue)
-          : NaN;
-        const effectiveRatio = effectiveRatioReady
-          && Number.isFinite(rawEffectiveRatio)
-          && rawEffectiveRatio > 0
-          ? rawEffectiveRatio
-          : NaN;
-        const effectiveInputPricePerMillion = effectiveRatioReady
-          && Number.isFinite(rawEffectiveInputPrice)
-          && rawEffectiveInputPrice >= 0
-          ? rawEffectiveInputPrice
-          : NaN;
-        const effectiveRatioReason = String(
-          monitor.effective_multiplier_reason
-            ?? monitor.effectiveMultiplierReason
-            ?? "",
-        ).trim();
-
-        if (!groupMeta) reasons.push("not-user-selectable");
-        if (!modelSupported) reasons.push("model-unsupported");
-        if (
-          enforceGroupFilter
-          && config.groupFilterMode === "whitelist"
-          && !filteredGroups.has(group)
-        ) reasons.push("not-whitelisted");
-        if (
-          enforceGroupFilter
-          && config.groupFilterMode === "blacklist"
-          && filteredGroups.has(group)
-        ) reasons.push("blocked-group");
-        if (!Number.isFinite(ratio) || ratio <= 0) reasons.push("ratio-unknown");
-        if (config.maxGroupRatio > 0 && Number.isFinite(ratio) && ratio > config.maxGroupRatio) {
-          reasons.push("ratio-too-high");
-        }
-        if (summary.monitoringActive === false || monitor.enabled === false) reasons.push("monitor-disabled");
-        if (latestSuccess !== 100) reasons.push("latest-unavailable");
-        if (modelHealthStatus === "failed") reasons.push("model-unavailable");
-        else if (modelHealthStatus !== "healthy" && !modelHealthBackedByDetection) {
-          reasons.push("model-status-unknown");
-        }
-        if (modelDetectionFailure) reasons.push(modelDetectionFailure);
-        else if (modelDetectionWarning) warnings.push(modelDetectionWarning);
-        if (ageMinutes > config.maxMetricAgeMinutes) reasons.push("metrics-stale");
-        if (!Number.isFinite(aggregateSuccess) || aggregateSuccess < config.minSuccessRate) {
-          reasons.push("success-low");
-        }
-        if (!Number.isFinite(latestSuccess) || latestSuccess < config.minLatestSuccessRate) {
-          reasons.push("latest-success-low");
-        }
-        if (
-          config.maxFirstTokenLatencySeconds > 0 &&
-          (!Number.isFinite(firstTokenLatencyMs)
-            || firstTokenLatencyMs <= 0
-            || firstTokenLatencyMs > config.maxFirstTokenLatencySeconds * 1000)
-        ) reasons.push("first-token-latency-high");
-        if (
-          config.maxOutputDurationSeconds > 0 &&
-          (!Number.isFinite(outputLatencyMs)
-            || outputLatencyMs <= 0
-            || outputLatencyMs > config.maxOutputDurationSeconds * 1000)
-        ) reasons.push("output-latency-high");
-        return {
-          group,
-          groupId,
-          ratio,
-          publicRatio,
-          ratioSource,
-          available: reasons.length === 0,
-          reasons,
-          warnings,
-          aggregateSuccess,
-          aggregateSuccessWindow,
-          latestSuccess,
-          recentSuccess: latestSuccess,
-          recentMinSuccess: latestSuccess,
-          recentSampleCount: Number.isFinite(latestSuccess) ? 1 : 0,
-          firstTokenLatencyMs,
-          firstTokenLatencySource: firstTokenMetric.source,
-          probeFirstTokenLatencyMs: firstTokenMetric.probeLatencyMs,
-          outputLatencyMs,
-          outputTokensPerSecond,
-          outputTokens,
-          cacheHitRate,
-          effectiveRatio,
-          effectiveInputPricePerMillion,
-          effectiveRatioReady: Number.isFinite(effectiveRatio),
-          effectiveRatioReason,
-          providerId: "aihub",
-          platform: String(monitor.platform || groupMeta?.platform || ""),
-          detectionMedia: normalizeAihubDetectionMedia(monitor),
-          modelHealthStatus,
-          modelHealthBackedByDetection,
-          modelDetectionStatus: modelDetection ? modelDetection.status : "",
-          modelDetectionModelKey: modelDetection ? modelDetection.modelKey : "",
-          probeModelKey,
-          ageMinutes,
-          healthEvidence: {
-            model: config.model, supported: modelSupported,
-            monitoringActive: summary.monitoringActive !== false && monitor.enabled !== false,
-            metricsMatchModel: seriesMatchesSelectedModel,
-            ageMinutes,
-            latestAgeMinutes: latestPoint ? Math.max(0, now - latestPoint.timestampMs) / 60000 : ageMinutes,
-            modelHealthFailed: modelHealthStatus === "failed" && modelEvidenceFresh,
-            modelHealthAgeMinutes: modelAge,
-            modelDetectionFresh,
-            modelDetectionFailed: Boolean(scopedModelDetection && modelDetectionWarning === "model-detection-failed"
-              && (!scopedModelDetection.expiresAt || Number.isFinite(scopedModelDetection.expiresAtMs))),
-          },
-        };
-      });
+    const seen = new Set();
+    const generatedAtMs = Date.parse(summary.generatedAt || "");
+    const metricFresh = Number.isFinite(generatedAtMs) && generatedAtMs <= now && now - generatedAtMs <= 3600000;
+    return (Array.isArray(summary.apis) ? summary.apis : []).filter((monitor) => {
+      const id = Number(monitor?.group_id);
+      if (!Number.isSafeInteger(id) || id <= 0 || seen.has(id)) return false;
+      seen.add(id); return true;
+    }).map((monitor) => {
+      const reasons = [];
+      const groupId = Number(monitor.group_id);
+      const meta = groupMap.get(groupId);
+      const group = String(meta?.name || monitor.planType || "#" + groupId);
+      const detection = normalizeAihubModelDetection(monitor.modelDetection ?? monitor.model_detection);
+      const matchedModel = targetModels(settings).find((model) => model === detection?.model) || "";
+      const metricModel = matchedModel || detection?.model || "";
+      const supported = Boolean(matchedModel && aihubGroupSupportsModel(monitor, matchedModel));
+      const metrics = aihubModelMetrics(summary, metricModel, groupId, monitor);
+      const inMonitorScope = monitorGroupInScope(settings, groupId);
+      const userRatio = positiveAihubMetric(rates[groupId]);
+      const groupRatio = positiveAihubMetric(meta?.rate_multiplier);
+      const publicRatio = positiveAihubMetric(monitor.priceMultiplier);
+      const ratio = Number.isFinite(userRatio) ? userRatio : Number.isFinite(groupRatio) ? groupRatio : publicRatio;
+      const ratioSource = Number.isFinite(userRatio) ? "account" : Number.isFinite(groupRatio) ? "group" : "public";
+      const summaryRange = String(monitor.summary_range ?? monitor.summaryRange ?? summary.summaryRange ?? "").trim().toLowerCase();
+      const modelDetectionReason = matchedModel ? aihubModelDetectionReason(monitor, matchedModel, now)
+        : detection ? "model-detection-model-mismatch" : "model-detection-missing";
+      if (!meta) reasons.push("not-user-selectable");
+      if (!inMonitorScope) reasons.push(settings.monitorScopeMigrationPending ? "scope-migration-pending" : "outside-monitor-scope");
+      if (filter.size && settings.groupFilterMode === "whitelist" && !filter.has(group)) reasons.push("not-whitelisted");
+      if (filter.size && settings.groupFilterMode === "blacklist" && filter.has(group)) reasons.push("blocked-group");
+      if (!Number.isFinite(ratio)) reasons.push("ratio-unknown");
+      if (settings.maxGroupRatio > 0 && ratio > settings.maxGroupRatio) reasons.push("ratio-too-high");
+      if (summary.monitoringActive === false || monitor.enabled === false) reasons.push("monitor-disabled");
+      if (matchedModel && !supported) reasons.push("model-unsupported");
+      if (modelDetectionReason) reasons.push(modelDetectionReason);
+      if (summaryRange !== "1h") reasons.push("metrics-window-invalid");
+      if (summary.providerVersion !== 2) reasons.push("metrics-provider-version");
+      if (!metricFresh) reasons.push("metrics-stale");
+      if (!Number.isFinite(metrics.successRate) || !Number.isFinite(metrics.tps) || !Number.isFinite(metrics.sampleCount)) reasons.push("metrics-missing");
+      if (Number.isFinite(metrics.sampleCount) && metrics.sampleCount < settings.minMetricSamples) reasons.push("metrics-sample-insufficient");
+      if (!Number.isFinite(metrics.successRate) || metrics.successRate < settings.minSuccessRate) reasons.push("success-low");
+      if (!Number.isFinite(metrics.cacheHitRate) || !Number.isFinite(metrics.cacheSampleCount)) reasons.push("cache-metrics-missing");
+      if (!metrics.cacheReady || !metrics.cacheStale || !Number.isFinite(metrics.cacheRefreshedAtMs)
+        || metrics.cacheRefreshedAtMs > now || now - metrics.cacheRefreshedAtMs > 3600000) reasons.push("cache-stale");
+      if (Number.isFinite(metrics.cacheSampleCount) && metrics.cacheSampleCount < settings.minCacheSamples) reasons.push("cache-sample-insufficient");
+      const firstToken = aihubFirstTokenMetric(monitor);
+      const effectiveRatio = monitor.effective_multiplier_ready === true ? positiveAihubMetric(monitor.effective_multiplier) : NaN;
+      const detectionFresh = Boolean(detection && (detection.hasExpiresAt
+        ? Number.isFinite(detection.expiresAtMs) && detection.expiresAtMs > now
+        : Number.isFinite(detection.detectedAtMs) && detection.detectedAtMs <= now && now - detection.detectedAtMs <= 3600000));
+      return {
+        group, groupId, ratio, publicRatio, ratioSource, available: reasons.length === 0, reasons, warnings: [],
+        providerId: "aihub", platform: String(monitor.platform || meta?.platform || ""),
+        aggregateSuccess: metrics.successRate, aggregateSuccessWindow: summaryRange,
+        cacheHitRate: metrics.cacheHitRate, outputTokensPerSecond: metrics.tps,
+        aihubSuccessRate: metrics.successRate, aihubCacheHitRate: metrics.cacheHitRate, aihubTps: metrics.tps,
+        aihubMetricSampleCount: metrics.sampleCount, aihubCacheSampleCount: metrics.cacheSampleCount,
+        aihubMetricModel: metricModel, targetModels: matchedModel ? [matchedModel] : [],
+        inMonitorScope, monitored: inMonitorScope, scopeEligible: inMonitorScope,
+        modelDetection: detection, modelDetectionReason, modelDetectionStatus: detection?.status || "",
+        modelDetectionModelKey: detection?.modelKey || "", modelHealthStatus: "",
+        detectionMedia: normalizeAihubDetectionMedia(monitor),
+        latestSuccess: NaN, recentSuccess: NaN, recentMinSuccess: NaN, recentSampleCount: 0,
+        firstTokenLatencyMs: firstToken.value, firstTokenLatencySource: firstToken.source,
+        probeFirstTokenLatencyMs: firstToken.probeLatencyMs, outputLatencyMs: NaN,
+        effectiveRatio, effectiveRatioReady: Number.isFinite(effectiveRatio),
+        effectiveInputPricePerMillion: NaN, effectiveRatioReason: String(monitor.effective_multiplier_reason || ""),
+        ageMinutes: metricFresh ? (now - generatedAtMs) / 60000 : Infinity,
+        healthEvidence: {
+          providerVersionValid: summary.providerVersion === 2,
+          model: matchedModel, supported, monitoringActive: summary.monitoringActive !== false && monitor.enabled !== false,
+          metricsMatchModel: Boolean(matchedModel && metrics.model === matchedModel),
+          ageMinutes: metricFresh ? (now - generatedAtMs) / 60000 : Infinity,
+          sufficientSamples: metrics.sampleCount >= settings.minMetricSamples,
+          modelDetectionFresh: detectionFresh, modelDetectionFailed: modelDetectionReason === "model-detection-failed",
+        },
+      };
+    });
   }

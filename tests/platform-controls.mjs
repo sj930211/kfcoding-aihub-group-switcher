@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 const source = fs.readFileSync(new URL("../src/ui/mount.js", import.meta.url), "utf8");
 const platformRefs = [
   "candidatePlatform", "groupFilterPlatform", "manualGroupPlatform",
-  "imageQualityFallback1Platform", "imageQualityFallback2Platform",
 ];
 
 function mountedTemplate(isAihub) {
@@ -39,11 +38,15 @@ for (const isAihub of [true, false]) {
   const search = html.match(/<input\b([^>]*data-ref="candidateSearch"[^>]*)>/);
   assert.ok(search, "monitoring list has its own search control");
   assert.match(search[1], /type="search"/);
-  assert.match(search[1], /aria-label="搜索监控分组"/);
+  assert.match(search[1], /aria-label="搜索分组或模型"/);
   assert.equal(/(?:^|\s)hidden(?:\s|$)/.test(search[1]), !isAihub);
   assert.match(html, /<p[^>]*data-ref="candidateSearchStatus"[^>]*role="status"/);
   assert.ok(Object.hasOwn(refs, "candidateSearch"));
   assert.ok(Object.hasOwn(refs, "candidateSearchStatus"));
+  for (const retired of ["imageQualityFallback1Platform", "imageQualityFallback2Platform"]) {
+    assert.equal(html.includes(`data-ref="${retired}"`), false, `${retired} is removed with image evaluation`);
+    assert.equal(Object.hasOwn(refs, retired), false, `${retired} is absent from the refs contract`);
+  }
 }
 
 console.log("platform controls: AIHub-only selects, all-platform defaults, accessible search and refs passed");

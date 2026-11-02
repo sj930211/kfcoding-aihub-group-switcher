@@ -2,7 +2,7 @@
     if (document.getElementById(HOST_ID)) return;
     const host = document.createElement("div");
     host.id = HOST_ID;
-    document.documentElement.appendChild(host);
+    (document.body || document.documentElement).appendChild(host);
     root = host.attachShadow({ mode: "open" });
     root.innerHTML = `
       <style>
@@ -13,19 +13,19 @@
           z-index: 2147483000;
           pointer-events: none;
           color-scheme: dark;
-          --canvas: rgb(10 13 16 / 18%);
-          --surface: rgb(255 255 255 / 3.5%);
-          --surface-raised: rgb(255 255 255 / 6.5%);
-          --surface-active: rgb(255 255 255 / 11.5%);
-          --line: rgb(255 255 255 / 9%);
-          --line-soft: rgb(255 255 255 / 5.5%);
-          --line-strong: rgb(255 255 255 / 16%);
-          --text: #f5f7f8;
-          --text-soft: #c5cbd1;
-          --muted: #89919a;
-          --accent: #5ba9ff;
-          --accent-ink: #081827;
-          --accent-soft: rgb(91 169 255 / 14%);
+          --canvas: #101819;
+          --surface: #192324;
+          --surface-raised: #202d2e;
+          --surface-active: #293738;
+          --line: #344647;
+          --line-soft: #2b3b3c;
+          --line-strong: #4d6465;
+          --text: #e5eeee;
+          --text-soft: #c6d2d2;
+          --muted: #a8b7b7;
+          --accent: #73d2cb;
+          --accent-ink: #102423;
+          --accent-soft: #203d3c;
           --healthy: #58d69a;
           --healthy-soft: rgb(88 214 154 / 12%);
           --info: #79b9ff;
@@ -34,34 +34,34 @@
           --warning-soft: rgb(242 185 75 / 10%);
           --danger: #ff716f;
           --danger-soft: rgb(255 113 111 / 9%);
-          --focus: rgb(91 169 255 / 34%);
-          --toolbar: rgb(28 31 36 / 20%);
-          --control: rgb(255 255 255 / 7%);
-          --menu: rgb(22 26 31 / 82%);
-          --native-option-bg: #171a1f;
-          --native-option-text: #f5f7f8;
+          --focus: rgb(115 210 203 / 40%);
+          --toolbar: #192324;
+          --control: #192324;
+          --menu: #202d2e;
+          --native-option-bg: #192324;
+          --native-option-text: #e5eeee;
           --glass-transparency: 0%;
-          --panel-glass: linear-gradient(135deg, rgb(31 37 45 / 49%), rgb(13 17 22 / 38%));
-          --shadow-panel: 0 34px 90px rgb(0 0 0 / 46%), inset 1px 1px 0 rgb(255 255 255 / 24%), inset -1px -1px 0 rgb(255 255 255 / 4.5%);
+          --panel-glass: #192324;
+          --shadow-panel: 0 24px 64px rgb(0 0 0 / 48%);
           --shadow-menu: 0 16px 38px rgb(0 0 0 / 38%), inset 0 1px 0 rgb(255 255 255 / 8%);
           --dialog-backdrop: rgb(0 0 0 / 62%);
         }
         :host([data-resolved-theme="light"]) {
           color-scheme: light;
-          --canvas: rgb(255 255 255 / 15%);
-          --surface: rgb(255 255 255 / 28%);
-          --surface-raised: rgb(255 255 255 / 46%);
-          --surface-active: rgb(255 255 255 / 68%);
-          --line: rgb(26 36 44 / 12%);
-          --line-soft: rgb(26 36 44 / 7%);
-          --line-strong: rgb(26 36 44 / 20%);
-          --text: #17212a;
-          --text-soft: #2e3942;
-          --muted: #4f5b66;
-          --accent: #1674d1;
-          --accent-ink: #f7fbff;
-          --accent-soft: rgb(22 116 209 / 11%);
-          --healthy: #16865a;
+          --canvas: #edf1f2;
+          --surface: #ffffff;
+          --surface-raised: #f6f8f8;
+          --surface-active: #eef2f2;
+          --line: #dce3e4;
+          --line-soft: #e8eded;
+          --line-strong: #a6b7b8;
+          --text: #162426;
+          --text-soft: #405456;
+          --muted: #5d6e70;
+          --accent: #066d72;
+          --accent-ink: #ffffff;
+          --accent-soft: #e2f3f1;
+          --healthy: #0b7048;
           --healthy-soft: rgb(22 134 90 / 10%);
           --info: #1674d1;
           --info-soft: rgb(22 116 209 / 9%);
@@ -69,15 +69,15 @@
           --warning-soft: rgb(175 113 0 / 10%);
           --danger: #c63e3c;
           --danger-soft: rgb(198 62 60 / 9%);
-          --focus: rgb(22 116 209 / 25%);
-          --toolbar: rgb(255 255 255 / 20%);
-          --control: rgb(255 255 255 / 48%);
-          --menu: rgb(244 247 249 / 88%);
-          --native-option-bg: #f4f7f9;
-          --native-option-text: #17212a;
+          --focus: rgb(8 126 131 / 35%);
+          --toolbar: #ffffff;
+          --control: #ffffff;
+          --menu: #ffffff;
+          --native-option-bg: #ffffff;
+          --native-option-text: #162426;
           --glass-transparency: 0%;
-          --panel-glass: linear-gradient(135deg, rgb(255 255 255 / 62%), rgb(235 240 244 / 48%));
-          --shadow-panel: 0 28px 72px rgb(31 44 54 / 22%), inset 1px 1px 0 rgb(255 255 255 / 72%), inset -1px -1px 0 rgb(255 255 255 / 18%);
+          --panel-glass: #ffffff;
+          --shadow-panel: 0 24px 64px rgb(22 44 46 / 18%);
           --shadow-menu: 0 14px 34px rgb(31 44 54 / 20%), inset 0 1px 0 rgb(255 255 255 / 72%);
           --dialog-backdrop: rgb(28 36 32 / 38%);
         }
@@ -92,7 +92,7 @@
           font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
           font-variant-numeric: tabular-nums slashed-zero;
         }
-        .launcher, .panel, .manual-dialog {
+        .launcher, .panel, .manual-dialog, .scope-dialog {
           font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei UI", sans-serif;
           font-optical-sizing: auto;
           color: var(--text);
@@ -126,37 +126,19 @@
         .launcher:hover { border-color: var(--accent); background: var(--surface-raised); }
         .launcher:active { cursor: grabbing; transform: scale(.96); }
         .panel {
-          width: min(480px, calc(100vw - 24px));
-          max-height: min(848px, calc(100vh - 24px));
+          width: min(1080px, calc(100vw - 32px));
+          height: min(84vh, 900px);
+          max-height: calc(100vh - 24px);
           overflow: auto;
           border: 1px solid var(--line-strong);
-          border-radius: 20px;
+          border-radius: 12px;
           background: var(--panel-glass);
           box-shadow: var(--shadow-panel);
-          -webkit-backdrop-filter: blur(22px) saturate(175%) contrast(108%);
-          backdrop-filter: blur(22px) saturate(175%) contrast(108%);
+          -webkit-backdrop-filter: none;
+          backdrop-filter: none;
           scrollbar-color: var(--line-strong) transparent;
           scrollbar-width: thin;
           transition: width 180ms cubic-bezier(.2, .8, .2, 1), height 180ms cubic-bezier(.2, .8, .2, 1), box-shadow 160ms ease;
-        }
-        .panel::before {
-          position: absolute;
-          z-index: 8;
-          inset: 0 0 auto;
-          height: 92px;
-          border-radius: 20px 20px 0 0;
-          background: linear-gradient(180deg, rgb(255 255 255 / 9%), transparent);
-          pointer-events: none;
-          content: "";
-        }
-        .panel::after {
-          position: absolute;
-          z-index: 8;
-          inset: 16px auto 16px 0;
-          width: 1px;
-          background: linear-gradient(180deg, rgb(255 255 255 / 32%), rgb(255 255 255 / 2%));
-          pointer-events: none;
-          content: "";
         }
         .header {
           position: sticky;
@@ -482,7 +464,7 @@
         .token-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 5px; }
         .selector-search { width: 100%; min-width: 0; margin-bottom: 5px; }
         .selector-platform { width: 100%; min-width: 0; margin-bottom: 5px; }
-        .candidate-filter-controls { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(0, 1.3fr); gap: 6px; margin-top: 8px; }
+        .candidate-filter-controls { display: grid; grid-template-columns: minmax(150px, 1.4fr) repeat(3, minmax(120px, .8fr)) minmax(120px, .8fr); gap: 7px; margin: 10px 12px; }
         .candidate-filter-controls > * { min-width: 0; }
         .candidate-filter-controls .selector-search, .candidate-filter-controls .selector-platform { margin-bottom: 0; }
         .selector-platform[hidden], .candidate-filter-controls[hidden], .selector-search[hidden], .selector-search-status[hidden] { display: none; }
@@ -542,15 +524,85 @@
         .candidate-section .section-head { margin: 0; padding: 12px 14px 10px; }
         .candidate-head, .candidate {
           display: grid;
-          grid-template-columns: minmax(72px, 1fr) 58px 40px 40px 43px 43px 43px 70px;
+          grid-template-columns: minmax(150px, 1.7fr) 70px minmax(130px, 1.3fr) 100px 100px 85px 84px;
           align-items: center;
           gap: 5px;
           min-height: 30px;
           font-size: 10px;
         }
-        .candidate-head { padding: 0 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-raised); color: var(--muted); font-size: 8px; font-weight: 650; }
+        .candidate-head { padding: 0 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-raised); color: var(--muted); font-size: 9px; font-weight: 650; }
         .candidate-head[hidden] { display: none; }
-        .candidate { min-height: 39px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); color: var(--text-soft); }
+        .candidate { min-height: 44px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); color: var(--text-soft); }
+        .monitor-scope-panel { margin: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+        .monitor-scope-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; margin: 10px 0; }
+        .monitor-scope-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: min(380px, 45vh); overflow: auto; border: 1px solid var(--line); border-radius: 5px; background: var(--control); }
+        .monitor-scope-option { display: flex; align-items: flex-start; gap: 9px; min-width: 0; padding: 9px 10px; border-bottom: 1px solid var(--line-soft); color: var(--text-soft); font-size: 11px; line-height: 1.4; }
+        .monitor-scope-option input { flex: 0 0 auto; margin: 2px 0 0; accent-color: var(--accent); }
+        .monitor-scope-option span { min-width: 0; overflow-wrap: anywhere; }
+        .monitor-scope-option small { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+        .scope-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; margin: 10px 12px; padding: 12px; border: 1px solid var(--warning); border-radius: 6px; background: var(--warning-soft); color: var(--text-soft); font-size: 11px; line-height: 1.5; }
+        .scope-notice[hidden] { display: none; }
+        .scope-notice-list { grid-column: 1 / -1; display: grid; gap: 6px; }
+        .scope-notice-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .scope-notice-item span { overflow-wrap: anywhere; }
+        .scope-dialog { width: min(420px, calc(100vw - 28px)); max-height: min(560px, calc(100dvh - 28px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel-glass); color: var(--text); box-shadow: var(--shadow-panel); }
+        .scope-dialog::backdrop { background: var(--dialog-backdrop); }
+        .scope-dialog-content { display: grid; gap: 10px; padding: 18px; }
+        .scope-dialog-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 7px; }
+        .scope-dialog-actions > button[hidden] { display: none; }
+        .scope-dialog-risk { margin: 0; padding: 10px; border: 1px solid var(--warning); border-radius: 5px; color: var(--warning); background: var(--warning-soft); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+        .scope-dialog-risk[hidden] { display: none; }
+        .candidate-details-panel { padding: 0 12px 10px; border-bottom: 1px solid var(--line-soft); }
+        .candidate-entry { min-width: 0; border-bottom: 1px solid var(--line-soft); }
+        .candidate-entry[hidden], .monitor-scope-option[hidden] { display: none; }
+        .candidate-row-v2 { display: grid; grid-template-columns: minmax(150px, 1.7fr) 70px minmax(130px, 1.3fr) 100px 100px 85px 84px; gap: 5px; align-items: center; min-height: 65px; padding: 10px 12px; font-size: 12px; }
+        .candidate-row-v2 > * { min-width: 0; overflow-wrap: anywhere; }
+        .candidate-row-v2 > :nth-child(n+2) { text-align: right; }
+        .candidate-row-v2 small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+        .candidate-row-v2 strong { color: var(--text); font-weight: 650; }
+        .candidate-row-v2 .candidate-row-switch { width: auto; height: 28px; padding: 0 9px; border-radius: 5px; }
+        .candidate-row-v2 .candidate-status { display: inline-block; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 10px; }
+        .candidate-entry[data-status="pass"] .candidate-status { color: var(--healthy); background: var(--healthy-soft); }
+        .candidate-entry[data-status="fail"] .candidate-status { color: var(--danger); background: var(--danger-soft); }
+        .candidate-entry[data-status="pending"] .candidate-status, .candidate-entry[data-status="stale"] .candidate-status { color: var(--warning); background: var(--warning-soft); }
+        .candidate-inspection { margin: 0; border-top: 1px solid var(--line-soft); font-size: 11px; line-height: 1.6; }
+        .candidate-inspection > summary { padding: 7px 12px; cursor: pointer; color: var(--muted); font-size: 10px; }
+        .candidate-inspection[open] > summary { color: var(--accent); }
+        .candidate-inspection > :not(summary) { margin: 0 12px 10px; overflow-wrap: anywhere; }
+        .candidate-inspection dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 4px 12px; }
+        .candidate-inspection dt { color: var(--muted); }
+        .candidate-inspection dd { margin: 0; }
+        .candidate-head button { border: 0; border-radius: 2px; background: transparent; padding: 8px 0; color: inherit; font: inherit; font-size: 10px; text-align: right; }
+        .candidate-head > span:nth-child(n+2) { text-align: right; }
+        .candidate-head button[aria-pressed="true"] { color: var(--accent); }
+        .candidate-head button[aria-pressed="true"]::after { content: " ↓"; }
+        .candidate-head button[aria-pressed="true"][data-sort-direction="ascending"]::after { content: " ↑"; }
+        .algorithm-note { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 5px; background: var(--accent-soft); font-size: 12px; line-height: 1.6; }
+        .algorithm-note p { margin: 4px 0 0; color: var(--text-soft); font-size: 11px; }
+        .panel[data-fullscreen="true"] { inset: 12px !important; width: calc(100vw - 24px); height: calc(100dvh - 24px); max-height: none; }
+        .candidate-section > .selector-search-status { margin: 0 12px 10px; }
+        .candidate-section > .text-button { margin: 10px 12px; }
+        @media (max-width: 980px) and (min-width: 641px) {
+          .candidate-filter-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+          .candidate-head, .candidate-row-v2 { grid-template-columns: minmax(110px, 1.5fr) 54px minmax(90px, 1fr) 75px 75px 60px 68px; }
+        }
+        @media (max-width: 640px) {
+          .candidate-head { display: none; }
+          .candidate-filter-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .candidate-filter-controls > .selector-search { grid-column: 1 / -1; }
+          .candidate-row-v2 { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; min-height: 0; padding: 12px; }
+          .candidate-row-v2 > :nth-child(1) { grid-column: 1 / 3; }
+          .candidate-row-v2 > :nth-child(3) { grid-column: 3 / 5; grid-row: 1; }
+          .candidate-row-v2 > :nth-child(2) { grid-column: 1; grid-row: 2; text-align: left; }
+          .candidate-row-v2 > :nth-child(4), .candidate-row-v2 > :nth-child(5), .candidate-row-v2 > :nth-child(6) { grid-row: 2; font-size: 11px; }
+          .candidate-row-v2 > :nth-child(7) { grid-column: 1 / -1; text-align: right; }
+          .candidate-row-v2 > :nth-child(2)::before { display: block; content: "倍率"; color: var(--muted); font-size: 9px; margin-bottom: 3px; }
+          .candidate-row-v2 > :nth-child(4)::before { display: block; content: "1h 缓存"; color: var(--muted); font-size: 9px; margin-bottom: 3px; }
+          .candidate-row-v2 > :nth-child(5)::before { display: block; content: "1h 成功率"; color: var(--muted); font-size: 9px; margin-bottom: 3px; }
+          .candidate-row-v2 > :nth-child(6)::before { display: block; content: "1h TPS"; color: var(--muted); font-size: 9px; margin-bottom: 3px; }
+          .candidate-inspection dl { grid-template-columns: 85px minmax(0, 1fr); }
+          .panel[data-fullscreen="true"] { inset: 0 !important; width: 100vw; height: 100dvh; }
+        }
         .candidate:last-child { border-bottom: 0; }
         .candidate:hover { background: var(--surface-raised); }
         .candidate > span:first-child { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
@@ -810,37 +862,27 @@
         .dialog-hint { min-height: 18px; margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
         .dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
         .panel {
-          width: min(480px, calc(100vw - 24px));
-          height: min(760px, calc(100vh - 24px));
-          max-height: none;
+          width: min(1160px, calc(100vw - 32px));
+          height: min(790px, calc(100dvh - 32px));
+          max-height: calc(100dvh - 24px);
           display: flex;
           flex-direction: column;
           overflow: hidden;
         }
-        .work-nav {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          min-height: 52px;
-          gap: 3px;
-          padding: 10px 14px;
-          border-bottom: 1px solid var(--line);
-          background: rgb(17 19 23 / 12%);
-        }
+        .work-nav { display: flex; flex-direction: column; gap: 4px; padding: 0 10px; }
         .work-nav button {
           border: 0;
-          border: 0;
-          border-radius: 7px;
+          border-radius: 5px;
           background: transparent;
           color: var(--muted);
-          font-size: 9px;
-          font-weight: 650;
+          font-size: 14px;
+          font-weight: 550;
           transition: transform 100ms ease-out, background-color 140ms ease-out, color 140ms ease-out;
         }
-        .work-nav::before { position: absolute; inset: 10px 14px; z-index: -1; border-radius: 9px; background: rgb(3 5 7 / 28%); box-shadow: inset 0 0 0 1px var(--line-soft); content: ""; }
         .work-nav { position: relative; isolation: isolate; }
         .work-nav button:hover { color: var(--text); background: var(--surface-raised); }
         .work-nav button:active { transform: scale(.97); transition-duration: 80ms; }
-        .work-nav button[data-active="true"] { color: var(--text); background: var(--surface-active); box-shadow: 0 1px 4px rgb(0 0 0 / 26%), inset 0 1px 0 rgb(255 255 255 / 8%); }
+        .work-nav button[data-active="true"] { color: var(--accent); background: var(--accent-soft); font-weight: 650; }
         .nav-count { margin-left: 6px; color: inherit; font-size: 8px; font-variant-numeric: tabular-nums; opacity: .72; }
         .workspace { min-height: 0; flex: 1; overflow: auto; outline: none; scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
         .work-view[hidden] { display: none; }
@@ -927,14 +969,14 @@
         .settings-section { background: transparent; }
         .route-settings-advanced { min-width: 0; }
         @media (max-width: 520px) {
-          .panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: calc(100vh - 16px); }
+          .panel { inset: 0; width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
           .command-deck { grid-template-columns: 1fr 1fr; }
           .route-grid, .diagnostics-grid { grid-template-columns: 1fr; }
           .route-grid > .section + .section, .diagnostics-grid > .section + .section { border-top: 1px solid var(--line); border-left: 0; }
         }
         @media (max-width: 390px) {
           .work-nav button { font-size: 9px; }
-          .candidate-filter-controls { grid-template-columns: minmax(0, 1fr); }
+          .candidate-filter-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .nav-count { display: none; }
           .statistics-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
           .statistics-overview { grid-template-columns: 1fr; }
@@ -943,12 +985,12 @@
           .route-summary > div + div { border-top: 1px solid var(--line); border-left: 0; }
         }
         @media (max-width: 520px) {
-          .panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+          .panel { inset: 0; width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
           .launcher { right: 10px; bottom: 10px; }
           .advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          .candidate-head, .candidate { grid-template-columns: minmax(76px, 1fr) 40px 40px 43px 43px 52px; }
-          .candidate-head > span:nth-child(3), .candidate > span:nth-child(3),
-          .candidate-head > span:nth-child(7), .candidate > span:nth-child(7) { display: none; }
+          .monitor-scope-list { grid-template-columns: 1fr; }
+          .candidate-head { display: none; }
+          .candidate { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 12px; }
         }
         @media (max-width: 390px) {
           .header { gap: 6px; padding-inline: 9px; }
@@ -964,8 +1006,8 @@
           .protection-copy { flex: 1 1 145px; }
           .control-grid { grid-template-columns: 1fr; }
           .field-wide { grid-column: auto; }
-          .candidate-head, .candidate { grid-template-columns: minmax(70px, 1fr) 39px 41px 41px 48px; gap: 4px; }
-          .candidate-head > span:nth-child(4), .candidate > span:nth-child(4) { display: none; }
+          .scope-notice { grid-template-columns: minmax(0, 1fr); }
+          .scope-dialog-actions { grid-template-columns: 1fr; }
           .actions { grid-template-columns: 1fr; }
         }
         .candidate.candidate-details {
@@ -994,8 +1036,6 @@
           display: grid; grid-template-columns: 1.65fr 1fr 1fr 1.05fr .85fr 1fr;
           align-items: center; gap: 3px; margin: 0; font-variant-numeric: tabular-nums;
         }
-        :host([data-image-quality="false"]) .candidate-metrics,
-        :host([data-image-quality="false"]) .candidate-column-labels { grid-template-columns: 1.65fr 1fr 1fr 1.05fr .85fr 1fr; }
         .candidate-metrics { grid-column: 2; min-width: 0; height: 15px; }
         .candidate-metric { min-width: 0; text-align: right; }
         .candidate-metric:first-child { text-align: left; }
@@ -1003,16 +1043,9 @@
         .candidate-metric dd { margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10px; line-height: 15px; white-space: nowrap; }
         .candidate-metrics .candidate-ratio { display: inline; color: var(--text-soft); font-size: 10px; }
         .candidate-metrics .health-value { display: inline; background: none; }
-        .candidate-image-score { flex: 0 0 auto; display: inline-block; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--healthy); font: inherit; font-size: 11px; font-weight: 700; line-height: 17px; white-space: nowrap; cursor: help; }
-        .candidate-image-score:focus-visible { outline: 2px solid var(--accent); }
         .candidate-column-labels { padding: 5px 10px 5px 44px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--text-soft); background: var(--surface-raised); font-size: 9px; line-height: 14px; }
         .candidate-column-labels > span { min-width: 0; text-align: right; white-space: nowrap; }
         .candidate-column-labels > span:first-child { text-align: left; }
-        .candidate-quality-column { display: none; }
-        .image-quality-actions { padding: 5px 10px; border-top: 1px solid var(--line); }
-        .image-quality-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-        .image-quality-toolbar p { flex: 1; min-width: 0; }
-        .image-quality-toolbar button { flex-shrink: 0; }
         .settings-view > .section { padding: 16px; border-bottom: 1px solid var(--line); }
         .settings-view > .section:last-of-type { border-bottom: 0; }
         .settings-view .section-head { margin-bottom: 12px; }
@@ -1022,39 +1055,16 @@
         .settings-label-row label { margin: 0; }
         .settings-label-row .text-button { flex-shrink: 0; padding: 0; font-size: 10px; }
         .settings-fields input, .settings-fields select { width: 100%; min-width: 0; }
-        .settings-view .image-quality-settings > p { margin-top: 8px; overflow-wrap: anywhere; }
         .settings-view .settings-billing-note { color: var(--text-soft); }
         .settings-disclosure { margin-top: 12px; border-top: 1px solid var(--line-soft); border-bottom: 0; }
         .settings-disclosure > summary { padding: 10px 0; color: var(--text-soft); cursor: pointer; font-size: 11px; }
         .settings-detail-content { display: grid; gap: 8px; padding-bottom: 4px; }
-        .settings-view .image-quality-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
         .settings-protection .protection-bar { margin-bottom: 0; border-bottom: 0; }
         .settings-protection .route-settings-advanced { margin-top: 8px; border-bottom: 0; }
         .settings-protection .isolation-section { padding: 4px 0; border: 0; }
         .settings-secondary > .settings-appearance { margin: 0; border-top: 0; padding: 8px 0; }
         .settings-secondary .settings-footer { margin-top: 8px; padding: 12px 0 0; border-top: 1px solid var(--line-soft); }
-        @media (max-width: 420px) { .settings-fields { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
-        .image-quality-actions[hidden], .image-quality-settings[hidden] { display: none; }
-        .image-quality-actions p, .image-quality-settings p { font-size: 10px; line-height: 1.5; color: var(--text-soft); margin: 2px 0; }
-        .image-quality-test-result, .detection-image-quality { white-space: pre-wrap; overflow-wrap: anywhere; }
-        .image-quality-diagnostic { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-        .detection-image-quality { font-size: 12px; line-height: 1.6; }
-        .image-quality-tooltip { position: fixed; z-index: 2147483001; width: min(288px, calc(100vw - 24px)); box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--native-option-bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; font-size: 11px; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none; box-shadow: 0 6px 20px rgb(0 0 0 / 24%); }
-        .image-quality-tooltip[hidden] { display: none; }
-        .image-quality-records { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
-        .image-quality-records .section-head { margin-bottom: 8px; }
-        .image-quality-records h3 { margin: 0; font-size: 11px; color: var(--text); }
-        .image-quality-record-list { max-height: 360px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-        .image-quality-record { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
-        .image-quality-record:last-child { border-bottom: 0; }
-        .image-quality-record .candidate-pelican { width: 32px; height: 32px; }
-        .image-quality-record-copy { min-width: 0; }
-        .image-quality-record-heading { display: flex; align-items: center; gap: 8px; }
-        .image-quality-record-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text); }
-        .image-quality-breakdown { font-variant-numeric: tabular-nums; }
-        .image-quality-record-detail { margin-top: 4px; border: 0; }
-        .image-quality-record-detail summary { min-height: 24px; padding: 4px 0; font-size: 10px; font-weight: 500; }
-        .image-quality-record-detail p { white-space: pre-line; overflow-wrap: anywhere; }
+        @media (max-width: 600px) { .settings-fields { grid-template-columns: minmax(0, 1fr); gap: 10px; } .monitor-scope-toolbar { grid-template-columns: minmax(0, 1fr) auto; } }
         .candidate-media-hint { margin: 0; padding: 6px 10px 0; border-top: 1px solid var(--line); color: var(--text-soft); font-size: 9px; }
         @media (max-width: 420px) {
           .candidate.candidate-details { padding-inline: 8px; column-gap: 6px; }
@@ -1070,7 +1080,7 @@
         .settings-nav { display: flex; overflow-x: auto; padding: 0 12px; scrollbar-width: thin; }
         .settings-nav button { flex: 1 0 auto; min-height: 42px; padding: 8px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-soft); font-size: 11px; font-weight: 600; white-space: nowrap; }
         .settings-nav button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
-        :host([data-resolved-theme="light"]) .settings-nav button[aria-selected="true"] { color: #126fc9; }
+        :host([data-resolved-theme="light"]) .settings-nav button[aria-selected="true"] { color: var(--accent); }
         .settings-nav button:hover { background: var(--surface-active); }
         .settings-page[hidden], .settings-nav button[hidden] { display: none; }
         .settings-page > .section { padding: 16px; }
@@ -1088,6 +1098,197 @@
         .settings-page :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .status[data-tone="running"]::before { animation: status-breathe 2s ease-in-out infinite; }
         @keyframes status-breathe { 0%, 100% { opacity: .65; transform: scale(.92); outline: 0 solid var(--warning-soft); } 50% { opacity: 1; transform: scale(1.08); outline: 4px solid var(--warning-soft); } }
+        /* The approved workbench keeps navigation fixed beside one scrolling content area. */
+        .panel { width: min(1160px, calc(100vw - 32px)); height: min(790px, calc(100dvh - 32px)); font-size: 14px; line-height: 1.45; }
+        .header { position: relative; flex: 0 0 auto; min-height: 60px; gap: 12px; padding: 10px 20px; background: var(--surface); }
+        .header-copy { display: flex; align-items: center; gap: 16px; }
+        .title { font-size: 16px; font-weight: 700; }
+        .brand-meta { gap: 8px; border-left: 1px solid var(--line); padding-left: 16px; }
+        .brand-mark { border: 0; border-radius: 7px; background: var(--accent-soft); color: var(--accent); }
+        .launcher, .token-menu, .manual-dialog, .isolation-toast { -webkit-backdrop-filter: none; backdrop-filter: none; }
+        .workbench-body { display: grid; grid-template-columns: 186px minmax(0, 1fr); flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+        .work-sidebar { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; padding: 22px 0 14px; border-right: 1px solid var(--line); background: var(--surface-raised); }
+        .sidebar-heading { display: grid; gap: 14px; padding: 0 19px; }
+        .sidebar-heading strong { font-size: 12px; font-weight: 650; }
+        .sidebar-heading > span { color: var(--muted); font-size: 11px; }
+        .work-nav button { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; min-height: 42px; padding: 9px 10px; text-align: left; }
+        .nav-icon { display: inline-grid; place-items: center; width: 18px; flex: 0 0 18px; font-size: 17px; line-height: 1; }
+        .nav-text { min-width: 0; }
+        .nav-count { margin-left: auto; font-size: 11px; opacity: 1; }
+        .sidebar-caption { margin: auto 18px 0; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+        .work-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface); }
+        .status { min-width: 0; min-height: 34px; padding: 7px 24px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+        .status::before { width: 6px; height: 6px; box-shadow: none; }
+        :host([data-resolved-theme="light"]) .status::before { box-shadow: none; }
+        .workspace { min-width: 0; width: 100%; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+        .work-view { min-width: 0; }
+        .view-heading, .view-intro { display: flex; align-items: flex-start; gap: 16px; padding: 17px 24px 13px; border: 0; }
+        .heading-copy { min-width: 0; }
+        .eyebrow { margin: 0 0 4px; color: var(--muted); font-size: 11px; font-weight: 600; }
+        .view-heading h2, .view-intro h2, .settings-heading h2 { margin: 0; color: var(--text); font-size: 24px; font-weight: 720; line-height: 1.25; letter-spacing: -.5px; }
+        .subhead, .view-intro p { max-width: 65ch; margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+        .view-intro { flex-direction: column; gap: 0; }
+        .monitor-overview { display: grid; grid-template-columns: minmax(0, 1fr) 244px; align-items: stretch; gap: 16px; margin: 0 24px 16px; }
+        .overview { min-width: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-raised); overflow: hidden; }
+        .route-node { min-height: 88px; padding: 12px 14px; align-content: center; gap: 5px; }
+        .metric-label { font-size: 12px; font-weight: 500; }
+        .route-value, .route-best-value { font-family: inherit; font-size: 18px; font-weight: 650; line-height: 1.4; }
+        .route-best-value { color: var(--accent); }
+        .route-recommendation-meta { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .route-apply { top: 10px; right: 10px; }
+        .monitor-controls { display: grid; align-content: space-between; gap: 9px; min-width: 0; padding: 1px 0; }
+        .route-meta { gap: 6px; font-size: 11px; }
+        .route-meta strong { font-size: 11px; }
+        .command-deck { gap: 7px; padding: 0; }
+        .command-deck .button { min-height: 34px; border-radius: 5px; font-size: 12px; }
+        .command-deck .button-check { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+        .command-deck .button-manual { border-color: var(--line-strong); background: var(--surface); color: var(--text); }
+        .monitor-auto-row { gap: 8px; padding: 0; border: 0; }
+        .monitor-auto-copy { flex-direction: column; align-items: flex-start; gap: 1px; }
+        .monitor-auto-copy strong { font-size: 12px; }
+        .monitor-auto-copy span { max-width: 185px; font-size: 11px; }
+        .usage-strip { margin: 0 24px 18px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); overflow: hidden; }
+        .usage-item { padding: 11px 15px 12px; }
+        .usage-item small { margin-bottom: 5px; font-size: 12px; font-weight: 500; }
+        .usage-item strong { font-size: 20px; line-height: 1.2; font-weight: 650; }
+        .section { padding: 18px 24px; }
+        .section-title { font-size: 15px; font-weight: 650; }
+        .section-meta { font-size: 11px; }
+        .monitor-candidates { padding-top: 0; }
+        .monitor-candidates .section-head { min-height: 24px; margin-bottom: 10px; padding: 0; }
+        .candidate-filter-controls { grid-template-columns: minmax(145px, 1.55fr) repeat(4, minmax(0, 1fr)); gap: 7px; margin: 0 0 8px; }
+        .candidate-filter-controls input, .candidate-filter-controls select { min-width: 0; width: 100%; height: 34px; border-radius: 5px; font-size: 11px; }
+        .candidate-section > .selector-search-status { margin: 0 0 10px; font-size: 11px; line-height: 1.5; }
+        .candidate-head, .candidate-row-v2 { grid-template-columns: minmax(140px, 1.7fr) 58px minmax(110px, 1.3fr) 78px 80px 60px 78px; gap: 7px; }
+        .candidate-head { min-height: 35px; padding: 0 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-raised); font-size: 11px; }
+        .candidate-head button { font-size: 11px; }
+        .candidate-row-v2 { min-height: 58px; padding: 9px 10px 5px; font-size: 12px; }
+        .candidate-row-v2 strong { font-size: 13px; }
+        .candidate-row-v2 small { font-size: 10px; line-height: 1.35; }
+        .candidate-entry[data-current="true"] { background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface)); }
+        .candidate-entry:hover { background: var(--surface-raised); }
+        .candidate-inspection { border-top: 0; }
+        .candidate-inspection > summary { min-height: 0; padding: 2px 10px 7px; font-size: 10px; line-height: 1.4; }
+        .candidate-inspection[open] > summary { padding-bottom: 10px; }
+        .candidate-inspection > :not(summary) { font-size: 12px; }
+        .scope-notice { margin: 0 24px 16px; font-size: 12px; }
+        .scope-notice-item { flex-wrap: wrap; }
+        .settings-header { background: var(--surface); }
+        .settings-heading { align-items: flex-start; padding: 21px 24px 16px; }
+        .settings-heading [role="status"] { padding-top: 8px; font-size: 12px; }
+        .settings-nav { padding: 0 16px; gap: 5px; }
+        .settings-nav button { flex: 0 0 auto; min-height: 43px; padding: 8px 12px; font-size: 13px; }
+        .settings-page > .section { padding: 20px 24px; }
+        .settings-page label, .settings-label-row label { font-size: 13px; }
+        .settings-page input, .settings-page select, .token-select-trigger { min-width: 0; font-size: 13px; }
+        .settings-hint, .algorithm-note p, .settings-detail-content, .settings-disclosure > summary { font-size: 12px; line-height: 1.65; }
+        .settings-subheading, .automation-name { font-size: 14px; }
+        .settings-fields, .control-grid { gap: 16px; }
+        .monitor-scope-panel { margin: 12px 0 0; padding: 14px; background: var(--surface-raised); }
+        .monitor-scope-option { font-size: 12px; }
+        .monitor-scope-option small { font-size: 11px; }
+        .settings-page .button, .settings-update { font-size: 12px; }
+        .statistics-toolbar, .statistics-source, .statistics-summary { padding-inline: 24px; }
+        .statistics-control > span, .statistics-source, .statistics-source strong, .statistics-summary, .statistics-overview small { font-size: 12px; }
+        .statistics-control select { height: 36px; font-size: 13px; border-radius: 5px; }
+        .statistics-overview { margin: 16px 24px 0; border: 1px solid var(--line); border-radius: 7px; }
+        .statistics-overview > div { padding: 13px 16px; }
+        .statistics-overview strong { font-size: 20px; }
+        .statistics-chart { min-height: 210px; }
+        .statistics-key-heading strong, .statistics-key-heading span, .diagnostic-caption { font-size: 12px; }
+        .diagnostic-list { min-height: 180px; max-height: none; }
+        .empty { padding: 28px 16px; font-size: 13px; line-height: 1.7; }
+        @media (max-width: 1050px) and (min-width: 701px) {
+          .workbench-body { grid-template-columns: 166px minmax(0, 1fr); }
+          .monitor-overview { grid-template-columns: minmax(0, 1fr) 218px; gap: 12px; }
+          .route-node { padding-inline: 12px; }
+          .route-value, .route-best-value { font-size: 16px; }
+          .candidate-head, .candidate-row-v2 { grid-template-columns: minmax(110px, 1.5fr) 48px minmax(90px, 1.2fr) 65px 65px 50px 65px; gap: 5px; }
+          .candidate-head, .candidate-head button { font-size: 10px; }
+        }
+        @media (max-width: 900px) {
+          .monitor-overview { grid-template-columns: minmax(0, 1fr); }
+          .monitor-controls { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; }
+          .monitor-controls > .route-meta { grid-column: 1; }
+          .monitor-controls > .command-deck { grid-column: 2; grid-row: 1 / span 2; }
+          .monitor-controls > .monitor-auto-row { grid-column: 1; }
+          .monitor-auto-copy span { max-width: 155px; }
+          .candidate-filter-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .candidate-filter-controls > .selector-search { grid-column: 1 / -1; }
+          .candidate-head { display: none; }
+          .candidate-row-v2 { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 6px; padding: 12px 10px 8px; }
+          .candidate-row-v2 > :nth-child(1) { grid-column: 1 / 3; }
+          .candidate-row-v2 > :nth-child(3) { grid-column: 3 / 5; grid-row: 1; }
+          .candidate-row-v2 > :nth-child(2) { grid-column: 1; grid-row: 2; text-align: left; }
+          .candidate-row-v2 > :nth-child(4), .candidate-row-v2 > :nth-child(5), .candidate-row-v2 > :nth-child(6) { grid-row: 2; font-size: 12px; }
+          .candidate-row-v2 > :nth-child(7) { grid-column: 1 / -1; text-align: right; }
+          .candidate-row-v2 > :nth-child(2)::before, .candidate-row-v2 > :nth-child(4)::before, .candidate-row-v2 > :nth-child(5)::before, .candidate-row-v2 > :nth-child(6)::before { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
+          .candidate-row-v2 > :nth-child(2)::before { content: "倍率"; }
+          .candidate-row-v2 > :nth-child(4)::before { content: "1h 缓存"; }
+          .candidate-row-v2 > :nth-child(5)::before { content: "1h 成功率"; }
+          .candidate-row-v2 > :nth-child(6)::before { content: "1h TPS"; }
+        }
+        @media (max-width: 700px) {
+          .panel { inset: 0; width: 100vw; height: 100dvh; max-height: 100dvh; border: 0; border-radius: 0; }
+          .header { min-height: 56px; gap: 8px; padding: 9px 12px; }
+          .header-copy { display: grid; gap: 2px; }
+          .title { font-size: 14px; }
+          .brand-meta { padding: 0; border: 0; }
+          .version { font-size: 10px; }
+          .brand-mark { width: 31px; height: 31px; }
+          .workbench-body { grid-template-columns: 56px minmax(0, 1fr); }
+          .work-sidebar { padding-block: 12px; gap: 0; }
+          .sidebar-heading, .sidebar-caption, .nav-text, .nav-count { display: none; }
+          .work-nav { padding: 0 6px; gap: 8px; }
+          .work-nav button { min-height: 42px; justify-content: center; padding: 8px 0; }
+          .nav-icon { font-size: 20px; }
+          .status { padding: 7px 14px; font-size: 11px; }
+          .view-heading, .view-intro { padding: 18px 14px 15px; }
+          .view-heading h2, .view-intro h2, .settings-heading h2 { font-size: 22px; }
+          .subhead, .view-intro p { font-size: 12px; }
+          .monitor-overview { margin: 0 14px 14px; gap: 12px; }
+          .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .route-node { min-height: 72px; padding: 12px; gap: 5px; }
+          .route-primary { border-right: 0; border-bottom: 1px solid var(--line); }
+          .route-value, .route-best-value { font-size: 16px; }
+          .monitor-controls { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+          .monitor-controls > .route-meta, .monitor-controls > .command-deck, .monitor-controls > .monitor-auto-row { grid-column: 1; grid-row: auto; }
+          .monitor-auto-copy { flex-direction: row; align-items: baseline; gap: 6px; }
+          .monitor-auto-copy span { max-width: 118px; font-size: 10px; }
+          .usage-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 14px 18px; }
+          .usage-item { padding: 11px 12px; }
+          .usage-item strong { font-size: 18px; }
+          .usage-item:nth-child(3) { border-left: 0; border-top: 1px solid var(--line-soft); }
+          .usage-item:nth-child(4) { border-top: 1px solid var(--line-soft); }
+          .section, .settings-page > .section { padding: 17px 14px; }
+          .monitor-candidates { padding-top: 0; }
+          .section-head { flex-wrap: wrap; gap: 5px 8px; }
+          .section-title { font-size: 14px; }
+          .section-meta { font-size: 10px; }
+          .candidate-row-v2 .candidate-status { max-width: 100%; font-size: 10px; }
+          .candidate-inspection > summary { overflow-wrap: anywhere; }
+          .candidate-inspection dl { grid-template-columns: minmax(0, 1fr); }
+          .scope-notice { grid-template-columns: minmax(0, 1fr); margin: 0 14px 14px; }
+          .settings-heading { gap: 8px; padding: 18px 14px 14px; }
+          .settings-heading [role="status"] { max-width: 75px; font-size: 11px; }
+          .settings-nav { padding: 0 6px; }
+          .settings-nav button { padding: 8px 10px; font-size: 12px; }
+          .settings-fields, .control-grid, .settings-page[data-settings-page="protection"] .settings-fields { grid-template-columns: minmax(0, 1fr); }
+          .monitor-scope-panel { padding: 10px; }
+          .monitor-scope-list { grid-template-columns: minmax(0, 1fr); }
+          .monitor-scope-toolbar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+          .monitor-scope-toolbar > input { grid-column: 1 / -1; }
+          .settings-footer { flex-wrap: wrap; gap: 10px; }
+          .settings-update { min-width: 0; }
+          .statistics-toolbar, .statistics-source, .statistics-summary { padding-inline: 14px; }
+          .statistics-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+          .statistics-source { flex-wrap: wrap; }
+          .statistics-overview { grid-template-columns: minmax(0, 1fr); margin-inline: 14px; }
+          .statistics-overview > div + div { border-left: 0; border-top: 1px solid var(--line-soft); }
+          .statistics-chart { min-height: 150px; padding-inline: 0; }
+          .statistics-key-list { padding-inline: 0; }
+          .diagnostic-list { min-height: 140px; }
+        }
         @media (prefers-reduced-motion: reduce) {
           .status[data-tone="running"]::before { animation: none; }
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
@@ -1120,27 +1321,36 @@
       </style>
 
       <button class="launcher" type="button" title="打开 ${SITE_LABEL} 分组监控" hidden>${SITE_SHORT_LABEL}</button>
-      <section class="panel" aria-label="${SITE_LABEL} 分组监控">
+      <section class="panel" aria-label="${SITE_LABEL} 分组工作台">
         <header class="header" data-ref="header">
           <span class="brand-mark" aria-hidden="true">${SITE_SHORT_LABEL}</span>
           <span class="header-copy">
             <span class="header-title-row">
-              <span class="title">${SITE_LABEL} 分组监控</span>
+              <span class="title">${SITE_LABEL} 分组工作台</span>
               <span class="update-badge" data-ref="updateBadge" role="status" aria-live="polite" title="" hidden>NEW</span>
             </span>
             <span class="brand-meta"><span class="dot" data-ref="statusDot" title="监控状态"></span><span class="version" data-ref="version" title="当前插件版本">v${SCRIPT_VERSION}</span></span>
           </span>
+          <button class="icon-button" data-ref="fullscreen" type="button" title="全屏工作台" aria-label="全屏工作台" aria-pressed="false">⛶</button>
           <button class="icon-button" data-ref="collapse" type="button" title="收起" aria-label="收起">−</button>
         </header>
-        <nav class="work-nav" aria-label="插件工作区" role="tablist">
-          <button id="kf-tab-monitor" data-view-target="monitor" data-active="true" role="tab" aria-controls="kf-view-monitor" aria-selected="true" type="button">监控 <span class="nav-count" data-ref="candidateCount">0</span></button>
-          <button id="kf-tab-statistics" data-view-target="statistics" data-active="false" role="tab" aria-controls="kf-view-statistics" aria-selected="false" type="button">统计</button>
-          <button id="kf-tab-diagnostics" data-view-target="diagnostics" data-active="false" role="tab" aria-controls="kf-view-diagnostics" aria-selected="false" type="button">诊断 <span class="nav-count" data-ref="logCount">0</span></button>
-          <button id="kf-tab-settings" data-view-target="settings" data-active="false" role="tab" aria-controls="kf-view-settings" aria-selected="false" type="button">设置</button>
-        </nav>
+        <div class="workbench-body">
+        <aside class="work-sidebar" aria-label="分组工作台导航">
+          <div class="sidebar-heading"><strong>${SITE_LABEL} 分组工作台</strong><span>工作区</span></div>
+          <nav class="work-nav" aria-label="插件工作区" role="tablist" aria-orientation="vertical">
+            <button id="kf-tab-monitor" data-view-target="monitor" data-active="true" role="tab" aria-label="监控" aria-controls="kf-view-monitor" aria-selected="true" type="button"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-text">分组监控</span><span class="nav-count" data-ref="candidateCount">0</span></button>
+            <button id="kf-tab-statistics" data-view-target="statistics" data-active="false" role="tab" aria-label="统计" aria-controls="kf-view-statistics" aria-selected="false" type="button"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-text">用量统计</span></button>
+            <button id="kf-tab-diagnostics" data-view-target="diagnostics" data-active="false" role="tab" aria-label="诊断" aria-controls="kf-view-diagnostics" aria-selected="false" type="button"><span class="nav-icon" aria-hidden="true">⌁</span><span class="nav-text">诊断记录</span><span class="nav-count" data-ref="logCount">0</span></button>
+            <button id="kf-tab-settings" data-view-target="settings" data-active="false" role="tab" aria-label="设置" aria-controls="kf-view-settings" aria-selected="false" type="button"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-text">偏好设置</span></button>
+          </nav>
+          <p class="sidebar-caption">监控范围决定参与检查的分组；列表筛选只改变显示。</p>
+        </aside>
+        <div class="work-content">
         <div class="status" data-ref="status" role="status" aria-live="polite"></div>
         <main class="workspace" data-ref="workspace">
         <section class="work-view" id="kf-view-monitor" data-view="monitor" role="tabpanel" aria-labelledby="kf-tab-monitor" tabindex="0">
+        <div class="view-heading"><div class="heading-copy"><p class="eyebrow">分组监控</p><h2>运行概览</h2><p class="subhead">按所选目标模型的检测详情查看 1h 指标和自动切换准入。</p></div></div>
+        <div class="monitor-overview">
         <section class="overview" aria-label="当前分组概览">
           <div class="route-primary route-node">
             <span class="metric-label">当前分组</span>
@@ -1149,18 +1359,14 @@
           <div class="route-best route-node">
             <span class="metric-label">策略推荐</span>
             <strong class="route-best-value" data-ref="bestGroup">-</strong>
-            <span class="route-meta">检查 <strong data-ref="lastCheck">-</strong></span>
+            <span class="route-recommendation-meta" data-ref="bestGroupMeta">等待检查</span>
             <button class="icon-button route-apply" data-ref="switchNow" type="button" title="立即切到策略推荐分组" aria-label="立即切到策略推荐分组">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5"></path><path d="M4 20 21 3"></path><path d="M21 16v5h-5"></path><path d="m15 15 6 6"></path><path d="M4 4l5 5"></path></svg>
             </button>
           </div>
         </section>
-        <section class="usage-strip" aria-label="账户与今日用量">
-          <div class="usage-item"><small>余额</small><strong class="mono" data-ref="balance">-</strong></div>
-          <div class="usage-item" data-ref="todaySpendItem" data-spend-tone="none"><small>今日消费</small><strong class="mono" data-ref="todaySpend">-</strong></div>
-          <div class="usage-item"><small>今日请求</small><strong class="mono" data-ref="todayRequests">-</strong></div>
-          <div class="usage-item"><small>今日 Token</small><strong class="mono" data-ref="todayTokens">-</strong></div>
-        </section>
+        <div class="monitor-controls">
+        <span class="route-meta">上次检查 <strong data-ref="lastCheck">-</strong></span>
         <div class="command-deck" aria-label="常用操作">
           <button class="button button-check" data-ref="check" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>
@@ -1172,33 +1378,40 @@
           </button>
         </div>
         <div class="monitor-auto-row">
-          <span class="monitor-auto-copy"><strong>自动切换</strong><span data-ref="monitorMode">省钱优先</span></span>
+          <span class="monitor-auto-copy"><strong>自动切换</strong><span data-ref="monitorMode">1h 综合质量</span></span>
           <label class="toggle" for="kf-monitor-enabled" title="自动切换">
             <input id="kf-monitor-enabled" data-ref="monitorEnabled" type="checkbox" aria-label="自动切换">
             <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
           </label>
         </div>
+        </div>
+        </div>
+        <section class="scope-notice" data-ref="currentScopeWarning" role="status" aria-live="polite" hidden>
+          <span>当前分组未纳入监控。该密钥的自动检查和切换已暂停；可加入监控范围，或从插件选择中移除密钥。</span>
+          <button class="text-button" type="button" data-ref="removeOutOfScopeToken">移除密钥选择</button>
+          <div class="scope-notice-list" data-ref="outOfScopeTokenList"></div>
+        </section>
+        <section class="usage-strip" aria-label="账户与今日用量">
+          <div class="usage-item"><small>余额</small><strong class="mono" data-ref="balance">-</strong></div>
+          <div class="usage-item" data-ref="todaySpendItem" data-spend-tone="none"><small>今日消费</small><strong class="mono" data-ref="todaySpend">-</strong></div>
+          <div class="usage-item"><small>今日请求</small><strong class="mono" data-ref="todayRequests">-</strong></div>
+          <div class="usage-item"><small>今日 Token</small><strong class="mono" data-ref="todayTokens">-</strong></div>
+        </section>
         <section class="section candidate-section monitor-candidates">
           <div class="section-head"><h2 class="section-title">分组状态</h2><span class="section-meta" data-ref="candidateSummary">等待检查</span></div>
           <div class="candidate-filter-controls" ${IS_AIHUB ? "" : "hidden"}>
-            <select class="selector-platform" data-ref="candidatePlatform" aria-label="业务平台范围" title="自动择优和故障恢复只选择范围内分组；当前分组始终检查健康" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
-            <input class="selector-search" data-ref="candidateSearch" data-selector-search type="search" placeholder="搜索监控分组" aria-label="搜索监控分组" autocomplete="off" ${IS_AIHUB ? "" : "hidden"}>
+            <input class="selector-search" data-ref="candidateSearch" data-selector-search type="search" placeholder="搜索分组或模型" aria-label="搜索分组或模型" autocomplete="off" ${IS_AIHUB ? "" : "hidden"}>
+            <select class="selector-platform" data-ref="candidatePlatform" aria-label="按平台筛选" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
+            <select data-ref="candidateAvailabilityFilter" aria-label="按可用状态筛选"><option value="">全部可用状态</option><option value="available">可用</option><option value="unavailable">不可用</option></select>
+            <select data-ref="candidateStatus" aria-label="检测状态筛选"><option value="">全部检测状态</option><option value="pass">检测通过</option><option value="fail">检测失败</option><option value="pending">检测中</option><option value="stale">数据过期</option><option value="notmatch">本轮不参与</option><option value="unknown">未知</option><option value="outscope">未纳入监控</option></select>
+            <select data-ref="candidateSort" aria-label="分组列表排序"><option value="quality">综合推荐</option><option value="ratio">倍率：低到高</option><option value="success">1h 成功率：高到低</option><option value="cache">1h 缓存命中：高到低</option><option value="tps">1h TPS：高到低</option></select>
           </div>
-          <p class="selector-search-status" ${IS_AIHUB ? "" : "hidden"}>业务平台范围影响自动选择和故障恢复；保存后下次检查生效。搜索仅筛选显示。</p>
           <p class="selector-search-status" data-ref="candidateSearchStatus" role="status" ${IS_AIHUB ? "" : "hidden"}></p>
-          <div class="candidate-head" ${IS_AIHUB ? "hidden" : ""}><span>分组</span><span title="AIHub 依次显示路由倍率（账号倍率优先）、页面倍率、平台返回的 1M 真实输入价格和预测倍率；其他站点显示路由倍率与预测倍率">${IS_AIHUB ? "倍率/价/预" : "标/预"}</span><span title="${IS_AIHUB ? "AIHub v2 采用平台 1 小时整体成功率；旧接口沿用对应趋势窗口" : "监测窗口内整体成功率"}">整体</span><span>近期</span><span title="${IS_AIHUB ? "优先采用用户最快95%平均首字延迟；缺失时依次回退到 P90 和探针；按 AIHub 页面同口径显示毫秒" : "平均首字延迟"}">首字</span><span>输出</span><span>缓存</span><span>判定</span></div>
-          <div class="image-quality-actions" data-ref="imageQualityActions" hidden>
-            <div class="image-quality-toolbar">
-              <button class="text-button" type="button" data-ref="imageQualityRun">评价当前图片（计费）</button>
-              <button class="text-button" type="button" data-ref="imageQualityStop" hidden>停止</button>
-              <p data-ref="imageQualityStatus" role="status"></p>
-            </div>
-            <p class="image-quality-diagnostic" data-ref="imageQualityDiagnostic" aria-live="off" hidden></p>
-            <p>正常择优在后台评价图片 · 故障恢复和手动指定分组跳过评价</p>
+          <div class="candidate-head" ${IS_AIHUB ? "" : "hidden"}>
+            <span>分组 / 平台</span><button type="button" data-candidate-sort="ratio">倍率</button><span>模型检测详情</span><button type="button" data-candidate-sort="cache">1h 缓存命中</button><button type="button" data-candidate-sort="success">1h 成功率</button><button type="button" data-candidate-sort="tps">1h TPS</button><span>操作</span>
           </div>
-          ${IS_AIHUB ? '<div class="candidate-column-labels" aria-hidden="true"><span>倍率/预估</span><span>整体</span><span>近期</span><span>首字</span><span>输出</span><span>缓存</span><span class="candidate-quality-column">效果</span></div>' : ""}
           <div data-ref="candidateRows"></div>
-          ${IS_AIHUB ? '<p class="candidate-media-hint">点击图片放大 · 悬停倍率查看价格 · 点击名称复制</p>' : ""}
+          <button class="text-button" data-ref="candidateResetFilters" type="button" hidden>清除筛选</button>
         </section>
         </section>
         <section class="work-view" id="kf-view-statistics" data-view="statistics" role="tabpanel" aria-labelledby="kf-tab-statistics" tabindex="0" hidden>
@@ -1248,16 +1461,40 @@
         </section>
         <section class="work-view settings-view" id="kf-view-settings" data-ref="settingsSection" data-view="settings" role="tabpanel" aria-labelledby="kf-tab-settings" tabindex="0" hidden>
           <div class="settings-header">
-            <div class="settings-heading"><h2>设置</h2><span data-ref="settingsSave" role="status">已保存</span></div>
+            <div class="settings-heading"><div class="heading-copy"><p class="eyebrow">偏好设置</p><h2>设置</h2><p class="subhead">管理监控范围、自动切换、检测保护与界面偏好。</p></div><span data-ref="settingsSave" role="status">已保存</span></div>
             <nav class="settings-nav" role="tablist" aria-label="设置分类">
               <button id="kf-settings-routing" data-settings-target="routing" role="tab" aria-controls="kf-settings-page-routing" aria-selected="false" tabindex="-1" type="button">自动切换</button>
               <button id="kf-settings-protection" data-settings-target="protection" role="tab" aria-controls="kf-settings-page-protection" aria-selected="false" tabindex="-1" type="button">检测保护</button>
-              <button id="kf-settings-quality" data-settings-target="quality" role="tab" aria-controls="kf-settings-page-quality" aria-selected="false" tabindex="-1" type="button" ${IS_AIHUB ? "" : "hidden"}>图片评价</button>
               <button id="kf-settings-spending" data-settings-target="spending" role="tab" aria-controls="kf-settings-page-spending" aria-selected="false" tabindex="-1" type="button">消费提醒</button>
               <button id="kf-settings-appearance" data-settings-target="appearance" role="tab" aria-controls="kf-settings-page-appearance" aria-selected="false" tabindex="-1" type="button">界面更新</button>
             </nav>
           </div>
           <div class="settings-page" id="kf-settings-page-routing" data-settings-page="routing" role="tabpanel" aria-labelledby="kf-settings-routing" tabindex="0" hidden>
+            <section class="section settings-group">
+              <div class="section-head"><h2 class="section-title">监控分组</h2><span class="section-meta" data-ref="monitorScopeCount">全部分组</span></div>
+              <p class="settings-hint">自动检查、健康判断和候选排序只处理已纳入的分组。页面筛选和排序只改变显示结果。</p>
+              <div class="field">
+                <label for="kf-monitor-scope-mode">监控范围</label>
+                <select id="kf-monitor-scope-mode" data-ref="monitorScopeMode" aria-describedby="kf-monitor-scope-help">
+                  <option value="all">全部分组</option>
+                  <option value="selected">仅选择的分组</option>
+                </select>
+                <p class="settings-hint" id="kf-monitor-scope-help" data-ref="monitorScopeStatus" role="status">保存后下次检查生效；选择模式下空列表表示不监控任何分组。</p>
+              </div>
+              <div class="monitor-scope-panel" data-ref="monitorScopePanel">
+                <div class="monitor-scope-toolbar">
+                  <input class="selector-search" data-ref="monitorScopeSearch" data-selector-search type="search" placeholder="搜索分组名称、模型或 ID" aria-label="搜索监控范围分组" autocomplete="off">
+                  <span class="section-meta" data-ref="monitorScopeCountDetail">0 个分组</span>
+                  <button class="text-button" data-ref="monitorScopeSelectAll" type="button">全选</button>
+                  <button class="text-button" data-ref="monitorScopeClear" type="button">清空</button>
+                </div>
+                <div class="monitor-scope-list" data-ref="monitorScopeList" role="group" aria-label="监控范围分组"></div>
+                <div class="settings-footer">
+                  <span data-ref="monitorScopeSearchStatus" class="selector-search-status" role="status"></span>
+                  <button class="button button-primary" data-ref="monitorScopeSave" type="button">保存监控范围</button>
+                </div>
+              </div>
+            </section>
         <section class="section control-section settings-section">
           <div class="section-head"><h2 class="section-title">自动路由</h2><span class="section-meta">密钥、模型与分组</span></div>
           <div class="automation-bar">
@@ -1270,13 +1507,9 @@
               <option value="strategy">正常择优与恢复</option>
               <option value="failover">仅故障转移</option>
             </select>
-            <select class="strategy-select" data-ref="selectionMode" aria-label="分组选择策略" title="分组选择策略">
-              <option value="saving">省钱优先</option>
-              <option value="stable">稳定优先</option>
-              <option value="balanced">均衡推荐</option>
-            </select>
           </div>
-          <p id="kf-automatic-mode-help" class="settings-hint" data-ref="automaticSwitchHint">正常时按策略择优，故障时优先恢复服务。</p>
+          <p id="kf-automatic-mode-help" class="settings-hint" data-ref="automaticSwitchHint">正常切换按 AIHub 1 小时质量指标排序；故障转移模式仅在当前组故障时切换。</p>
+          <div class="algorithm-note"><strong>1h 综合质量排序</strong><p>成功率 40% · 缓存命中 30% · TPS 20% · 低倍率 10%。仅比较检测详情明确通过、指标完整且足够新鲜的同模型候选。</p></div>
           <div class="control-grid">
             <div class="field">
               <label id="kf-token-label">API 密钥（可多选）</label>
@@ -1364,24 +1597,12 @@
           <details class="settings-disclosure">
             <summary>健康判定与候选限制</summary>
             <div class="grid advanced">
-              <div class="field"><label title="${IS_AIHUB ? "AIHub v2 整体成功率采用平台 1 小时统计；此项控制探测序列和旧接口回退窗口" : "整体性能与趋势的统计窗口"}">${IS_AIHUB ? "趋势窗口（小时）" : "统计窗口（小时）"}</label><input data-ref="metricHours" type="number" max="168" min="1" required></div>
-              <div class="field"><label>总成功率（%）</label><input data-ref="minSuccessRate" type="number" min="0" max="100" step="0.1" required></div>
-              <div class="field"><label>最新成功率（%）</label><input data-ref="minLatestSuccessRate" type="number" min="0" max="100" step="0.1" required></div>
-              <div class="field"><label>指标时效（分钟）</label><input data-ref="maxMetricAgeMinutes" type="number" max="1440" min="5" required></div>
-              <div class="field"><label>最大首字延迟（秒）</label><input data-ref="maxFirstTokenLatencySeconds" type="number" max="3600" min="0" step="0.1" required></div>
-              <div class="field"><label>最大输出耗时（秒）</label><input data-ref="maxOutputDurationSeconds" type="number" max="3600" min="0" step="0.1" required></div>
+              <div class="field"><label for="kf-min-success">1h 最低成功率（%）</label><input id="kf-min-success" data-ref="minSuccessRate" type="number" min="0" max="100" step="0.1" required></div>
+              <div class="field"><label for="kf-min-metric-samples">模型最少样本数</label><input id="kf-min-metric-samples" data-ref="minMetricSamples" type="number" min="1" max="1000000" step="1" required></div>
+              <div class="field"><label for="kf-min-cache-samples">缓存最少记录数</label><input id="kf-min-cache-samples" data-ref="minCacheSamples" type="number" min="1" max="1000000" step="1" required></div>
               <div class="field"><label>最大倍率（0 不限制）</label><input data-ref="maxGroupRatio" type="number" max="100000" min="0" step="0.01" required></div>
-            </div>          <div class="settings-appearance model-detection-setting"${IS_AIHUB ? "" : " hidden"}>
-            <span class="settings-appearance-copy">
-              <strong id="kf-model-detection-label">模型检测参与切换</strong>
-              <small id="kf-model-detection-help">开启后，匹配目标模型的检测未通过会立即切换</small>
-            </span>
-            <label class="toggle" for="kf-require-model-detection" title="将匹配目标模型的 AIHub 检测结果作为切换条件">
-              <input id="kf-require-model-detection" data-ref="requireModelDetection" type="checkbox" aria-labelledby="kf-model-detection-label" aria-describedby="kf-model-detection-help">
-              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
-            </label>
-          </div>
-
+            </div>
+            <p class="settings-hint">模型检测详情必须明确通过，并与目标模型精确匹配。1h 指标和缓存最多保留 60 分钟有效期；缺失或过期时暂停自动候选。</p>
           </details>
           <details class="settings-disclosure isolation-disclosure" data-ref="isolationRecords">
             <summary>故障隔离 <span class="settings-count" data-ref="isolationSummaryCount">0条</span></summary>
@@ -1389,7 +1610,7 @@
             <div class="section-head isolation-heading">
               <div class="isolation-heading-copy">
                 <h2 class="section-title" id="kf-isolation-title">故障隔离</h2>
-                <p class="isolation-description">健康检查失败或图片未通过时隔离，到期恢复；不修改用户黑白名单</p>
+                <p class="isolation-description">明确故障时隔离，到期重新检查；不修改用户黑白名单</p>
               </div>
               <span class="isolation-actions">
                 <span class="section-meta" data-ref="isolationCount">当前无隔离</span>
@@ -1398,76 +1619,6 @@
             </div>
             <div class="isolation-list" data-ref="isolationRows"></div>
         </section>
-          </details>
-        </section>
-          </div>
-          <div class="settings-page" id="kf-settings-page-quality" data-settings-page="quality" role="tabpanel" aria-labelledby="kf-settings-quality" tabindex="0" hidden>
-        <section class="section settings-group image-quality-settings" aria-labelledby="kf-image-quality-title" ${IS_AIHUB ? "" : "hidden"}>
-          <div class="section-head"><h2 class="section-title" id="kf-image-quality-title">图片评分</h2><span class="section-meta">自动切换准入</span></div>
-          <div class="settings-fields">
-            <div class="field">
-              <label for="kf-image-quality-key">评分密钥</label>
-              <input class="selector-search" data-ref="imageQualityKeySearch" data-selector-search type="search" placeholder="搜索密钥名称或分组" aria-label="搜索评分密钥" autocomplete="off">
-              <select id="kf-image-quality-key" data-ref="imageQualityKey"><option value="0">未配置评分密钥</option></select>
-              <p class="selector-search-status" data-ref="imageQualityKeySearchStatus" role="status"></p>
-            </div>
-            <div class="field">
-              <div class="settings-label-row"><label for="kf-image-quality-model">评价模型</label><button class="text-button" type="button" data-ref="imageQualityLoadModels">读取模型列表</button></div>
-              <input id="kf-image-quality-model" data-ref="imageQualityModel" type="text" maxlength="120" list="kf-image-quality-models" placeholder="选择或输入支持图片的模型" autocomplete="off" aria-describedby="kf-image-quality-models-status">
-              <datalist id="kf-image-quality-models" data-ref="imageQualityModels"></datalist>
-            </div>
-          </div>
-          <p id="kf-image-quality-models-status" data-ref="imageQualityModelsStatus" role="status"></p>
-          <div class="field">
-            <label for="kf-image-quality-min-score">自动切换图片门槛（必须大于）</label>
-            <input id="kf-image-quality-min-score" data-ref="imageQualityMinScore" type="number" min="0" max="100" step="1" aria-describedby="kf-image-admission-help" required>
-          </div>
-          <p id="kf-image-admission-help" class="settings-billing-note">正常择优：后台评价通过后，结合最新健康状态切换。当前分组故障时优先恢复服务，跳过图片检查。自动评价会计费。</p>
-          <div class="image-quality-toolbar">
-            <button class="button" type="button" data-ref="imageQualityTest">测试当前分组1张（计费）</button>
-            <button class="text-button" type="button" data-ref="imageQualityTestStop" hidden>停止评价</button>
-          </div>
-          <p data-ref="imageQualityTestStatus" role="status"></p>
-          <p class="image-quality-diagnostic" data-ref="imageQualityTestDiagnostic" aria-live="off" hidden></p>
-          <p class="image-quality-test-result" data-ref="imageQualityTestResult" hidden></p>
-          <details class="settings-disclosure">
-            <summary>备用评分线路与图片任务</summary>
-            <div class="settings-detail-content">
-          <div class="settings-fields">
-            <div class="field">
-              <label for="kf-image-quality-fallback-1">备用评分分组 1（可选）</label>
-              <select class="selector-platform" data-ref="imageQualityFallback1Platform" aria-label="备用评分分组 1 平台分类" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
-              <input class="selector-search" data-ref="imageQualityFallback1Search" data-selector-search type="search" placeholder="搜索备用分组" aria-label="搜索备用评分分组 1" autocomplete="off">
-              <select id="kf-image-quality-fallback-1" data-ref="imageQualityFallback1" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select>
-              <p class="selector-search-status" data-ref="imageQualityFallback1SearchStatus" role="status"></p>
-            </div>
-            <div class="field">
-              <label for="kf-image-quality-fallback-2">备用评分分组 2（可选）</label>
-              <select class="selector-platform" data-ref="imageQualityFallback2Platform" aria-label="备用评分分组 2 平台分类" ${IS_AIHUB ? "" : "hidden"}><option value="">全部平台</option></select>
-              <input class="selector-search" data-ref="imageQualityFallback2Search" data-selector-search type="search" placeholder="搜索备用分组" aria-label="搜索备用评分分组 2" autocomplete="off">
-              <select id="kf-image-quality-fallback-2" data-ref="imageQualityFallback2" aria-describedby="kf-image-quality-fallback-help"><option value="0">不使用备用分组</option></select>
-              <p class="selector-search-status" data-ref="imageQualityFallback2SearchStatus" role="status"></p>
-            </div>
-          </div>
-          <p id="kf-image-quality-fallback-help">评分线路不可用时依次尝试备用分组，模型不变；结束后恢复评分密钥原组。</p>
-              <div class="field"><label for="kf-image-quality-task">图片预期任务</label><input id="kf-image-quality-task" data-ref="imageQualityTask" type="text" maxlength="300"></div>
-            </div>
-          </details>
-          <details class="settings-disclosure">
-            <summary>评分规则与计算时机</summary>
-            <div class="settings-detail-content">
-
-              <p>图片分不参与策略排序。接近择优确认及保持期结束时，后台评价候选图片；通过后须新的健康检查确认。故障检测不启动新的评价，候选或图片变化会取消过期评价。</p>
-              <p>图片分必须严格高于门槛；无图、读取失败、无法识别、证据不足或低分进入故障隔离。评分服务异常只暂停本次择优，不隔离业务组；调整设置或重新启用自动切换后重试。故障恢复忽略图片隔离，仍遵守健康隔离。</p>
-              <p>同一次待切换决策共用最多10次模型请求，检测周期不重置；不保存评分缓存。测试仅当前评分分组1次；手动指定分组不检查图片。</p>
-              <p>评分规则：任务20 + 结构40 + 协调25 + 完成15。14项按六档评分，严重缺陷封顶；座位、脚踏和车把需要可见连接依据。</p>
-              <div class="image-quality-toolbar"><button class="text-button" type="button" data-ref="imageQualityClearPage">清除本页评价</button></div>
-            </div>
-          </details>
-          <details class="settings-disclosure image-quality-records" data-ref="qualityRecords">
-            <summary>本页图片评价 <span class="settings-count" data-ref="qualityRecordCount">0条</span></summary>
-            <p data-ref="imageQualityListSummary" role="status"></p>
-            <div class="image-quality-record-list" data-ref="imageQualityList"></div>
           </details>
         </section>
           </div>
@@ -1506,7 +1657,7 @@
             </select>
           </div>
           <div class="settings-appearance">
-            <span class="settings-appearance-copy"><strong id="kf-glass-transparency-label">毛玻璃透明度</strong></span>
+            <span class="settings-appearance-copy"><strong id="kf-glass-transparency-label">界面透明度（兼容保留）</strong><small>2.0 工作台使用高对比不透明表面</small></span>
             <span class="glass-transparency-control">
               <input id="kf-glass-transparency" class="glass-transparency-range" data-ref="glassTransparency" type="range" min="0" max="100" step="1" aria-labelledby="kf-glass-transparency-label">
               <output class="glass-transparency-value mono" data-ref="glassTransparencyValue" for="kf-glass-transparency">0%</output>
@@ -1541,12 +1692,13 @@
           </div>
         </section>
         </main>
+        </div>
+        </div>
         <div class="isolation-toast" data-ref="isolationToast" role="status" aria-live="polite" hidden>
           <span class="isolation-toast-message" data-ref="isolationToastMessage"></span>
           <button data-ref="isolationToastUndo" type="button">撤销</button>
         </div>
       </section>
-      <div id="kf-image-quality-tooltip" class="image-quality-tooltip" data-ref="imageQualityTooltip" role="tooltip" hidden></div>
       <dialog class="manual-dialog" data-ref="manualDialog" aria-labelledby="kf-manual-title">
         <form class="dialog-form" method="dialog">
           <div class="dialog-header">
@@ -1567,6 +1719,19 @@
           </div>
         </form>
       </dialog>
+      <dialog class="scope-dialog" data-ref="manualScopeDialog" aria-labelledby="kf-manual-scope-title" aria-describedby="kf-manual-scope-target kf-manual-scope-risk kf-manual-scope-hint">
+        <div class="scope-dialog-content">
+          <h2 class="dialog-title" id="kf-manual-scope-title" data-ref="manualScopeTitle">目标分组未纳入监控</h2>
+          <p class="dialog-hint" id="kf-manual-scope-target" data-ref="manualScopeTarget"></p>
+          <p class="scope-dialog-risk" id="kf-manual-scope-risk" data-ref="manualScopeRisk"></p>
+          <p class="dialog-hint" id="kf-manual-scope-hint" data-ref="manualScopeHint">请选择如何处理。仅本次切换不会修改保存的监控范围。</p>
+          <div class="scope-dialog-actions">
+            <button class="button button-primary" data-ref="manualScopeAdd" data-manual-scope="add" type="button">加入范围并切换</button>
+            <button class="button" data-ref="manualScopeOnce" data-manual-scope="once" type="button">仅切换一次</button>
+            <button class="button" data-ref="manualScopeCancel" data-manual-scope="cancel" type="button">取消</button>
+          </div>
+        </div>
+      </dialog>
       <dialog class="detection-image-dialog" data-ref="detectionImageDialog" aria-labelledby="kf-detection-image-title">
         <div class="dialog-header">
           <h2 class="dialog-title" id="kf-detection-image-title" data-ref="detectionImageTitle">鹈鹕图片</h2>
@@ -1576,23 +1741,20 @@
           <p class="detection-image-status" data-ref="detectionImageStatus" role="status"></p>
           <img data-ref="detectionImage" alt="" referrerpolicy="no-referrer" hidden>
         </div>
-        <p class="detection-image-quality" data-ref="detectionImageQuality" hidden></p>
         <a class="detection-image-original" data-ref="detectionImageOriginal" target="_blank" rel="noopener noreferrer">在新标签页查看原图</a>
       </dialog>
     `;
 
     const refNames = [
-      "candidatePlatform", "candidateSearch", "candidateSearchStatus", "groupFilterPlatform", "manualGroupPlatform", "imageQualityFallback1Platform", "imageQualityFallback2Platform",
-      "automaticSwitchMode", "automaticSwitchHint", "tokenSearch", "tokenSearchStatus", "modelSearch", "modelSearchStatus", "groupFilterSearch", "groupFilterSearchStatus", "manualGroupSearch", "manualGroupSearchStatus", "imageQualityKeySearch", "imageQualityKeySearchStatus", "imageQualityFallback1Search", "imageQualityFallback1SearchStatus", "imageQualityFallback2Search", "imageQualityFallback2SearchStatus",
-      "imageQualityTooltip", "imageQualityList", "imageQualityListSummary", "imageQualityClearPage", "imageQualityModels", "imageQualityLoadModels", "imageQualityModelsStatus", "imageQualityTest", "imageQualityTestStop", "imageQualityTestStatus", "imageQualityTestResult",
-      "imageQualityKey", "imageQualityModel", "imageQualityFallback1", "imageQualityFallback2", "imageQualityTask", "imageQualityMinScore", "imageQualityRun", "imageQualityStop", "imageQualityActions", "imageQualityStatus", "imageQualityDiagnostic", "imageQualityTestDiagnostic", "detectionImageQuality",
+      "candidatePlatform", "candidateSearch", "candidateSearchStatus", "candidateAvailabilityFilter", "candidateStatus", "candidateSort", "candidateResetFilters", "groupFilterPlatform", "manualGroupPlatform",
+      "monitorScopeMode", "monitorScopeSearch", "monitorScopeList", "monitorScopeCount", "monitorScopeCountDetail", "monitorScopeSave", "monitorScopeSelectAll", "monitorScopeClear", "monitorScopeStatus", "monitorScopeSearchStatus", "monitorScopePanel", "currentScopeWarning", "outOfScopeTokenList", "removeOutOfScopeToken", "manualScopeDialog", "manualScopeTitle", "manualScopeTarget", "manualScopeRisk", "manualScopeHint", "manualScopeAdd", "manualScopeOnce", "manualScopeCancel",
+      "automaticSwitchMode", "automaticSwitchHint", "tokenSearch", "tokenSearchStatus", "modelSearch", "modelSearchStatus", "groupFilterSearch", "groupFilterSearchStatus", "manualGroupSearch", "manualGroupSearchStatus",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
-      "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "status", "currentGroup", "bestGroup",
-      "lastCheck", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "settingsSave", "strategyMinutes", "lastHealthCheck", "lastStrategyCheck", "confirmationHint", "qualityRecords", "qualityRecordCount", "enabled", "monitorEnabled", "monitorMode", "selectionMode", "requireModelDetection", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
+      "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "fullscreen", "status", "currentGroup", "bestGroup",
+      "lastCheck", "bestGroupMeta", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "settingsSave", "strategyMinutes", "lastHealthCheck", "lastStrategyCheck", "confirmationHint", "enabled", "monitorEnabled", "monitorMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",
       "statisticsMetric", "statisticsDays", "statisticsRefresh", "statisticsSource", "statisticsUpdated", "statisticsSummary", "statisticsLoading", "statisticsTotal", "statisticsAssigned", "statisticsCoverage", "statisticsTrendSummary", "statisticsTrend", "statisticsKeyRows",
-      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "modelSelect", "modelSelectToggle", "modelSelectLabel", "modelCount", "modelMenu", "modelList", "selectAllModels", "clearModels", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds", "metricHours",
-      "minSuccessRate", "minLatestSuccessRate", "maxMetricAgeMinutes",
-      "maxFirstTokenLatencySeconds", "maxOutputDurationSeconds", "maxGroupRatio",
+      "tokenSelect", "tokenSelectToggle", "tokenSelectLabel", "tokenMenu", "tokenList", "tokenCount", "selectAllTokens", "clearTokens", "modelSelect", "modelSelectToggle", "modelSelectLabel", "modelCount", "modelMenu", "modelList", "selectAllModels", "clearModels", "groupFilterLabel", "groupFilterMode", "groupFilterSelect", "groupFilterSelectToggle", "groupFilterSelectLabel", "groupFilterCount", "groupFilterMenu", "groupFilterList", "clearGroupFilter", "pollSeconds",
+      "minSuccessRate", "minMetricSamples", "minCacheSamples", "maxGroupRatio",
       "confirmPolls", "switchHoldMinutes", "rollbackChecks", "blacklistMinutes", "isolationRecords", "isolationSummaryCount",
       "check", "switchNow", "checkUpdate", "updateLabel", "manualDialog", "manualGroup", "manualHint", "manualSwitch", "manualConfirm", "manualClose", "manualCancel", "isolationCount", "isolationRows", "clearAllIsolations", "isolationToast", "isolationToastMessage", "isolationToastUndo",
       "tokenResultRows", "candidateRows", "logs",

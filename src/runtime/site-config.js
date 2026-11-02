@@ -82,16 +82,17 @@
     model: "",
     automaticSwitchMode: "strategy",
     businessPlatform: "",
-    selectionMode: "saving",
-    imageQualityKeyId: 0,
-    imageQualityModel: "",
-    imageQualityFallbackGroupIds: [],
-    imageQualityTask: "鹈鹕骑自行车",
-    imageQualityMinScore: 80,
+    selectionMode: "quality",
+    monitorScopeMode: "all",
+    monitorGroupIds: [],
+    monitorScopeMigrationPending: false,
+    monitorScopeMigrationPlatform: "",
+    minMetricSamples: 10,
+    minCacheSamples: 10,
     groupFilterMode: "whitelist",
     groupWhitelist: [],
     groupBlacklist: [],
-    requireModelDetection: false,
+    requireModelDetection: true,
     spendProtectionEnabled: false,
     dailySpendLimit: 0,
     pollSeconds: 30,
@@ -110,7 +111,6 @@
   });
 
   const STORAGE_PREFIX = storagePrefixForSite(SITE_ID);
-  const STORAGE_IMAGE_QUALITY_CATALOG_AT = `${STORAGE_PREFIX}:image-quality:catalog-at:v1`;
   const STORAGE_CONFIG = `${STORAGE_PREFIX}:config:v1`;
   const STORAGE_LAST_SWITCH = `${STORAGE_PREFIX}:last-switch:v1`;
   const STORAGE_LOGS = `${STORAGE_PREFIX}:logs:v1`;
