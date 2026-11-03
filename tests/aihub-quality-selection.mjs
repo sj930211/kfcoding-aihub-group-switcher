@@ -79,9 +79,9 @@ assert.equal(rows[0].aihubTps, 82);
 assert.equal(rows[0].aihubMetricSampleCount, 120);
 assert.equal(rows[0].aihubCacheSampleCount, 80);
 
-const evaluate = (apiItem, modelStats = metric(), providerOverrides = {}) => {
+const evaluate = (apiItem, modelStats = metric(), providerOverrides = {}, settings = configured) => {
   const payload = api.normalizeAihubProviderData(providers([apiItem], { "model-a": modelStats }, providerOverrides), {});
-  return api.evaluateAihubCandidates(payload.summary, {}, [{ id: 1, name: "Group 1" }], { 1: 0.8 }, configured, now)[0];
+  return api.evaluateAihubCandidates(payload.summary, {}, [{ id: 1, name: "Group 1" }], { 1: 0.8 }, settings, now)[0];
 };
 const failedPresentation = detection({ presentation: { text: { result: false } } });
 const failedStage = detection({ stages: [{ status: "failed", result: false }] });
@@ -108,15 +108,62 @@ assert.ok(evaluate(monitor(1), metric({ range_cache: { ...metric().range_cache, 
 assert.ok(evaluate(monitor(1), metric({ success_rate: null })).reasons.includes("success-low"));
 assert.ok(evaluate(monitor(1), metric({ range_cache: { ...metric().range_cache, cache_hit_rate: null } })).reasons.includes("cache-metrics-missing"));
 
+const defaultConfig = api.sanitizeConfig({});
+assert.ok(defaultConfig.qualityWeights, "missing configurable quality weights defaults");
+assert.deepEqual(JSON.parse(JSON.stringify(defaultConfig.qualityWeights)), { success: 40, cache: 30, tps: 20, ratio: 10 });
+assert.equal(defaultConfig.minQualityGain, 5);
+assert.deepEqual(JSON.parse(JSON.stringify(api.sanitizeConfig({ qualityWeights: { success: 40, cache: 30, tps: 20, ratio: 10 } }).qualityWeights)),
+  { success: 40, cache: 30, tps: 20, ratio: 10 });
+assert.deepEqual(JSON.parse(JSON.stringify(api.sanitizeConfig({ qualityWeights: { success: 40, cache: 30, tps: 20, ratio: 9 } }).qualityWeights)),
+  { success: 40, cache: 30, tps: 20, ratio: 10 }, "invalid stored totals fall back as one default set");
+assert.deepEqual(JSON.parse(JSON.stringify(api.sanitizeConfig({ qualityWeights: { success: -1, cache: 41, tps: 20, ratio: 40 } }).qualityWeights)),
+  { success: 40, cache: 30, tps: 20, ratio: 10 }, "negative stored weights do not get silently clamped");
+assert.equal(api.sanitizeConfig({ minQualityGain: 120 }).minQualityGain, 100);
+
+const scoreRow = (group, groupId, values = {}) => ({
+  group, groupId, aihubMetricModel: "model-a", available: true, scopeEligible: true,
+  aggregateSuccess: 98, cacheHitRate: 70, outputTokensPerSecond: 60, ratio: 1,
+  aihubMetricSampleCount: 100, aihubCacheSampleCount: 100, ...values,
+});
 const ranked = api.scoreAihubQualityCandidates([
-  { group: "low", groupId: 1, available: true, aggregateSuccess: 97, cacheHitRate: 20, outputTokensPerSecond: 30, ratio: 0.5 },
-  { group: "mid", groupId: 2, available: true, aggregateSuccess: 98, cacheHitRate: 50, outputTokensPerSecond: 60, ratio: 0.8 },
-  { group: "high", groupId: 3, available: true, aggregateSuccess: 99, cacheHitRate: 80, outputTokensPerSecond: 90, ratio: 1 },
-]);
+  scoreRow("low", 1, { aggregateSuccess: 97, cacheHitRate: 20, outputTokensPerSecond: 30, ratio: 0.5 }),
+  scoreRow("mid", 2, { aggregateSuccess: 98, cacheHitRate: 50, outputTokensPerSecond: 60, ratio: 0.8 }),
+  scoreRow("high", 3, { aggregateSuccess: 99, cacheHitRate: 80, outputTokensPerSecond: 90, ratio: 1 }),
+], defaultConfig);
 assert.deepEqual(Array.from(ranked, row => row.group), ["high", "mid", "low"]);
-assert.equal(ranked[0].qualityScore, 90);
-assert.equal(ranked[1].qualityScore, 50);
-assert.equal(ranked[2].qualityScore, 10);
+assert.ok(Math.abs(ranked[0].qualityScore - (0.4 * 80 * 0.5 + 0.3 * 80 * 0.5 + 0.2 * (100 * 90 / 190) * 0.5 + 0.1 * 50)) < 1e-8);
+assert.ok(Math.abs(ranked[1].qualityScore - (0.4 * 60 * 0.5 + 0.3 * 50 * 0.5 + 0.2 * 37.5 * 0.5 + 0.1 * (100 / 1.8))) < 1e-8);
+assert.ok(Math.abs(ranked[2].qualityScore - (0.4 * 40 * 0.5 + 0.3 * 20 * 0.5 + 0.2 * (100 * 30 / 130) * 0.5 + 0.1 * (100 / 1.5))) < 1e-8);
+const beforeThirdCandidate = api.scoreAihubQualityCandidates([scoreRow("a", 1), scoreRow("b", 2, { aggregateSuccess: 99 })], defaultConfig);
+const afterThirdCandidate = api.scoreAihubQualityCandidates([
+  scoreRow("a", 1), scoreRow("b", 2, { aggregateSuccess: 99 }), scoreRow("third", 3, { aggregateSuccess: 10 }),
+], defaultConfig);
+assert.equal(afterThirdCandidate.find(row => row.groupId === 1).qualityScore,
+  beforeThirdCandidate.find(row => row.groupId === 1).qualityScore, "adding a third group cannot change an existing fixed score");
+assert.equal(afterThirdCandidate.find(row => row.groupId === 2).qualityScore,
+  beforeThirdCandidate.find(row => row.groupId === 2).qualityScore, "candidate membership does not change score components");
+const successOnly = { ...defaultConfig, qualityWeights: { success: 100, cache: 0, tps: 0, ratio: 0 } };
+const sampleScores = api.scoreAihubQualityCandidates([
+  scoreRow("small-sample", 1, { aihubMetricSampleCount: 100 }),
+  scoreRow("large-sample", 2, { aihubMetricSampleCount: 300 }),
+], successOnly);
+assert.equal(sampleScores.find(row => row.groupId === 1).qualityScore, 30);
+assert.equal(sampleScores.find(row => row.groupId === 2).qualityScore, 45);
+const noSuccessWeight = { ...configured, qualityWeights: { success: 0, cache: 0, tps: 0, ratio: 100 } };
+const belowThreshold = evaluate(monitor(1), metric({ success_rate: 0.94 }), {}, noSuccessWeight);
+assert.equal(belowThreshold.available, false, "zero success weight cannot disable the raw success hard gate");
+assert.ok(belowThreshold.reasons.includes("success-low"));
+const maxThresholdConfig = { ...configured, minSuccessRate: 100, qualityWeights: { success: 100, cache: 0, tps: 0, ratio: 0 } };
+const maxThresholdCandidate = evaluate(monitor(1), metric({ success_rate: 1 }), {}, maxThresholdConfig);
+assert.equal(maxThresholdCandidate.available, true);
+assert.equal(api.scoreAihubQualityCandidates([scoreRow("max", 1, { aggregateSuccess: 100 })], maxThresholdConfig)[0].qualityScore, 0,
+  "a 100% threshold yields zero success headroom without redistributing weight");
+const microDifference = api.scoreAihubQualityCandidates([
+  scoreRow("base", 1), scoreRow("tiny-gain", 2, { aggregateSuccess: 98.0001 }),
+], defaultConfig);
+assert.ok(microDifference.find(row => row.groupId === 2).qualityScore
+  - microDifference.find(row => row.groupId === 1).qualityScore <= 0.0008,
+"a 0.0001 percentage-point success change stays below 0.0008 score points");
 assert.equal(api.sanitizeConfig({ selectionMode: "stable" }).selectionMode, "quality");
 assert.equal(api.sanitizeConfig({ selectionMode: "saving" }).selectionMode, "quality");
 
@@ -145,21 +192,21 @@ assert.equal(evaluate(monitor(1), metric({tps: null})).available, false);
 assert.equal(evaluate(monitor(1), metric({range_cache: {...metric().range_cache, refreshed_at: later}})).available, false);
 assert.equal(evaluate(monitor(1, detection({presentation: {text: {}}}))).available, false);
 assert.equal(evaluate(monitor(1, detection({execution_complete: false}))).available, false);
-const qualityRow = (id, model, overrides = {}) => ({group: "q"+id, groupId: id, aihubMetricModel: model, available: true, scopeEligible: true, aggregateSuccess: 98, cacheHitRate: 70, outputTokensPerSecond: 60, ratio: 1, ...overrides});
+const qualityRow = (id, model, overrides = {}) => ({group: "q"+id, groupId: id, aihubMetricModel: model, available: true, scopeEligible: true, aggregateSuccess: 98, cacheHitRate: 70, outputTokensPerSecond: 60, ratio: 1, aihubMetricSampleCount: 100, aihubCacheSampleCount: 100, ...overrides});
 assert.equal(evaluate(monitor(1, detection({stages: undefined, stage_enabled: {text: true, detection: true}}))).available, false, "explicitly enabled stages require their own evidence");
 assert.equal(evaluate(monitor(1), metric(), {version: 1}).available, false, "legacy provider version cannot be admitted");
 const wrongWindowFailure = evaluate(monitor(1), metric({success_rate: 0.2}), {summary_range: "24h"});
 assert.equal(api.candidateHasExplicitHealthFailure(wrongWindowFailure, configured), false, "wrong metrics window cannot trigger failover");
 const duplicateNames = [qualityRow(1, "a", {group: "same"}), qualityRow(2, "b", {group: "same"}), qualityRow(3, "b", {aggregateSuccess: 99})];
 assert.equal(api.selectBestCandidate(duplicateNames, {groupId: 2, group: "same"}, "quality").groupId, 3, "group ID selects the correct current model pool");
-const ties = api.scoreAihubQualityCandidates([qualityRow(2, "a"), qualityRow(1, "a")]);
+const ties = api.scoreAihubQualityCandidates([qualityRow(2, "a"), qualityRow(1, "a")], defaultConfig);
 assert.deepEqual(Array.from(ties, row => row.groupId), [1,2]);
-assert.deepEqual(Array.from(ties, row => row.qualityScore), [50,50], "all-tied pools use average rank");
-assert.equal(api.scoreAihubQualityCandidates([qualityRow(1, "a")])[0].qualityScore, 100);
-const pools = api.scoreAihubQualityCandidates([qualityRow(1, "a", {aggregateSuccess: 99}), qualityRow(2, "a"), qualityRow(3, "b")]);
-assert.equal(pools.find(row => row.groupId === 3).qualityScore, 100, "model pools remain independent");
+assert.deepEqual(Array.from(ties, row => row.qualityScore), [31.25, 31.25], "equal metrics keep equal absolute scores");
+assert.equal(api.scoreAihubQualityCandidates([qualityRow(1, "a")], defaultConfig)[0].qualityScore, 31.25);
+const pools = api.scoreAihubQualityCandidates([qualityRow(1, "a", {aggregateSuccess: 99}), qualityRow(2, "a"), qualityRow(3, "b")], defaultConfig);
+assert.equal(pools.find(row => row.groupId === 3).qualityScore, 31.25, "model pools use the same absolute formula independently");
 assert.equal(api.selectBestCandidate(pools, "", "quality"), null, "cross-model relative scores cannot produce one recommendation");
 assert.equal(api.selectBestCandidate(pools, "q2", "quality").groupId, 1);
 assert.equal(api.selectBestCandidate([qualityRow(1, "a", {scopeEligible: false})], "", "quality"), null);
 assert.equal(Number.isNaN(api.scoreAihubQualityCandidates([qualityRow(1, "a", {cacheHitRate: NaN})])[0].qualityScore), true);
-console.log("PASS AIHub v2 1h data, strict detection details, percentile scoring and explicit monitor scope");
+console.log("PASS AIHub v2 1h data, strict detection details, fixed weighted scoring and explicit monitor scope");

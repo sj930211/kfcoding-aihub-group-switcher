@@ -1,9 +1,9 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs build",
-    "test": "npm run build && node --check kfcoding-group-switcher.user.js && node test-selection.mjs && node tests/versioning.mjs && node tests/aihub-quality-selection.mjs && node tests/aihub-retirement.mjs && node tests/check-schedules.mjs && node tests/aihub-model-scope.mjs && node tests/failover-mode.mjs && node tests/selector-search.mjs && node tests/platform-filter.mjs && node tests/platform-controls.mjs && node tests/platform-scope.mjs && node tests/aihub-v2-ui-contract.mjs && node tests/aihub-v2-ui-behavior.mjs && node tests/aihub-decision-safety.mjs"
+    "test": "npm run build && node --check kfcoding-group-switcher.user.js && node test-selection.mjs && node tests/versioning.mjs && node tests/aihub-quality-selection.mjs && node tests/aihub-retirement.mjs && node tests/check-schedules.mjs && node tests/aihub-model-scope.mjs && node tests/failover-mode.mjs && node tests/selector-search.mjs && node tests/platform-filter.mjs && node tests/platform-controls.mjs && node tests/platform-scope.mjs && node tests/aihub-v2-ui-contract.mjs && node tests/aihub-v2-ui-behavior.mjs && node tests/aihub-decision-safety.mjs && node tests/aihub-v210-decision.mjs && node tests/aihub-v210-settings.mjs"
   }
 }

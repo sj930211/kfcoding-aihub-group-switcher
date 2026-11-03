@@ -415,8 +415,8 @@
     if (refs.confirmationHint) {
       const minutes = config.strategySeconds / 60;
       refs.confirmationHint.textContent = config.automaticSwitchMode === "failover"
-        ? "仅故障转移：当前组健康时保持不动，原组恢复后不自动切回；故障按检测周期处理。"
-        : `连续确认按每 ${minutes} 分钟一次择优计算${config.confirmPolls > 1 ? `，首次命中后至少再等 ${(config.confirmPolls - 1) * minutes} 分钟` : ""}；回滚观察按故障检测轮次计算。`;
+        ? "仅故障转移：当前组健康时保持不动，原组恢复后不自动切回；切换观察只统计切换后的新健康证据。"
+        : `每 ${minutes} 分钟轮询择优；连续确认只统计变化的有效证据，重复快照不累计。切换后等待新健康证据，未验证不等于已恢复。`;
     }
     if (refs.automaticSwitchHint) refs.automaticSwitchHint.textContent = config.automaticSwitchMode === "failover"
       ? "只在确认当前组故障时，按所选策略转移；健康时不切换，原组恢复后不自动切回。"
@@ -468,10 +468,11 @@
     }
     if (refs.bestGroup) {
       const selected = tokensCache.filter((token) => config.tokenIds.includes(Number(token.id)));
-      const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)));
-      const currentModels = [...new Set(currentRows.filter(Boolean).map(qualityModel))];
+      const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)
+        && qualityModel(row) === tokenDecisionModel(config, token.id)));
+      const currentModels = [...new Set(selected.map((token) => tokenDecisionModel(config, token.id)))];
       const current = currentRows.length && currentRows.every(Boolean) && currentModels.length === 1 ? currentRows[0] : "";
-      const best = selectBestCandidate(state.candidates, current, config.selectionMode);
+      const best = selected.length && !current ? null : selectBestCandidate(state.candidates, current, config.selectionMode, config);
       const detail = best
         ? `${qualityModel(best) || "模型未匹配"} · ${Number.isFinite(best.qualityScore) ? `同模型质量 ${best.qualityScore.toFixed(1)}` : "质量待评估"}`
         : state.candidates.length ? "按检测详情与同模型 1h 指标评估" : "等待检查";
@@ -580,7 +581,11 @@
         refs.isolationSummaryCount.textContent = `${entries.length}条`;
         if (refs.isolationRecords.open) renderIsolations();
       }
-      if (state.settingsPage === "routing") renderMonitorScope();
+      if (state.settingsPage === "routing") {
+        renderMonitorScope();
+        renderQualitySettings();
+        renderTokenModelBindings();
+      }
     }
     if (refs.isolationToast) {
       const undoAvailable = state.isolationUndo.entries.length > 0 && state.isolationUndo.expiresAt > Date.now();
@@ -619,6 +624,171 @@
     if (refs.glassTransparencyValue) refs.glassTransparencyValue.textContent = `${config.glassTransparency}%`;
   }
 
+  const QUALITY_WEIGHT_CONTROLS = Object.freeze({ success: "qualityWeightSuccess", cache: "qualityWeightCache", tps: "qualityWeightTps", ratio: "qualityWeightRatio" });
+  let qualitySettingsDraftKey = null;
+
+  function qualitySettingsDraft() {
+    const weights = Object.fromEntries(Object.entries(QUALITY_WEIGHT_CONTROLS)
+      .map(([key, name]) => [key, refs[name]?.value ?? ""]));
+    const gain = refs.minQualityGainDraft?.value ?? "";
+    return { weights, gain: Number(gain), valid: validQualityWeights(weights)
+      && gain !== "" && Number.isFinite(Number(gain)) && Number(gain) >= 0 && Number(gain) <= 100 };
+  }
+
+  function renderQualitySettings() {
+    if (!refs.qualityWeightSuccess) return;
+    const key = JSON.stringify([config.qualityWeights, config.minQualityGain]);
+    if (qualitySettingsDraftKey !== key) {
+      qualitySettingsDraftKey = key;
+      Object.entries(QUALITY_WEIGHT_CONTROLS).forEach(([name, ref]) => {
+        refs[ref].value = String(config.qualityWeights[name]);
+      });
+      refs.minQualityGainDraft.value = String(config.minQualityGain);
+    }
+    const draft = qualitySettingsDraft();
+    const total = Object.values(draft.weights).reduce((sum, value) => sum + (value === "" ? NaN : Number(value)), 0);
+    refs.qualityWeightTotal.textContent = `合计 ${Number.isFinite(total) ? total : "—"}% / 100%`;
+    refs.qualityWeightTotal.dataset.invalid = String(!draft.valid);
+    Object.entries(QUALITY_WEIGHT_CONTROLS).forEach(([name, ref]) => {
+      const value = draft.weights[name];
+      refs[ref].disabled = running;
+      refs[ref].setAttribute("aria-invalid", String(value === "" || !Number.isInteger(Number(value)) || Number(value) < 0 || Number(value) > 100));
+    });
+    refs.minQualityGainDraft.setAttribute("aria-invalid", String(!Number.isFinite(draft.gain) || refs.minQualityGainDraft.value === "" || draft.gain < 0 || draft.gain > 100));
+    refs.minQualityGainDraft.disabled = running;
+    const changed = JSON.stringify(normalizeQualityWeights(draft.weights)) !== JSON.stringify(config.qualityWeights)
+      || draft.gain !== config.minQualityGain;
+    refs.qualityWeightsStatus.textContent = !draft.valid ? "每项须为 0–100 的整数，合计必须为 100%；收益门槛须在 0–100 分。"
+      : changed ? "有未保存的权重修改；预览仅使用当前快照，点击保存后下次检查生效。" : "已保存。只在下次检查时应用，不立即刷新或切组。";
+    refs.qualityWeightsSave.disabled = running;
+    refs.qualityWeightsReset.disabled = running;
+    const warnings = Array.isArray(state.configWarnings) ? state.configWarnings : state.configWarnings ? [state.configWarnings] : [];
+    refs.qualityConfigWarning.hidden = !warnings.length;
+    refs.qualityConfigWarning.textContent = warnings.join("；");
+    renderQualitySettingsPreview(draft);
+  }
+
+  function qualityPreviewDecision(current, best, settings) {
+    if (!settings.enabled) return "保持当前组：自动切换已暂停，排名仅供查看。";
+    if (settings.automaticSwitchMode === "failover") return "保持当前组：仅故障转移，当前组健康，排名不触发切换。";
+    const score = scoreAihubQualityCandidates([current], settings)[0]?.qualityScore;
+    const gain = best.qualityScore - score;
+    if (!Number.isFinite(gain)) return "保持当前组：数据不足，无法按同一标尺比较。";
+    if (gain <= 0) return "保持当前组：没有严格领先的候选，同分也不切换。";
+    if (gain < settings.minQualityGain) return `保持当前组：分差 ${gain.toFixed(2)} 分，低于 ${settings.minQualityGain} 分门槛。`;
+    return `分差 ${gain.toFixed(2)} 分达到 ${settings.minQualityGain} 分门槛；需在后续检查中取得新证据并完成 ${settings.confirmPolls} 次确认，且仍受保持期与观察等保护约束；预览不执行切换。`;
+  }
+
+  function renderQualitySettingsPreview(draft = qualitySettingsDraft()) {
+    if (!refs.qualityPreview) return;
+    if (!draft.valid) { refs.qualityPreview.textContent = "权重合法后显示本地预览。"; return; }
+    const snapshot = state.candidates.slice();
+    const previewSettings = { ...config, qualityWeights: normalizeQualityWeights(draft.weights), minQualityGain: draft.gain };
+    const lines = [];
+    config.tokenIds.forEach((id) => {
+      const token = tokensCache.find((entry) => Number(entry.id) === Number(id));
+      const name = token?.name || `密钥 #${id}`;
+      const model = tokenDecisionModel(config, id);
+      if (!model) { lines.push(`${name}：待绑定已启用的决策模型，自动处理暂停。`); return; }
+      if (!token || !tokenSupportsModel(token, model)) { lines.push(`${name} · ${model}：密钥无权限使用绑定模型或密钥详情缺失，自动处理暂停。`); return; }
+      const rows = snapshot.filter((row) => qualityModel(row) === model);
+      const current = token && rows.find((row) => candidateMatchesToken(row, token));
+      if (candidateHasExplicitHealthFailure(current, config)) {
+        lines.push(`${name} · ${model}：当前快照存在明确故障，正常择优预览不适用；需在后续检查中按故障恢复准入选择安全目标，此处不执行恢复。`); return;
+      }
+      if (!current?.available || !Number.isFinite(scoreAihubQualityCandidates([current], config)[0]?.qualityScore)) {
+        lines.push(`${name} · ${model}：当前组数据不足，无完整的同模型比较；保持当前组。`); return;
+      }
+      const before = selectBestCandidate(rows, token, "quality", config);
+      const after = selectBestCandidate(rows, token, "quality", previewSettings);
+      if (!Number.isFinite(before?.qualityScore) || !Number.isFinite(after?.qualityScore)) { lines.push(`${name} · ${model}：无完整合格候选，不生成推荐。`); return; }
+      lines.push(`${name} · ${model}：已保存排名优胜 ${before.group}（${before.qualityScore.toFixed(2)}） → 草稿排名优胜 ${after.group}（${after.qualityScore.toFixed(2)}）`);
+      lines.push(`已保存决策：${qualityPreviewDecision(current, before, config)}`);
+      lines.push(`草稿决策：${qualityPreviewDecision(current, after, previewSettings)}`);
+      [["已保存", before], ["草稿", after]].forEach(([label, winner]) => {
+        const c = winner.qualityComponents.contributions;
+        lines.push(`${label}分项贡献：成功 ${c.success.toFixed(2)} · 缓存 ${c.cache.toFixed(2)} · TPS ${c.tps.toFixed(2)} · 倍率 ${c.ratio.toFixed(2)}；样本保守系数：模型 ${winner.qualityComponents.qModel.toFixed(3)} / 缓存 ${winner.qualityComponents.qCache.toFixed(3)}`);
+      });
+    });
+    refs.qualityPreview.textContent = lines.length ? lines.join("\n") : "请先选择密钥并绑定决策模型，再用已检查快照预览；此处不会刷新数据。";
+  }
+
+  function resetQualitySettingsDraft() {
+    Object.entries(QUALITY_WEIGHT_CONTROLS).forEach(([name, ref]) => { refs[ref].value = String(DEFAULT_CONFIG.qualityWeights[name]); });
+    refs.minQualityGainDraft.value = String(DEFAULT_CONFIG.minQualityGain);
+    renderQualitySettings();
+  }
+
+  function saveQualitySettings() {
+    if (running) return;
+    const draft = qualitySettingsDraft();
+    if (!draft.valid) { renderQualitySettings(); return; }
+    const next = sanitizeConfig({ ...config, qualityWeights: draft.weights, minQualityGain: draft.gain });
+    if (JSON.stringify([next.qualityWeights, next.minQualityGain]) !== JSON.stringify([config.qualityWeights, config.minQualityGain])) {
+      config = next;
+      invalidateCheckDecisions();
+      pendingCandidates.clear();
+      GM_setValue(STORAGE_CONFIG, config);
+      refreshQualityRecommendation();
+    }
+    setStatus("质量权重已保存，下次检查生效", "success");
+    renderQualitySettings();
+    render();
+  }
+
+  function renderTokenModelBindings() {
+    if (!refs.tokenModelBindings) return;
+    const selected = config.tokenIds.map(Number);
+    const models = targetModels(config);
+    const key = JSON.stringify([selected, models, config.tokenModels, tokensCache.map((token) => [token.id, token.name]), running]);
+    const unresolved = selected.filter((id) => !tokenDecisionModel(config, id));
+    refs.tokenModelStatus.textContent = !selected.length ? "选择密钥后，为每个密钥绑定一个决策模型。"
+      : unresolved.length ? `${unresolved.length} 个密钥待绑定或绑定模型未启用，自动处理暂停；其他已绑定密钥继续运行。`
+        : `已绑定 ${selected.length} 个密钥；仅使用该模型的当前检测详情与 1h 指标。`;
+    if (refs.tokenModelBindings.dataset.renderKey === key) return;
+    const focusedId = root?.activeElement?.dataset?.tokenModelId;
+    refs.tokenModelBindings.dataset.renderKey = key;
+    refs.tokenModelBindings.replaceChildren();
+    selected.forEach((id) => {
+      const token = tokensCache.find((entry) => Number(entry.id) === id);
+      const binding = String(config.tokenModels?.[id] || "");
+      const field = document.createElement("div"); field.className = "token-model-field";
+      const label = document.createElement("label"); label.htmlFor = `kf-token-model-${id}`;
+      label.textContent = token?.name || `密钥 #${id}`;
+      const select = document.createElement("select"); select.id = label.htmlFor; select.dataset.tokenModelId = String(id);
+      select.disabled = running;
+      const options = [["", "请选择决策模型"], ...models.map((model) => [model, model])];
+      if (binding && !models.includes(binding)) options.push([binding, `${binding}（未启用，自动处理暂停）`]);
+      options.forEach(([value, text]) => {
+        const option = document.createElement("option"); option.value = value; option.textContent = text;
+        option.disabled = Boolean(value && !models.includes(value)); select.appendChild(option);
+      });
+      select.value = binding;
+      select.addEventListener("change", () => persistTokenModelBinding(id, select.value));
+      const hint = document.createElement("small");
+      hint.textContent = tokenDecisionModel(config, id) ? "不修改业务请求的 model，也不会调用模型。" : binding ? "绑定模型已取消启用；请重新勾选模型或另行绑定。" : "待绑定：此密钥的自动检查与切换暂停。";
+      field.append(label, select, hint); refs.tokenModelBindings.appendChild(field);
+    });
+    if (focusedId && !running) refs.tokenModelBindings.querySelector(`[data-token-model-id="${focusedId}"]`)?.focus({ preventScroll: true });
+  }
+
+  function persistTokenModelBinding(id, model) {
+    if (running || !config.tokenIds.includes(Number(id)) || (model && !targetModels(config).includes(model))) return;
+    const bindings = { ...config.tokenModels };
+    if (model) bindings[id] = model; else delete bindings[id];
+    if (JSON.stringify(bindings) === JSON.stringify(config.tokenModels)) return;
+    config = sanitizeConfig({ ...config, tokenModels: bindings });
+    invalidateCheckDecisions();
+    pendingCandidates.clear();
+    GM_setValue(STORAGE_CONFIG, config);
+    state.tokenResults = [];
+    refreshQualityRecommendation();
+    renderTokenModelBindings();
+    renderQualitySettings();
+    setStatus(model ? "决策模型已绑定，下次检查生效" : "已取消绑定，此密钥自动处理暂停", model ? "success" : "warning");
+    render();
+  }
+
   function readFormConfig() {
     return sanitizeConfig({
       theme: refs.theme.value,
@@ -631,6 +801,9 @@
       automaticSwitchMode: refs.automaticSwitchMode?.value || "strategy",
       businessPlatform: config.businessPlatform,
       selectionMode: "quality",
+      qualityWeights: config.qualityWeights,
+      minQualityGain: config.minQualityGain,
+      tokenModels: config.tokenModels,
       monitorScopeMode: config.monitorScopeMode,
       monitorGroupIds: config.monitorGroupIds,
       monitorScopeMigrationPending: config.monitorScopeMigrationPending,
@@ -679,6 +852,8 @@
     refs.switchHoldMinutes.value = String(config.switchHoldMinutes);
     refs.rollbackChecks.value = String(config.rollbackChecks);
     refs.blacklistMinutes.value = String(config.blacklistMinutes);
+    renderQualitySettings();
+    renderTokenModelBindings();
   }
 
   function persistFormConfig() {
@@ -693,6 +868,7 @@
       setStatus("自动切换已暂停", "warning");
     }
     const invalid = [...refs.settingsSection.querySelectorAll("input,select")].filter((input) => {
+      if (input.closest?.(".quality-settings-draft")) return false;
       const valid = input.checkValidity();
       input.setAttribute("aria-invalid", String(!valid));
       return !valid;
@@ -712,6 +888,7 @@
       pendingCandidates.clear();
     }
     GM_setValue(STORAGE_CONFIG, config);
+    renderTokenModelBindings();
     if (state.todayUsage.available) syncSpendProtection({ notify: true });
     if (`${config.tokenIds.join(",")}:${targetModelIdentity(config)}` !== previousIdentity) {
       pendingCandidates.clear();
@@ -1284,8 +1461,15 @@
       });
       refs.groupFilterList.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    Object.values(QUALITY_WEIGHT_CONTROLS).forEach((name) => {
+      refs[name]?.addEventListener("input", renderQualitySettings);
+    });
+    refs.minQualityGainDraft?.addEventListener("input", renderQualitySettings);
+    refs.qualityWeightsReset?.addEventListener("click", resetQualitySettingsDraft);
+    refs.qualityWeightsSave?.addEventListener("click", saveQualitySettings);
     refs.settingsSection.addEventListener("change", (event) => {
       if (event.target.matches("[data-selector-search], .selector-platform")) return;
+      if (event.target.closest(".quality-settings-draft, .token-model-settings")) return;
       if (event.target === refs.monitorScopeMode || event.target.closest(".monitor-scope-panel")) return;
       if (event.target.closest(".token-list")) return;
       if (event.target === refs.groupFilterMode || event.target.closest(".group-filter-select")) return;

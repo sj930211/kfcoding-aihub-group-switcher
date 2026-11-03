@@ -148,6 +148,7 @@
       .join(MODEL_IDENTITY_SEPARATOR);
     config.models = config.models.map(canonicalize).filter(Boolean);
     config.model = config.models[0] || "";
+    config.tokenModels = Object.fromEntries(Object.entries(config.tokenModels).map(([id, model]) => [id, canonicalize(model)]));
     Object.values(history.byToken).forEach((entry) => {
       entry.model = canonicalizeIdentity(entry.model);
     });
@@ -234,6 +235,7 @@
               : typeof item.passed === "boolean" ? item.passed : completed ? true : null,
           executionComplete: typeof item.execution_complete !== "boolean" && typeof item.executionComplete !== "boolean"
             ? (item.named === true ? completed : null) : item.execution_complete === true || item.executionComplete === true,
+          finishedAt: String(item.finished_at ?? item.finishedAt ?? ""),
         };
       }),
       hasExpiresAt: value.hasExpiresAt === undefined ? hasExpiresAt : value.hasExpiresAt === true,

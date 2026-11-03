@@ -781,7 +781,8 @@ assert.deepEqual(
   JSON.parse(JSON.stringify(guardState)),
   {
     byToken: {
-      7: { model: "gpt-test", fromGroup: "stable", toGroup: "cheap", remaining: 2, at: 1000 },
+      7: { model: "gpt-test", fromGroup: "stable", toGroup: "cheap", remaining: 2, at: 1000,
+        switchAt: 0, lastEvidence: "", seenEvidence: [], initialEvidence: "" },
     },
     blacklist: [{ model: "gpt-test", group: "cheap", until: 5000 }],
   },
@@ -828,14 +829,14 @@ assert.equal(api.candidateHasHealthFailure({ reasons: ["blocked-group"] }), fals
 assert.equal(api.candidateHasHealthFailure({ reasons: ["ratio-too-high"] }), false);
 assert.equal(api.candidateHasHealthFailure(null), true);
 const rollbackToPrevious = api.selectRollbackCandidate([
-  { group: "cheap", available: true, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, latencyMs: 1000, ratio: 0.05 },
-  { group: "stable", available: true, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, latencyMs: 1000, ratio: 0.2 },
+  { group: "cheap", available: true, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, aihubMetricSampleCount: 100, aihubCacheSampleCount: 100, latencyMs: 1000, ratio: 0.05 },
+  { group: "stable", available: true, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, aihubMetricSampleCount: 100, aihubCacheSampleCount: 100, latencyMs: 1000, ratio: 0.2 },
 ], "stable");
 assert.equal(rollbackToPrevious.candidate.group, "stable");
 assert.equal(rollbackToPrevious.usedPrevious, true);
 const rollbackToAlternative = api.selectRollbackCandidate([
-  { group: "cheap", available: true, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, latencyMs: 1000, ratio: 0.05 },
-  { group: "stable", available: false, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, latencyMs: 1000, ratio: 0.2 },
+  { group: "cheap", available: true, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, aihubMetricSampleCount: 100, aihubCacheSampleCount: 100, latencyMs: 1000, ratio: 0.05 },
+  { group: "stable", available: false, aggregateSuccess: 99, cacheHitRate: 70, outputTokensPerSecond: 50, aihubMetricSampleCount: 100, aihubCacheSampleCount: 100, latencyMs: 1000, ratio: 0.2 },
 ], "stable");
 assert.equal(rollbackToAlternative.candidate.group, "cheap");
 assert.equal(rollbackToAlternative.usedPrevious, false);

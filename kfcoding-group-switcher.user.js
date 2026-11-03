@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KFCoding 智能低倍率分组切换
 // @namespace    https://kfcoding.codes/
-// @version      2.0.0
+// @version      2.1.0
 // @description  AIHub 专用分组工作台：监控范围、模型检测详情、1h 综合质量与故障转移。
 // @author       sj930211
 // @license      MIT
@@ -88,7 +88,7 @@
     luna: "gpt-5.6-luna",
     astra: "gpt-6-astra",
   });
-  const SCRIPT_VERSION = "2.0.0";
+  const SCRIPT_VERSION = "2.1.0";
   const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js";
   /*
   const AIHUB_CACHE_PRICING = Object.freeze({
@@ -108,6 +108,9 @@
     automaticSwitchMode: "strategy",
     businessPlatform: "",
     selectionMode: "quality",
+    qualityWeights: Object.freeze({ success: 40, cache: 30, tps: 20, ratio: 10 }),
+    minQualityGain: 5,
+    tokenModels: Object.freeze({}),
     monitorScopeMode: "all",
     monitorGroupIds: [],
     monitorScopeMigrationPending: false,
@@ -197,6 +200,18 @@
 
   function normalizeAutomaticSwitchMode(value) {
     return value === "failover" ? "failover" : "strategy";
+  }
+
+  function validQualityWeights(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value)
+      && ["success", "cache", "tps", "ratio"].every((key) => value[key] !== null && value[key] !== ""
+        && Number.isInteger(Number(value[key])) && Number(value[key]) >= 0 && Number(value[key]) <= 100)
+      && ["success", "cache", "tps", "ratio"].reduce((sum, key) => sum + Number(value[key]), 0) === 100);
+  }
+
+  function normalizeQualityWeights(value) {
+    const source = validQualityWeights(value) ? value : DEFAULT_CONFIG.qualityWeights;
+    return Object.fromEntries(["success", "cache", "tps", "ratio"].map((key) => [key, Number(source[key])]));
   }
 
   function normalizeBusinessPlatform(value) {
@@ -290,6 +305,19 @@
 
   function targetModelIdentity(config) {
     return targetModels(config).slice().sort().join(MODEL_IDENTITY_SEPARATOR);
+  }
+
+  function normalizeTokenModels(value, ids, models) {
+    if (value === undefined) return models.length === 1
+      ? Object.fromEntries(ids.map((id) => [id, models[0]])) : {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([id, model]) => Number.isSafeInteger(Number(id))
+      && Number(id) > 0 && typeof model === "string" && model.trim()).map(([id, model]) => [String(Number(id)), model.trim()]));
+  }
+
+  function tokenDecisionModel(settings, tokenId) {
+    const model = settings.tokenModels?.[Number(tokenId)] || "";
+    return targetModels(settings).includes(model) ? model : "";
   }
 
   function targetModelLabel(config) {
@@ -388,6 +416,10 @@
         ...(toGroupId ? { toGroupId } : {}),
         remaining,
         at: Math.max(0, Number(entry.at) || 0),
+        switchAt: Math.max(0, Number(entry.switchAt) || 0),
+        lastEvidence: String(entry.lastEvidence || ""),
+        seenEvidence: (Array.isArray(entry.seenEvidence) ? entry.seenEvidence : []).filter((item) => typeof item === "string").slice(-20),
+        initialEvidence: String(entry.initialEvidence || ""),
       };
     });
     const blacklist = (Array.isArray(source.blacklist) ? source.blacklist : [])
@@ -459,13 +491,14 @@
 
   function applyTemporaryBlacklist(candidates, guardState, model, now, options) {
     const blocked = normalizeSwitchGuardState(guardState).blacklist
-      .filter((entry) => entry.model === model && entry.until > now);
+      .filter((entry) => entry.until > now);
     return candidates.map((candidate) => {
       const reasons = candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted");
-      if (blocked.some((entry) => entry.groupId ? Number(candidate.groupId) === entry.groupId : candidate.group === entry.group)) {
+      if (blocked.some((entry) => entry.model === (candidate.aihubMetricModel || model)
+        && (entry.groupId ? Number(candidate.groupId) === entry.groupId : candidate.group === entry.group))) {
         reasons.unshift("temporarily-blacklisted");
       }
-      return { ...candidate, reasons,
+      return { ...candidate, reasons, emergencyEligible: candidate.emergencyEligible === true && !reasons.includes("temporarily-blacklisted"),
         available: reasons.length === 0 && (candidate.available || candidate.reasons.includes("temporarily-blacklisted")) };
     });
   }
@@ -578,11 +611,14 @@
       glassTransparency: normalizeGlassTransparency(source.glassTransparency),
       enabled: Boolean(source.enabled),
       tokenIds: parseTokenIds(source.tokenIds, source.tokenId),
+      tokenModels: normalizeTokenModels(source.tokenModels, parseTokenIds(source.tokenIds, source.tokenId), models),
       models,
       model: models[0] || "",
       automaticSwitchMode: normalizeAutomaticSwitchMode(source.automaticSwitchMode),
       businessPlatform: normalizeBusinessPlatform(source.businessPlatform),
       selectionMode: normalizeSelectionMode(source.selectionMode),
+      qualityWeights: normalizeQualityWeights(source.qualityWeights),
+      minQualityGain: clampNumber(source.minQualityGain, DEFAULT_CONFIG.minQualityGain, 0, 100),
       monitorScopeMode: hasMonitorScope ? (source.monitorScopeMode === "selected" ? "selected" : "all")
         : (legacyPlatform ? "selected" : "all"),
       monitorGroupIds: normalizeMonitorGroupIds(source.monitorGroupIds),
@@ -660,6 +696,7 @@
       "ratio-unknown": "倍率未知",
       "ratio-too-high": "超过倍率上限",
       "metrics-missing": "无性能数据",
+      "tps-missing": "1h TPS 缺失（仅故障时可应急）",
       "metrics-stale": "指标已过期",
       "success-low": "1h 成功率不足",
       "latest-success-low": "最新成功率不足",
@@ -860,6 +897,7 @@
       .join(MODEL_IDENTITY_SEPARATOR);
     config.models = config.models.map(canonicalize).filter(Boolean);
     config.model = config.models[0] || "";
+    config.tokenModels = Object.fromEntries(Object.entries(config.tokenModels).map(([id, model]) => [id, canonicalize(model)]));
     Object.values(history.byToken).forEach((entry) => {
       entry.model = canonicalizeIdentity(entry.model);
     });
@@ -946,6 +984,7 @@
               : typeof item.passed === "boolean" ? item.passed : completed ? true : null,
           executionComplete: typeof item.execution_complete !== "boolean" && typeof item.executionComplete !== "boolean"
             ? (item.named === true ? completed : null) : item.execution_complete === true || item.executionComplete === true,
+          finishedAt: String(item.finished_at ?? item.finishedAt ?? ""),
         };
       }),
       hasExpiresAt: value.hasExpiresAt === undefined ? hasExpiresAt : value.hasExpiresAt === true,
@@ -1495,6 +1534,8 @@
       cacheStale: cache.stale === false,
       cacheRefreshedAt: timestamp,
       cacheRefreshedAtMs: Number.isFinite(parsedTimestamp) ? parsedTimestamp : NaN,
+      windowStart: String(source.window_start ?? source.windowStart ?? ""),
+      windowEnd: String(source.window_end ?? source.windowEnd ?? ""),
       model: modelName || "",
     };
   }
@@ -1696,7 +1737,8 @@
       if (summaryRange !== "1h") reasons.push("metrics-window-invalid");
       if (summary.providerVersion !== 2) reasons.push("metrics-provider-version");
       if (!metricFresh) reasons.push("metrics-stale");
-      if (!Number.isFinite(metrics.successRate) || !Number.isFinite(metrics.tps) || !Number.isFinite(metrics.sampleCount)) reasons.push("metrics-missing");
+      if (!Number.isFinite(metrics.successRate) || !Number.isFinite(metrics.sampleCount)) reasons.push("metrics-missing");
+      if (!Number.isFinite(metrics.tps)) reasons.push("tps-missing");
       if (Number.isFinite(metrics.sampleCount) && metrics.sampleCount < settings.minMetricSamples) reasons.push("metrics-sample-insufficient");
       if (!Number.isFinite(metrics.successRate) || metrics.successRate < settings.minSuccessRate) reasons.push("success-low");
       if (!Number.isFinite(metrics.cacheHitRate) || !Number.isFinite(metrics.cacheSampleCount)) reasons.push("cache-metrics-missing");
@@ -1708,17 +1750,21 @@
       const detectionFresh = Boolean(detection && (detection.hasExpiresAt
         ? Number.isFinite(detection.expiresAtMs) && detection.expiresAtMs > now
         : Number.isFinite(detection.detectedAtMs) && detection.detectedAtMs <= now && now - detection.detectedAtMs <= 3600000));
+      const emergencyReasons = new Set(["tps-missing", "cache-metrics-missing", "cache-stale", "cache-sample-insufficient"]);
+      const emergencyEligible = reasons.length > 0 && reasons.every((reason) => emergencyReasons.has(reason));
       return {
-        group, groupId, ratio, publicRatio, ratioSource, available: reasons.length === 0, reasons, warnings: [],
+        group, groupId, ratio, publicRatio, ratioSource, available: reasons.length === 0, emergencyEligible, reasons, warnings: [],
         providerId: "aihub", platform: String(monitor.platform || meta?.platform || ""),
         aggregateSuccess: metrics.successRate, aggregateSuccessWindow: summaryRange,
         cacheHitRate: metrics.cacheHitRate, outputTokensPerSecond: metrics.tps,
         aihubSuccessRate: metrics.successRate, aihubCacheHitRate: metrics.cacheHitRate, aihubTps: metrics.tps,
         aihubMetricSampleCount: metrics.sampleCount, aihubCacheSampleCount: metrics.cacheSampleCount,
+        aihubMetricWindowStart: metrics.windowStart, aihubMetricWindowEnd: metrics.windowEnd,
         aihubMetricModel: metricModel, targetModels: matchedModel ? [matchedModel] : [],
         inMonitorScope, monitored: inMonitorScope, scopeEligible: inMonitorScope,
         modelDetection: detection, modelDetectionReason, modelDetectionStatus: detection?.status || "",
         modelDetectionModelKey: detection?.modelKey || "", modelHealthStatus: "",
+        modelCards: normalizeAihubModelCards(monitor.modelCards ?? monitor.model_cards),
         detectionMedia: normalizeAihubDetectionMedia(monitor),
         latestSuccess: NaN, recentSuccess: NaN, recentMinSuccess: NaN, recentSampleCount: 0,
         firstTokenLatencyMs: firstToken.value, firstTokenLatencySource: firstToken.source,
@@ -1915,7 +1961,9 @@
     return Number.isFinite(candidate.aggregateSuccess) && candidate.aggregateSuccess >= 0 && candidate.aggregateSuccess <= 100
       && Number.isFinite(candidate.cacheHitRate) && candidate.cacheHitRate >= 0 && candidate.cacheHitRate <= 100
       && Number.isFinite(candidate.outputTokensPerSecond) && candidate.outputTokensPerSecond >= 0
-      && Number.isFinite(candidate.ratio) && candidate.ratio > 0;
+      && Number.isFinite(candidate.ratio) && candidate.ratio > 0
+      && Number.isFinite(candidate.aihubMetricSampleCount) && candidate.aihubMetricSampleCount >= 0
+      && Number.isFinite(candidate.aihubCacheSampleCount) && candidate.aihubCacheSampleCount >= 0;
   }
 
   function candidateQualityTie(left, right) {
@@ -1925,50 +1973,45 @@
       || Number(left.groupId || 0) - Number(right.groupId || 0) || left.group.localeCompare(right.group);
   }
 
-  function scoreAihubQualityCandidates(candidates) {
-    const pools = new Map();
-    const result = candidates.map((candidate) => ({ ...candidate, qualityScore: NaN, qualityPercentiles: null }));
+  const QUALITY_SCALES = Object.freeze({ successHeadroom: 5, tps: 100, ratio: 1, samples: 100 });
+
+  function scoreAihubQualityCandidates(candidates, settings = DEFAULT_CONFIG) {
+    const weights = normalizeQualityWeights(settings.qualityWeights);
+    const minimum = clampNumber(settings.minSuccessRate, DEFAULT_CONFIG.minSuccessRate, 0, 100);
+    const result = candidates.map((candidate) => ({ ...candidate, qualityScore: NaN, qualityComponents: null }));
     result.forEach((candidate) => {
       if (!candidate.available || candidate.scopeEligible === false || !qualityMetricValid(candidate)) return;
-      const model = qualityModel(candidate);
-      if (!pools.has(model)) pools.set(model, []);
-      pools.get(model).push(candidate);
-    });
-    const metrics = [["success", (row) => row.aggregateSuccess, 0.4], ["cache", (row) => row.cacheHitRate, 0.3],
-      ["tps", (row) => row.outputTokensPerSecond, 0.2], ["cost", (row) => -row.ratio, 0.1]];
-    pools.forEach((pool) => {
-      pool.forEach((row) => { row.qualityPercentiles = {}; row.qualityScore = 0; });
-      metrics.forEach(([name, value, weight]) => {
-        const sorted = pool.slice().sort((left, right) => value(left) - value(right));
-        for (let start = 0; start < sorted.length;) {
-          let end = start + 1;
-          while (end < sorted.length && value(sorted[end]) === value(sorted[start])) end += 1;
-          const score = sorted.length === 1 ? 100 : 100 * ((start + end - 1) / 2) / (sorted.length - 1);
-          for (let index = start; index < end; index += 1) {
-            sorted[index].qualityPercentiles[name] = score;
-            sorted[index].qualityScore += weight * score;
-          }
-          start = end;
-        }
-      });
+      if (candidate.aggregateSuccess < minimum) return;
+      const qModel = candidate.aihubMetricSampleCount / (candidate.aihubMetricSampleCount + QUALITY_SCALES.samples);
+      const qCache = candidate.aihubCacheSampleCount / (candidate.aihubCacheSampleCount + QUALITY_SCALES.samples);
+      const utilities = {
+        success: Math.min(100, Math.max(0, 100 * (candidate.aggregateSuccess - minimum) / Math.max(100 - minimum, QUALITY_SCALES.successHeadroom))),
+        cache: candidate.cacheHitRate,
+        tps: 100 * candidate.outputTokensPerSecond / (candidate.outputTokensPerSecond + QUALITY_SCALES.tps),
+        ratio: 100 / (1 + candidate.ratio / QUALITY_SCALES.ratio),
+      };
+      const contributions = Object.fromEntries(Object.entries(utilities).map(([name, value]) => [name,
+        weights[name] / 100 * value * (name === "ratio" ? 1 : name === "cache" ? qCache : qModel)]));
+      candidate.qualityComponents = { utilities, contributions, qModel, qCache };
+      candidate.qualityScore = Object.values(contributions).reduce((sum, value) => sum + value, 0);
     });
     return result.sort((left, right) => qualityModel(left).localeCompare(qualityModel(right))
       || (Number.isFinite(right.qualityScore) ? right.qualityScore : -1) - (Number.isFinite(left.qualityScore) ? left.qualityScore : -1)
       || candidateQualityTie(left, right));
   }
 
-  function candidateStrategyScore(candidate, candidates) {
-    const scored = scoreAihubQualityCandidates(candidates).find((row) => Number(candidate.groupId) > 0
+  function candidateStrategyScore(candidate, candidates, settings) {
+    const scored = scoreAihubQualityCandidates(candidates, settings).find((row) => Number(candidate.groupId) > 0
       ? Number(row.groupId) === Number(candidate.groupId) : row.group === candidate.group);
     return scored?.qualityScore ?? NaN;
   }
 
-  function sortCandidatesForMode(candidates) {
-    return scoreAihubQualityCandidates(candidates);
+  function sortCandidatesForMode(candidates, mode, settings) {
+    return scoreAihubQualityCandidates(candidates, settings);
   }
 
-  function sortCandidateRowsForMode(candidates) {
-    const scored = scoreAihubQualityCandidates(candidates);
+  function sortCandidateRowsForMode(candidates, mode, settings) {
+    const scored = scoreAihubQualityCandidates(candidates, settings);
     return [...scored.filter((row) => row.available), ...scored.filter((row) => !row.available)];
   }
 
@@ -1989,7 +2032,53 @@
       ? Number(candidate.groupId) === Number(token.groupId) : candidate.group === token.group));
   }
 
-  function selectBestCandidate(candidates, currentGroup, mode) {
+  function candidateEmergencySafe(candidate, settings) {
+    const allowed = new Set(["tps-missing", "cache-metrics-missing", "cache-stale", "cache-sample-insufficient"]);
+    const evidence = candidate.healthEvidence;
+    return candidate.emergencyEligible === true && candidate.scopeEligible !== false && candidate.reasons.length > 0
+      && candidate.reasons.every((reason) => allowed.has(reason))
+      && Number.isSafeInteger(Number(candidate.groupId)) && Number(candidate.groupId) > 0
+      && Number.isFinite(candidate.ratio) && candidate.ratio > 0 && (!settings.maxGroupRatio || candidate.ratio <= settings.maxGroupRatio)
+      && Number.isFinite(candidate.aggregateSuccess) && candidate.aggregateSuccess >= settings.minSuccessRate && candidate.aggregateSuccess <= 100
+      && Number.isFinite(candidate.aihubMetricSampleCount) && candidate.aihubMetricSampleCount >= settings.minMetricSamples
+      && evidence?.providerVersionValid === true && evidence.metricsMatchModel === true && evidence.supported === true
+      && evidence.monitoringActive === true && evidence.ageMinutes >= 0 && evidence.ageMinutes <= 60
+      && !candidate.modelDetectionReason && !candidateHasExplicitHealthFailure(candidate, settings);
+  }
+
+  function selectRecoveryCandidate(candidates, model, settings, previousGroup) {
+    const sameModel = candidates.filter((row) => qualityModel(row) === model && row.scopeEligible !== false);
+    const complete = scoreAihubQualityCandidates(sameModel, settings).filter((row) => row.available && Number.isFinite(row.qualityScore));
+    const successUtility = (row) => Math.min(100, Math.max(0, 100 * (row.aggregateSuccess - settings.minSuccessRate)
+      / Math.max(100 - settings.minSuccessRate, QUALITY_SCALES.successHeadroom)))
+      * row.aihubMetricSampleCount / (row.aihubMetricSampleCount + QUALITY_SCALES.samples);
+    const emergency = sameModel.filter((row) => candidateEmergencySafe(row, settings)).sort((left, right) => successUtility(right) - successUtility(left)
+      || right.aggregateSuccess - left.aggregateSuccess || right.aihubMetricSampleCount - left.aihubMetricSampleCount
+      || left.ratio - right.ratio || Number(left.groupId) - Number(right.groupId));
+    const pool = complete.length ? complete : emergency;
+    const previous = Number(previousGroup?.groupId) > 0 ? pool.find((row) => Number(row.groupId) === Number(previousGroup.groupId)) : null;
+    return (previous || pool[0]) ? { ...(previous || pool[0]), recoveryTier: complete.length ? "complete" : "emergency" } : null;
+  }
+
+  function candidateDecisionEvidence(candidate) {
+    if (!candidate?.available || !qualityMetricValid(candidate)) return "";
+    return JSON.stringify([candidate.groupId, qualityModel(candidate), candidate.aihubMetricWindowStart || "", candidate.aihubMetricWindowEnd || "",
+      candidate.aggregateSuccess, candidate.cacheHitRate, candidate.outputTokensPerSecond,
+      candidate.aihubMetricSampleCount, candidate.aihubCacheSampleCount, candidate.ratio]);
+  }
+
+  function candidateHealthPublications(candidate, switchAt, now) {
+    if (!candidate) return [];
+    const detection = candidate.modelDetection;
+    const detectionAt = Math.max(detection?.detectedAtMs || 0,
+      ...(detection?.stages || []).map((stage) => Date.parse(stage.finishedAt || "") || 0));
+    const metricAt = Date.parse(candidate.aihubMetricWindowEnd || "");
+    return [["detection", detectionAt], ["metrics", metricAt]]
+      .filter(([, at]) => Number.isFinite(at) && at > switchAt && at <= now)
+      .map(([type, at]) => `${candidate.groupId}:${qualityModel(candidate)}:${type}:${at}`);
+  }
+
+  function selectBestCandidate(candidates, currentGroup, mode, settings) {
     let available = candidates.filter((candidate) => candidate.available && candidate.scopeEligible !== false && qualityMetricValid(candidate));
     const matching = candidates.filter((candidate) => typeof currentGroup === "object"
       ? candidateMatchesToken(candidate, currentGroup) : candidate.group === currentGroup);
@@ -2000,13 +2089,16 @@
     // Relative scores from different models are never compared. No matching current model is ambiguous.
     if (currentModel) available = available.filter((candidate) => qualityModel(candidate) === currentModel);
     else if (models.length > 1) return null;
-    return scoreAihubQualityCandidates(available)[0] || null;
+    const scored = scoreAihubQualityCandidates(available, settings);
+    const best = scored.find((row) => Number.isFinite(row.qualityScore));
+    const scoredCurrent = current && scored.find((row) => candidateMatchesToken(row, current));
+    return (scoredCurrent && best && scoredCurrent.qualityScore === best.qualityScore ? scoredCurrent : best) || null;
   }
 
   function selectSwitchCandidate(candidates, currentGroup, targetGroup, options) {
     const target = String(targetGroup || "").trim();
     const request = options && typeof options === "object" ? options : {};
-    if (!target) return selectBestCandidate(candidates, currentGroup, request.mode);
+    if (!target) return selectBestCandidate(candidates, currentGroup, request.mode, request.settings);
 
     const candidate = candidates.find((item) => item.group === target
       && (!(Number(request.targetGroupId) > 0) || Number(item.groupId) === Number(request.targetGroupId)));
@@ -2747,6 +2839,9 @@
     monitorGroupInScope,
     migrateAihubMonitorScope,
     scoreAihubQualityCandidates,
+    normalizeQualityWeights,
+    validQualityWeights,
+    tokenDecisionModel,
     candidateMatchesToken,
     normalizeAihubGroups,
     normalizeAihubRates,
@@ -2914,6 +3009,8 @@
   const pendingCandidates = new Map();
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
   const state = {
+    configWarnings: storedConfig.qualityWeights !== undefined && !validQualityWeights(storedConfig.qualityWeights)
+      ? ["已保存的质量权重损坏，已整套恢复默认 40/30/20/10，请检查设置。"] : [],
     checkCancelRevision: 0,
     outOfScopeTokens: [],
     tone: "idle",
@@ -3545,7 +3642,7 @@
   function recordSwitchHoldStart(tokenId, candidate) {
     const history = getSwitchHistory();
     history.byToken[tokenId] = {
-      model: targetModelIdentity(config),
+      model: tokenDecisionModel(config, tokenId),
       group: candidate.group,
       at: Date.now(),
     };
@@ -3641,13 +3738,17 @@
       return;
     }
     state.byToken[tokenId] = {
-      model: targetModelIdentity(config),
+      model: tokenDecisionModel(config, tokenId),
       fromGroup,
       toGroup,
       ...(fromGroupId ? { fromGroupId } : {}),
       ...(toGroupId ? { toGroupId } : {}),
       remaining: config.rollbackChecks,
       at: Date.now(),
+      switchAt: Date.now(),
+      initialEvidence: candidateDecisionEvidence(candidate),
+      seenEvidence: candidateHealthPublications(candidate, 0, Date.now()),
+      lastEvidence: "",
     };
     saveSwitchGuardState(state);
   }
@@ -3771,10 +3872,11 @@
 
   function refreshQualityRecommendation() {
     const selected = tokensCache.filter((token) => config.tokenIds.includes(Number(token.id)));
-    const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)));
-    const currentModels = [...new Set(currentRows.filter(Boolean).map(qualityModel))];
+    const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)
+      && qualityModel(row) === tokenDecisionModel(config, token.id)));
+    const currentModels = [...new Set(selected.map((token) => tokenDecisionModel(config, token.id)))];
     const currentGroup = currentRows.length && currentRows.every(Boolean) && currentModels.length === 1 ? currentRows[0] : "";
-    const best = selectBestCandidate(state.candidates, currentGroup, config.selectionMode);
+    const best = selected.length && !currentGroup ? null : selectBestCandidate(state.candidates, currentGroup, config.selectionMode, config);
     state.bestGroup = best ? candidateRecommendationLabel(best)
       : state.candidates.some((row) => row.available && row.scopeEligible !== false) ? "按模型分别推荐" : "无合格分组";
   }
@@ -3804,36 +3906,56 @@
     const guardState = getSwitchGuardState(now);
     const guard = guardState.byToken[tokenId];
     if (!guard) return null;
+    const model = tokenDecisionModel(config, tokenId);
+    // Keep historical multi-model records without applying them to a new single-model binding.
+    if (!model || guard.model !== model) return null;
     const destinationMatches = guard.toGroupId ? Number(guard.toGroupId) === Number(token.groupId)
       : guard.toGroup === token.group && candidates.filter((row) => row.group === guard.toGroup).length === 1;
-    if (config.rollbackChecks <= 0 || guard.model !== targetModelIdentity(config) || !destinationMatches) {
+    if (config.rollbackChecks <= 0 || !destinationMatches) {
       delete guardState.byToken[tokenId]; saveSwitchGuardState(guardState); return null;
     }
-    const current = candidates.find((row) => candidateMatchesToken(row, token));
-    if (current?.available) {
-      if (observeHealth) guard.remaining -= 1;
+    const current = candidates.find((row) => candidateMatchesToken(row, token) && qualityModel(row) === model);
+    if (!guard.switchAt) {
+      guard.switchAt = now;
+      guard.remaining = config.rollbackChecks;
+      guard.seenEvidence = candidateHealthPublications(current, 0, now);
+      guard.lastEvidence = "";
+    }
+    if (current?.available || (current && candidateEmergencySafe(current, config))) {
+      const publications = candidateHealthPublications(current, guard.switchAt, now);
+      const seen = new Set(guard.seenEvidence || []);
+      const fresh = publications.filter((id) => !seen.has(id));
+      if (observeHealth && fresh.length) {
+        guard.remaining -= 1;
+        guard.lastEvidence = fresh.join(" | ");
+        guard.seenEvidence = [...seen, ...fresh].slice(-20);
+      }
       if (guard.remaining <= 0) delete guardState.byToken[tokenId];
       saveSwitchGuardState(guardState);
-      return { outcome: guard.remaining <= 0 ? "observed" : "observing", group: token.group,
-        tone: guard.remaining <= 0 ? "success" : "warning", message: guard.remaining <= 0 ? "切换观察完成" : "切换观察中，剩余 " + guard.remaining + " 次" };
+      const timedOut = guard.remaining > 0 && now - guard.switchAt >= 600000;
+      return { outcome: guard.remaining <= 0 ? "observed" : timedOut ? "observation-unverified" : "observing", group: token.group,
+        tone: guard.remaining <= 0 ? "success" : "warning", message: guard.remaining <= 0 ? "平台分组新健康证据观察完成（非密钥实测）"
+          : timedOut ? "观察未验证：已等待10分钟，暂停正常择优，继续故障恢复与健康观察"
+            : "等待新健康证据，观察剩余 " + guard.remaining + " 次" };
     }
-    if (!candidateHasExplicitHealthFailure(current, config)) return { outcome: "observing", group: token.group,
-      tone: "warning", message: "观察数据不足或受配置限制，保持当前分组" };
-    guardState.blacklist = guardState.blacklist.filter((entry) => entry.model !== targetModelIdentity(config)
+    if (!candidateHasExplicitHealthFailure(current, config)) {
+      saveSwitchGuardState(guardState);
+      return { outcome: now - guard.switchAt >= 600000 ? "observation-unverified" : "observing", group: token.group,
+        tone: "warning", message: "等待新健康证据，数据不足或受配置限制；保持当前组，暂停正常择优并继续故障恢复" };
+    }
+    guardState.blacklist = guardState.blacklist.filter((entry) => entry.model !== model
       || (entry.groupId ? Number(entry.groupId) !== Number(current.groupId) : entry.group !== guard.toGroup));
-    guardState.blacklist.push({ model: targetModelIdentity(config), group: guard.toGroup,
+    guardState.blacklist.push({ model, group: guard.toGroup,
       ...(Number(current.groupId) > 0 ? { groupId: Number(current.groupId) } : {}),
       until: now + config.blacklistMinutes * 60000, type: "health", reason: "切换后健康检查失败" });
     delete guardState.byToken[tokenId]; saveSwitchGuardState(guardState);
-    const eligible = applyTemporaryBlacklist(candidates, guardState, targetModelIdentity(config), now);
-    const modelRows = eligible.filter((row) => qualityModel(row) === qualityModel(current));
-    const fallback = config.automaticSwitchMode === "failover"
-      ? selectBestCandidate(modelRows, token, config.selectionMode)
-      : selectRollbackCandidate(modelRows, { group: guard.fromGroup, groupId: guard.fromGroupId }, config.selectionMode).candidate;
+    const eligible = applyTemporaryBlacklist(candidates, guardState, model, now);
+    const fallback = selectRecoveryCandidate(eligible, model, config, { groupId: guard.fromGroupId });
     if (!fallback || candidateMatchesToken(fallback, token)) return { outcome: "recovery-blocked", group: token.group, tone: "warning", message: "没有范围内合格回滚分组，保持当前组" };
-    await switchTokenGroup(token, fallback, { trackRollback: false, beforeSwitch: assertCurrent,
+    await switchTokenGroup(token, fallback, { beforeSwitch: assertCurrent,
       logTone: "warning", logMessage: tokenLabel(token) + " 观察失败，已回滚到 " + fallback.group });
-    return { outcome: "rolled-back", group: fallback.group, tone: "warning", message: "观察失败，已回滚到 " + fallback.group };
+    return { outcome: "rolled-back", group: fallback.group, tone: "warning", message: "观察失败，已回滚到 " + fallback.group
+      + (fallback.recoveryTier === "emergency" ? "（仅应急，缓存/TPS数据不完整）" : "") };
   }
 
   async function processToken(token, candidates, options = {}) {
@@ -3850,26 +3972,37 @@
       pendingCandidates.delete(tokenId);
       return { outcome: "scope-hold", group: token.group || "未知", tone: "warning", message: "当前组未纳入监控，自动检查/切换暂停；可在设置中加入或移除密钥勾选" };
     }
-    const eligible = applyTemporaryBlacklist(candidates, getSwitchGuardState(), targetModelIdentity(config), Date.now());
+    const model = tokenDecisionModel(config, tokenId);
+    if ((!forceSwitch || !targetGroup) && (!model || !tokenSupportsModel(token, model))) {
+      pendingCandidates.delete(tokenId);
+      return { outcome: "model-hold", group: token.group, tone: "warning", message: "请在设置中为该密钥绑定一个已启用且有权限的决策模型；自动处理已暂停" };
+    }
+    const eligible = applyTemporaryBlacklist((!forceSwitch || !targetGroup) ? candidates.filter((row) => qualityModel(row) === model) : candidates,
+      getSwitchGuardState(), model, Date.now());
     const current = eligible.find((row) => candidateMatchesToken(row, token));
+    if (!forceSwitch && !current) {
+      pendingCandidates.delete(tokenId);
+      return { outcome: "model-hold", group: token.group, tone: "warning", message: "缺少绑定模型的当前检测详情或当前组数据，自动处理暂停" };
+    }
     if (config.enabled && !forceSwitch) {
       const rollback = await handleRollbackGuard(token, eligible, assertCurrent, options.observeHealth !== false);
       if (rollback) return rollback;
     }
     if (config.enabled && !forceSwitch && candidateHasExplicitHealthFailure(current, config)) {
-      const recovery = selectBestCandidate(eligible, token, config.selectionMode);
+      const recovery = selectRecoveryCandidate(eligible, model, config);
       pendingCandidates.delete(tokenId);
       if (!recovery || candidateMatchesToken(recovery, token)) return { outcome: "recovery-blocked", group: token.group, tone: "warning", message: "当前分组故障，没有同模型合格目标" };
       await switchTokenGroup(token, recovery, { beforeSwitch: assertCurrent });
-      return { outcome: "switched", group: recovery.group, tone: "success", message: "故障恢复，已切换" };
+      return { outcome: "switched", group: recovery.group, tone: "success", message: recovery.recoveryTier === "emergency"
+        ? "故障恢复：仅应急接管，缓存/TPS数据不完整" : "故障恢复，已切换" };
     }
     if (!forceSwitch && (config.automaticSwitchMode === "failover" || options.mode === "health")) {
-      if (config.automaticSwitchMode === "failover") pendingCandidates.delete(tokenId);
+      if (config.automaticSwitchMode === "failover" || !current?.available) pendingCandidates.delete(tokenId);
       return { outcome: "healthy", group: token.group || "未设置", tone: current?.available ? "success" : "warning",
         message: current?.available ? "当前分组正常，保持不变" : "未发现明确故障，保持当前分组" };
     }
     const selected = selectSwitchCandidate(eligible, token, targetGroup, {
-      mode: config.selectionMode, allowUnavailable: options.allowUnavailable === true, targetGroupId: options.targetGroupId,
+      mode: config.selectionMode, settings: config, allowUnavailable: options.allowUnavailable === true, targetGroupId: options.targetGroupId,
     });
     if (!selected) {
       pendingCandidates.delete(tokenId);
@@ -3883,14 +4016,25 @@
       await switchTokenGroup(token, selected, { beforeSwitch: assertCurrent });
       return { outcome: "switched", group: selected.group, tone: "success", message: "已手动切换" };
     }
+    const scoredCurrent = scoreAihubQualityCandidates([current], config)[0];
+    const gain = selected.qualityScore - scoredCurrent?.qualityScore;
+    if (!Number.isFinite(gain) || gain <= 0 || gain < config.minQualityGain) {
+      pendingCandidates.delete(tokenId);
+      return { outcome: "quality-hold", group: token.group, tone: "warning", message: !Number.isFinite(gain)
+        ? "当前数据不完整或受配置限制，无法同基准比较，保持当前组"
+        : "保持当前组：质量增益 " + gain.toFixed(2) + " 分，未达到严格领先且至少 " + config.minQualityGain + " 分" };
+    }
     if (!config.enabled) return { outcome: "suggested", group: token.group, tone: "warning", message: "建议切换到 " + selected.group };
+    const evidence = candidateDecisionEvidence(current) + "|" + candidateDecisionEvidence(selected);
     const previous = pendingCandidates.get(tokenId);
-    const pending = previous?.groupId === selected.groupId ? { ...previous, hits: previous.hits + 1 }
-      : { groupId: selected.groupId, group: selected.group, hits: 1 };
+    const sameDecision = previous?.groupId === selected.groupId && previous.model === model && previous.configKey === key;
+    const seen = sameDecision ? previous.evidence || [] : [];
+    const pending = { groupId: selected.groupId, group: selected.group, model, configKey: key,
+      hits: (sameDecision ? previous.hits : 0) + (seen.includes(evidence) ? 0 : 1), evidence: [...new Set([...seen, evidence])] };
     pendingCandidates.set(tokenId, pending);
     if (pending.hits < config.confirmPolls) return { outcome: "pending", group: token.group, tone: "warning",
-      message: selected.group + " · 确认 " + pending.hits + "/" + config.confirmPolls };
-    const hold = switchHoldState(getSwitchHistory(), tokenId, targetModelIdentity(config), token.group, config.switchHoldMinutes, Date.now());
+      message: selected.group + " · 新证据确认 " + pending.hits + "/" + config.confirmPolls };
+    const hold = switchHoldState(getSwitchHistory(), tokenId, model, token.group, config.switchHoldMinutes, Date.now());
     if (shouldKeepCurrentDuringHold(current, hold)) return { outcome: "holding", group: token.group, tone: "success",
       message: "保持中，" + Math.ceil(hold.remainingMs / 60000) + " 分钟后择优" };
     await switchTokenGroup(token, selected, { beforeSwitch: assertCurrent });
@@ -4036,7 +4180,7 @@
         candidateTimestamp,
       );
       if (manual) renderOptions(true);
-      const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode);
+      const recommendedCandidate = selectBestCandidate(candidates, "", config.selectionMode, config);
       const checkedAt = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       state.lastCheck = checkedAt;
       state.lastHealthCheck = checkedAt;
@@ -4076,7 +4220,9 @@
         const healthCandidates = candidates;
         const needsRecovery = details.some((detail) => detail.status === "fulfilled"
           && monitorGroupInScope(config, detail.value.groupId)
-          && candidateHasExplicitHealthFailure(healthCandidates.find((row) => candidateMatchesToken(row, detail.value)), config));
+          && tokenDecisionModel(config, detail.value.id)
+          && candidateHasExplicitHealthFailure(healthCandidates.find((row) => candidateMatchesToken(row, detail.value)
+            && qualityModel(row) === tokenDecisionModel(config, detail.value.id)), config));
         if (needsRecovery) {
           updateRecommendation = true;
           // Recovery never waits for the next strategy tick and never writes using an old account catalog.
@@ -4368,6 +4514,7 @@
     if (refs.modelSearch) filterSelectorList(refs.modelList, refs.modelSearch, refs.modelSearchStatus);
     renderModelSelectionCount();
     renderGroupFilterOptions();
+    renderTokenModelBindings();
   }
 
   function renderModelSelectionCount() {
@@ -4513,8 +4660,9 @@
   function renderCandidates() {
     if (!refs.candidateRows) return;
     refreshPlatformFilter(refs.candidatePlatform);
-    const rows = sortCandidateRowsForMode(state.candidates, config.selectionMode);
-    if (!sectionNeedsRender(refs.candidateRows, [state.candidates, tokensCache, config.tokenIds.join(","), running])) { applyCandidateDisplayControls(); return; }
+    const rows = sortCandidateRowsForMode(state.candidates, config.selectionMode, config);
+    if (!sectionNeedsRender(refs.candidateRows, [state.candidates, tokensCache, config.tokenIds.join(","),
+      JSON.stringify(config.qualityWeights), config.minSuccessRate, running])) { applyCandidateDisplayControls(); return; }
     const openIds = new Set([...refs.candidateRows.querySelectorAll("details[open]")].map((node) => node.dataset.groupId));
     refs.candidateRows.replaceChildren();
     const element = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
@@ -4542,10 +4690,20 @@
       action.append(button, element("small", Number.isFinite(candidate.qualityScore) ? "质量 " + candidate.qualityScore.toFixed(1) : "不参与自动排序"));
       row.append(name, element("div", formatRatio(candidate.ratio), "mono"), detection, element("div", formatPercent(candidate.cacheHitRate), "mono"), element("div", formatPercent(candidate.aggregateSuccess), "mono"), element("div", Number.isFinite(candidate.outputTokensPerSecond) ? candidate.outputTokensPerSecond.toFixed(1) : "—", "mono"), action);
       const details = element("details", undefined, "candidate-inspection");details.dataset.groupId=String(candidate.groupId);details.open=openIds.has(String(candidate.groupId));
-      const summary = element("summary", "检测详情 · " + (candidate.available ? "符合自动切换条件" : candidateIssueText(candidate)));details.appendChild(summary);
+      const summary = element("summary", "检测详情 · " + (candidate.available ? "符合自动切换条件"
+        : candidate.emergencyEligible ? "仅可故障应急（不参与正常评分）" : candidateIssueText(candidate)));details.appendChild(summary);
       const lines = ["检测模型：" + (candidate.modelDetection?.model || "未知"), "详情结果：" + (candidate.modelDetection?.presentationResult === true ? "通过" : candidate.modelDetection?.presentationResult === false ? "未通过" : "未知"), "完成时间：" + (candidate.modelDetection?.detectedAt || "未知"), "有效期：" + (candidate.modelDetection?.expiresAt || "按完成时间60分钟"), "模型样本：" + (Number.isFinite(candidate.aihubMetricSampleCount) ? candidate.aihubMetricSampleCount : "未知") + " · 缓存样本：" + (Number.isFinite(candidate.aihubCacheSampleCount) ? candidate.aihubCacheSampleCount : "未知")];
       (candidate.modelDetection?.stages || []).forEach((stage,index)=>lines.push((stage.name || "阶段" + (index+1)) + "：" + (stage.status || "未知") + (stage.executionComplete ? " · 已完成" : " · 未完成")));
-      if (candidate.qualityPercentiles) lines.push("同模型池分位：成功 " + candidate.qualityPercentiles.success.toFixed(1) + " / 缓存 " + candidate.qualityPercentiles.cache.toFixed(1) + " / TPS " + candidate.qualityPercentiles.tps.toFixed(1) + " / 成本 " + candidate.qualityPercentiles.cost.toFixed(1));
+      if (candidate.qualityComponents) {
+        const { contributions: c, qModel, qCache } = candidate.qualityComponents;
+        lines.push(`固定标尺分项贡献：成功 ${c.success.toFixed(2)} / 缓存 ${c.cache.toFixed(2)} / TPS ${c.tps.toFixed(2)} / 低倍率 ${c.ratio.toFixed(2)}`);
+        lines.push(`样本保守系数（非统计置信度）：模型 ${qModel.toFixed(3)} / 缓存 ${qCache.toFixed(3)}；分数不是服务成功概率`);
+        lines.push("固定尺度：成功余量分母至少5个百分点；TPS参考100 tokens/s；倍率参考1；样本参考100");
+      }
+      (candidate.modelCards || []).filter((card) => card.model === candidate.aihubMetricModel).forEach((card) => {
+        lines.push(`上游短时健康卡（仅供参考，不触发故障）：${card.health || "未知"} / 探测 ${card.probe_state || "未知"} / 样本 ${card.sample_count ?? "未知"}`);
+        lines.push(`评估 ${card.health_evaluated_at || "未知"} / 有效期 ${card.health_expires_at || "未知"}；字段语义待核实，证据不足`);
+      });
       lines.forEach(text=>details.appendChild(element("p",text)));
       if (candidate.detectionMedia?.url) details.appendChild(createDetectionImageThumbnail(candidate));
       details.addEventListener("keydown", (event)=>{if(event.key==="Escape" && details.open){event.preventDefault();event.stopPropagation();details.open=false;summary.focus();}});
@@ -5263,8 +5421,8 @@
     if (refs.confirmationHint) {
       const minutes = config.strategySeconds / 60;
       refs.confirmationHint.textContent = config.automaticSwitchMode === "failover"
-        ? "仅故障转移：当前组健康时保持不动，原组恢复后不自动切回；故障按检测周期处理。"
-        : `连续确认按每 ${minutes} 分钟一次择优计算${config.confirmPolls > 1 ? `，首次命中后至少再等 ${(config.confirmPolls - 1) * minutes} 分钟` : ""}；回滚观察按故障检测轮次计算。`;
+        ? "仅故障转移：当前组健康时保持不动，原组恢复后不自动切回；切换观察只统计切换后的新健康证据。"
+        : `每 ${minutes} 分钟轮询择优；连续确认只统计变化的有效证据，重复快照不累计。切换后等待新健康证据，未验证不等于已恢复。`;
     }
     if (refs.automaticSwitchHint) refs.automaticSwitchHint.textContent = config.automaticSwitchMode === "failover"
       ? "只在确认当前组故障时，按所选策略转移；健康时不切换，原组恢复后不自动切回。"
@@ -5316,10 +5474,11 @@
     }
     if (refs.bestGroup) {
       const selected = tokensCache.filter((token) => config.tokenIds.includes(Number(token.id)));
-      const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)));
-      const currentModels = [...new Set(currentRows.filter(Boolean).map(qualityModel))];
+      const currentRows = selected.map((token) => state.candidates.find((row) => candidateMatchesToken(row, token)
+        && qualityModel(row) === tokenDecisionModel(config, token.id)));
+      const currentModels = [...new Set(selected.map((token) => tokenDecisionModel(config, token.id)))];
       const current = currentRows.length && currentRows.every(Boolean) && currentModels.length === 1 ? currentRows[0] : "";
-      const best = selectBestCandidate(state.candidates, current, config.selectionMode);
+      const best = selected.length && !current ? null : selectBestCandidate(state.candidates, current, config.selectionMode, config);
       const detail = best
         ? `${qualityModel(best) || "模型未匹配"} · ${Number.isFinite(best.qualityScore) ? `同模型质量 ${best.qualityScore.toFixed(1)}` : "质量待评估"}`
         : state.candidates.length ? "按检测详情与同模型 1h 指标评估" : "等待检查";
@@ -5428,7 +5587,11 @@
         refs.isolationSummaryCount.textContent = `${entries.length}条`;
         if (refs.isolationRecords.open) renderIsolations();
       }
-      if (state.settingsPage === "routing") renderMonitorScope();
+      if (state.settingsPage === "routing") {
+        renderMonitorScope();
+        renderQualitySettings();
+        renderTokenModelBindings();
+      }
     }
     if (refs.isolationToast) {
       const undoAvailable = state.isolationUndo.entries.length > 0 && state.isolationUndo.expiresAt > Date.now();
@@ -5467,6 +5630,171 @@
     if (refs.glassTransparencyValue) refs.glassTransparencyValue.textContent = `${config.glassTransparency}%`;
   }
 
+  const QUALITY_WEIGHT_CONTROLS = Object.freeze({ success: "qualityWeightSuccess", cache: "qualityWeightCache", tps: "qualityWeightTps", ratio: "qualityWeightRatio" });
+  let qualitySettingsDraftKey = null;
+
+  function qualitySettingsDraft() {
+    const weights = Object.fromEntries(Object.entries(QUALITY_WEIGHT_CONTROLS)
+      .map(([key, name]) => [key, refs[name]?.value ?? ""]));
+    const gain = refs.minQualityGainDraft?.value ?? "";
+    return { weights, gain: Number(gain), valid: validQualityWeights(weights)
+      && gain !== "" && Number.isFinite(Number(gain)) && Number(gain) >= 0 && Number(gain) <= 100 };
+  }
+
+  function renderQualitySettings() {
+    if (!refs.qualityWeightSuccess) return;
+    const key = JSON.stringify([config.qualityWeights, config.minQualityGain]);
+    if (qualitySettingsDraftKey !== key) {
+      qualitySettingsDraftKey = key;
+      Object.entries(QUALITY_WEIGHT_CONTROLS).forEach(([name, ref]) => {
+        refs[ref].value = String(config.qualityWeights[name]);
+      });
+      refs.minQualityGainDraft.value = String(config.minQualityGain);
+    }
+    const draft = qualitySettingsDraft();
+    const total = Object.values(draft.weights).reduce((sum, value) => sum + (value === "" ? NaN : Number(value)), 0);
+    refs.qualityWeightTotal.textContent = `合计 ${Number.isFinite(total) ? total : "—"}% / 100%`;
+    refs.qualityWeightTotal.dataset.invalid = String(!draft.valid);
+    Object.entries(QUALITY_WEIGHT_CONTROLS).forEach(([name, ref]) => {
+      const value = draft.weights[name];
+      refs[ref].disabled = running;
+      refs[ref].setAttribute("aria-invalid", String(value === "" || !Number.isInteger(Number(value)) || Number(value) < 0 || Number(value) > 100));
+    });
+    refs.minQualityGainDraft.setAttribute("aria-invalid", String(!Number.isFinite(draft.gain) || refs.minQualityGainDraft.value === "" || draft.gain < 0 || draft.gain > 100));
+    refs.minQualityGainDraft.disabled = running;
+    const changed = JSON.stringify(normalizeQualityWeights(draft.weights)) !== JSON.stringify(config.qualityWeights)
+      || draft.gain !== config.minQualityGain;
+    refs.qualityWeightsStatus.textContent = !draft.valid ? "每项须为 0–100 的整数，合计必须为 100%；收益门槛须在 0–100 分。"
+      : changed ? "有未保存的权重修改；预览仅使用当前快照，点击保存后下次检查生效。" : "已保存。只在下次检查时应用，不立即刷新或切组。";
+    refs.qualityWeightsSave.disabled = running;
+    refs.qualityWeightsReset.disabled = running;
+    const warnings = Array.isArray(state.configWarnings) ? state.configWarnings : state.configWarnings ? [state.configWarnings] : [];
+    refs.qualityConfigWarning.hidden = !warnings.length;
+    refs.qualityConfigWarning.textContent = warnings.join("；");
+    renderQualitySettingsPreview(draft);
+  }
+
+  function qualityPreviewDecision(current, best, settings) {
+    if (!settings.enabled) return "保持当前组：自动切换已暂停，排名仅供查看。";
+    if (settings.automaticSwitchMode === "failover") return "保持当前组：仅故障转移，当前组健康，排名不触发切换。";
+    const score = scoreAihubQualityCandidates([current], settings)[0]?.qualityScore;
+    const gain = best.qualityScore - score;
+    if (!Number.isFinite(gain)) return "保持当前组：数据不足，无法按同一标尺比较。";
+    if (gain <= 0) return "保持当前组：没有严格领先的候选，同分也不切换。";
+    if (gain < settings.minQualityGain) return `保持当前组：分差 ${gain.toFixed(2)} 分，低于 ${settings.minQualityGain} 分门槛。`;
+    return `分差 ${gain.toFixed(2)} 分达到 ${settings.minQualityGain} 分门槛；需在后续检查中取得新证据并完成 ${settings.confirmPolls} 次确认，且仍受保持期与观察等保护约束；预览不执行切换。`;
+  }
+
+  function renderQualitySettingsPreview(draft = qualitySettingsDraft()) {
+    if (!refs.qualityPreview) return;
+    if (!draft.valid) { refs.qualityPreview.textContent = "权重合法后显示本地预览。"; return; }
+    const snapshot = state.candidates.slice();
+    const previewSettings = { ...config, qualityWeights: normalizeQualityWeights(draft.weights), minQualityGain: draft.gain };
+    const lines = [];
+    config.tokenIds.forEach((id) => {
+      const token = tokensCache.find((entry) => Number(entry.id) === Number(id));
+      const name = token?.name || `密钥 #${id}`;
+      const model = tokenDecisionModel(config, id);
+      if (!model) { lines.push(`${name}：待绑定已启用的决策模型，自动处理暂停。`); return; }
+      if (!token || !tokenSupportsModel(token, model)) { lines.push(`${name} · ${model}：密钥无权限使用绑定模型或密钥详情缺失，自动处理暂停。`); return; }
+      const rows = snapshot.filter((row) => qualityModel(row) === model);
+      const current = token && rows.find((row) => candidateMatchesToken(row, token));
+      if (candidateHasExplicitHealthFailure(current, config)) {
+        lines.push(`${name} · ${model}：当前快照存在明确故障，正常择优预览不适用；需在后续检查中按故障恢复准入选择安全目标，此处不执行恢复。`); return;
+      }
+      if (!current?.available || !Number.isFinite(scoreAihubQualityCandidates([current], config)[0]?.qualityScore)) {
+        lines.push(`${name} · ${model}：当前组数据不足，无完整的同模型比较；保持当前组。`); return;
+      }
+      const before = selectBestCandidate(rows, token, "quality", config);
+      const after = selectBestCandidate(rows, token, "quality", previewSettings);
+      if (!Number.isFinite(before?.qualityScore) || !Number.isFinite(after?.qualityScore)) { lines.push(`${name} · ${model}：无完整合格候选，不生成推荐。`); return; }
+      lines.push(`${name} · ${model}：已保存排名优胜 ${before.group}（${before.qualityScore.toFixed(2)}） → 草稿排名优胜 ${after.group}（${after.qualityScore.toFixed(2)}）`);
+      lines.push(`已保存决策：${qualityPreviewDecision(current, before, config)}`);
+      lines.push(`草稿决策：${qualityPreviewDecision(current, after, previewSettings)}`);
+      [["已保存", before], ["草稿", after]].forEach(([label, winner]) => {
+        const c = winner.qualityComponents.contributions;
+        lines.push(`${label}分项贡献：成功 ${c.success.toFixed(2)} · 缓存 ${c.cache.toFixed(2)} · TPS ${c.tps.toFixed(2)} · 倍率 ${c.ratio.toFixed(2)}；样本保守系数：模型 ${winner.qualityComponents.qModel.toFixed(3)} / 缓存 ${winner.qualityComponents.qCache.toFixed(3)}`);
+      });
+    });
+    refs.qualityPreview.textContent = lines.length ? lines.join("\n") : "请先选择密钥并绑定决策模型，再用已检查快照预览；此处不会刷新数据。";
+  }
+
+  function resetQualitySettingsDraft() {
+    Object.entries(QUALITY_WEIGHT_CONTROLS).forEach(([name, ref]) => { refs[ref].value = String(DEFAULT_CONFIG.qualityWeights[name]); });
+    refs.minQualityGainDraft.value = String(DEFAULT_CONFIG.minQualityGain);
+    renderQualitySettings();
+  }
+
+  function saveQualitySettings() {
+    if (running) return;
+    const draft = qualitySettingsDraft();
+    if (!draft.valid) { renderQualitySettings(); return; }
+    const next = sanitizeConfig({ ...config, qualityWeights: draft.weights, minQualityGain: draft.gain });
+    if (JSON.stringify([next.qualityWeights, next.minQualityGain]) !== JSON.stringify([config.qualityWeights, config.minQualityGain])) {
+      config = next;
+      invalidateCheckDecisions();
+      pendingCandidates.clear();
+      GM_setValue(STORAGE_CONFIG, config);
+      refreshQualityRecommendation();
+    }
+    setStatus("质量权重已保存，下次检查生效", "success");
+    renderQualitySettings();
+    render();
+  }
+
+  function renderTokenModelBindings() {
+    if (!refs.tokenModelBindings) return;
+    const selected = config.tokenIds.map(Number);
+    const models = targetModels(config);
+    const key = JSON.stringify([selected, models, config.tokenModels, tokensCache.map((token) => [token.id, token.name]), running]);
+    const unresolved = selected.filter((id) => !tokenDecisionModel(config, id));
+    refs.tokenModelStatus.textContent = !selected.length ? "选择密钥后，为每个密钥绑定一个决策模型。"
+      : unresolved.length ? `${unresolved.length} 个密钥待绑定或绑定模型未启用，自动处理暂停；其他已绑定密钥继续运行。`
+        : `已绑定 ${selected.length} 个密钥；仅使用该模型的当前检测详情与 1h 指标。`;
+    if (refs.tokenModelBindings.dataset.renderKey === key) return;
+    const focusedId = root?.activeElement?.dataset?.tokenModelId;
+    refs.tokenModelBindings.dataset.renderKey = key;
+    refs.tokenModelBindings.replaceChildren();
+    selected.forEach((id) => {
+      const token = tokensCache.find((entry) => Number(entry.id) === id);
+      const binding = String(config.tokenModels?.[id] || "");
+      const field = document.createElement("div"); field.className = "token-model-field";
+      const label = document.createElement("label"); label.htmlFor = `kf-token-model-${id}`;
+      label.textContent = token?.name || `密钥 #${id}`;
+      const select = document.createElement("select"); select.id = label.htmlFor; select.dataset.tokenModelId = String(id);
+      select.disabled = running;
+      const options = [["", "请选择决策模型"], ...models.map((model) => [model, model])];
+      if (binding && !models.includes(binding)) options.push([binding, `${binding}（未启用，自动处理暂停）`]);
+      options.forEach(([value, text]) => {
+        const option = document.createElement("option"); option.value = value; option.textContent = text;
+        option.disabled = Boolean(value && !models.includes(value)); select.appendChild(option);
+      });
+      select.value = binding;
+      select.addEventListener("change", () => persistTokenModelBinding(id, select.value));
+      const hint = document.createElement("small");
+      hint.textContent = tokenDecisionModel(config, id) ? "不修改业务请求的 model，也不会调用模型。" : binding ? "绑定模型已取消启用；请重新勾选模型或另行绑定。" : "待绑定：此密钥的自动检查与切换暂停。";
+      field.append(label, select, hint); refs.tokenModelBindings.appendChild(field);
+    });
+    if (focusedId && !running) refs.tokenModelBindings.querySelector(`[data-token-model-id="${focusedId}"]`)?.focus({ preventScroll: true });
+  }
+
+  function persistTokenModelBinding(id, model) {
+    if (running || !config.tokenIds.includes(Number(id)) || (model && !targetModels(config).includes(model))) return;
+    const bindings = { ...config.tokenModels };
+    if (model) bindings[id] = model; else delete bindings[id];
+    if (JSON.stringify(bindings) === JSON.stringify(config.tokenModels)) return;
+    config = sanitizeConfig({ ...config, tokenModels: bindings });
+    invalidateCheckDecisions();
+    pendingCandidates.clear();
+    GM_setValue(STORAGE_CONFIG, config);
+    state.tokenResults = [];
+    refreshQualityRecommendation();
+    renderTokenModelBindings();
+    renderQualitySettings();
+    setStatus(model ? "决策模型已绑定，下次检查生效" : "已取消绑定，此密钥自动处理暂停", model ? "success" : "warning");
+    render();
+  }
+
   function readFormConfig() {
     return sanitizeConfig({
       theme: refs.theme.value,
@@ -5479,6 +5807,9 @@
       automaticSwitchMode: refs.automaticSwitchMode?.value || "strategy",
       businessPlatform: config.businessPlatform,
       selectionMode: "quality",
+      qualityWeights: config.qualityWeights,
+      minQualityGain: config.minQualityGain,
+      tokenModels: config.tokenModels,
       monitorScopeMode: config.monitorScopeMode,
       monitorGroupIds: config.monitorGroupIds,
       monitorScopeMigrationPending: config.monitorScopeMigrationPending,
@@ -5527,6 +5858,8 @@
     refs.switchHoldMinutes.value = String(config.switchHoldMinutes);
     refs.rollbackChecks.value = String(config.rollbackChecks);
     refs.blacklistMinutes.value = String(config.blacklistMinutes);
+    renderQualitySettings();
+    renderTokenModelBindings();
   }
 
   function persistFormConfig() {
@@ -5541,6 +5874,7 @@
       setStatus("自动切换已暂停", "warning");
     }
     const invalid = [...refs.settingsSection.querySelectorAll("input,select")].filter((input) => {
+      if (input.closest?.(".quality-settings-draft")) return false;
       const valid = input.checkValidity();
       input.setAttribute("aria-invalid", String(!valid));
       return !valid;
@@ -5560,6 +5894,7 @@
       pendingCandidates.clear();
     }
     GM_setValue(STORAGE_CONFIG, config);
+    renderTokenModelBindings();
     if (state.todayUsage.available) syncSpendProtection({ notify: true });
     if (`${config.tokenIds.join(",")}:${targetModelIdentity(config)}` !== previousIdentity) {
       pendingCandidates.clear();
@@ -6132,8 +6467,15 @@
       });
       refs.groupFilterList.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    Object.values(QUALITY_WEIGHT_CONTROLS).forEach((name) => {
+      refs[name]?.addEventListener("input", renderQualitySettings);
+    });
+    refs.minQualityGainDraft?.addEventListener("input", renderQualitySettings);
+    refs.qualityWeightsReset?.addEventListener("click", resetQualitySettingsDraft);
+    refs.qualityWeightsSave?.addEventListener("click", saveQualitySettings);
     refs.settingsSection.addEventListener("change", (event) => {
       if (event.target.matches("[data-selector-search], .selector-platform")) return;
+      if (event.target.closest(".quality-settings-draft, .token-model-settings")) return;
       if (event.target === refs.monitorScopeMode || event.target.closest(".monitor-scope-panel")) return;
       if (event.target.closest(".token-list")) return;
       if (event.target === refs.groupFilterMode || event.target.closest(".group-filter-select")) return;
@@ -6741,6 +7083,23 @@
         .candidate-head button[aria-pressed="true"][data-sort-direction="ascending"]::after { content: " ↑"; }
         .algorithm-note { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 5px; background: var(--accent-soft); font-size: 12px; line-height: 1.6; }
         .algorithm-note p { margin: 4px 0 0; color: var(--text-soft); font-size: 11px; }
+        .quality-settings-draft { margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+        .quality-weight-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+        .quality-settings-draft .settings-footer { flex-wrap: wrap; gap: 10px; }
+        .quality-settings-draft .settings-footer > span { margin-right: auto; }
+        .quality-settings-draft [data-invalid="true"] { color: var(--danger); }
+        .quality-preview { white-space: pre-line; overflow-wrap: anywhere; margin: 12px 0; padding: 12px; border-radius: 6px; background: var(--surface); color: var(--text-soft); font-size: 12px; line-height: 1.75; }
+        .quality-gain-field { margin-top: 14px; max-width: 280px; }
+        .token-model-bindings { display: grid; gap: 12px; }
+        .token-model-field { min-width: 0; padding: 12px; border: 1px solid var(--line-soft); border-radius: 6px; }
+        .token-model-field label { overflow-wrap: anywhere; }
+        .token-model-field small { display: block; margin-top: 6px; color: var(--muted); line-height: 1.6; }
+        .quality-config-warning { padding: 10px 12px; color: var(--warning); border: 1px solid currentColor; border-radius: 6px; font-size: 12px; }
+        @media (max-width: 640px) {
+          .quality-weight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .quality-settings-draft { padding: 12px; }
+          .quality-gain-field { max-width: none; }
+        }
         .panel[data-fullscreen="true"] { inset: 12px !important; width: calc(100vw - 24px); height: calc(100dvh - 24px); max-height: none; }
         .candidate-section > .selector-search-status { margin: 0 12px 10px; }
         .candidate-section > .text-button { margin: 10px 12px; }
@@ -7452,7 +7811,7 @@
           .diagnostic-list { min-height: 140px; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .status[data-tone="running"]::before { animation: none; }
+          .dot, .status[data-tone="running"]::before { animation: none !important; }
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
         }
         @media (prefers-reduced-transparency: reduce) {
@@ -7671,7 +8030,22 @@
             </select>
           </div>
           <p id="kf-automatic-mode-help" class="settings-hint" data-ref="automaticSwitchHint">正常切换按 AIHub 1 小时质量指标排序；故障转移模式仅在当前组故障时切换。</p>
-          <div class="algorithm-note"><strong>1h 综合质量排序</strong><p>成功率 40% · 缓存命中 30% · TPS 20% · 低倍率 10%。仅比较检测详情明确通过、指标完整且足够新鲜的同模型候选。</p></div>
+          <div class="algorithm-note"><strong>1h 固定标尺质量评分</strong><p>仅比较同一绑定模型、检测详情明确通过且指标完整新鲜的候选。分数用于排序，不代表实际服务成功概率；零权重不关闭检测、成功率或样本硬门槛。</p></div>
+          <section class="quality-settings-draft" aria-labelledby="kf-quality-weights-title">
+            <div class="section-head"><h3 class="section-title" id="kf-quality-weights-title">质量权重</h3><span class="section-meta" data-ref="qualityWeightTotal">合计 100% / 100%</span></div>
+            <p class="quality-config-warning" data-ref="qualityConfigWarning" role="status" hidden></p>
+            <div class="quality-weight-grid">
+              <div class="field"><label for="kf-quality-success">1h 成功率（%）</label><input id="kf-quality-success" data-ref="qualityWeightSuccess" type="number" min="0" max="100" step="1" required></div>
+              <div class="field"><label for="kf-quality-cache">1h 缓存命中（%）</label><input id="kf-quality-cache" data-ref="qualityWeightCache" type="number" min="0" max="100" step="1" required></div>
+              <div class="field"><label for="kf-quality-tps">1h TPS（%）</label><input id="kf-quality-tps" data-ref="qualityWeightTps" type="number" min="0" max="100" step="1" required></div>
+              <div class="field"><label for="kf-quality-ratio">低倍率（%）</label><input id="kf-quality-ratio" data-ref="qualityWeightRatio" type="number" min="0" max="100" step="1" required></div>
+            </div>
+            <div class="field quality-gain-field"><label for="kf-quality-gain">正常切换最小分差</label><input id="kf-quality-gain" data-ref="minQualityGainDraft" type="number" min="0" max="100" step="any" required><p class="settings-hint">默认 5 分；同分始终保持当前组。分差不是质量改善百分比。</p></div>
+            <details class="settings-disclosure"><summary>评分标尺与样本保守系数</summary><p class="settings-hint">成功率按超过最低门槛的余量计分，分母至少为 5 个百分点；TPS 参考值 100，名义倍率参考值 1，样本参考值 100。模型与缓存分别使用样本数 ÷（样本数＋100）修正，低倍率项不作样本修正。这是样本保守系数，不是统计置信度；会更偏向高样本组。</p></details>
+            <p class="settings-hint" data-ref="qualityWeightsStatus" role="status">编辑和预览只使用当前快照，保存后下次检查生效。</p>
+            <div class="quality-preview" data-ref="qualityPreview" aria-label="已保存权重与草稿权重推荐对比"></div>
+            <div class="settings-footer"><span class="settings-hint">不刷新接口，不调用模型，不立即切组。</span><button class="button" data-ref="qualityWeightsReset" type="button">恢复默认</button><button class="button button-primary" data-ref="qualityWeightsSave" type="button">保存权重</button></div>
+          </section>
           <div class="control-grid">
             <div class="field">
               <label id="kf-token-label">API 密钥（可多选）</label>
@@ -7693,7 +8067,7 @@
               </div>
             </div>
             <div class="field">
-              <label id="kf-model-label">${IS_AIHUB ? "目标模型（站点探测，可多选）" : "目标模型（可多选）"}</label>
+              <label id="kf-model-label">启用模型目录（可多选）</label>
               <div class="token-select model-select" data-ref="modelSelect">
                 <button class="token-select-trigger" data-ref="modelSelectToggle" type="button" aria-labelledby="kf-model-label" aria-expanded="false">
                   <span class="token-select-label" data-ref="modelSelectLabel">请选择目标模型</span>
@@ -7710,6 +8084,11 @@
                   <div class="token-list" data-ref="modelList"></div>
                 </div>
               </div>
+            </div>
+            <div class="field field-wide token-model-settings">
+              <h3 class="settings-subheading">每个密钥的决策模型</h3>
+              <p class="settings-hint" data-ref="tokenModelStatus" role="status">选择密钥后，为每个密钥绑定一个决策模型。</p>
+              <div class="token-model-bindings" data-ref="tokenModelBindings"></div>
             </div>
             <div class="field field-wide group-filter-field">
               <div class="group-filter-heading">
@@ -7746,7 +8125,7 @@
             <div class="field"><label for="kf-health-interval">故障检测间隔（秒）</label><input id="kf-health-interval" data-ref="pollSeconds" type="number" min="15" max="3600" step="any" required></div>
             <div class="field"><label for="kf-strategy-interval">分组择优间隔（分钟）</label><input id="kf-strategy-interval" data-ref="strategyMinutes" type="number" min="0.25" max="60" step="any" required></div>
           </div>
-          <p class="settings-hint">当前组故障时立即寻找可用组，不等待择优周期。平台监控数据的更新速度也会影响故障发现时间。</p>
+          <p class="settings-hint">30 秒为默认轮询间隔，不保证 30 秒发现故障；故障发现依赖上游发布。确认当前组故障后寻找安全目标，不等待择优周期。</p>
           <div class="settings-check-times"><span>故障检查 <b data-ref="lastHealthCheck">—</b></span><span>分组择优 <b data-ref="lastStrategyCheck">—</b></span></div>
           <h3 class="settings-subheading">切换保护</h3>
           <div class="settings-fields">
@@ -7755,7 +8134,7 @@
             <div class="field"><label for="kf-rollback">回滚观察次数（0关闭）</label><input id="kf-rollback" data-ref="rollbackChecks" type="number" min="0" max="10" step="1" required></div>
             <div class="field"><label for="kf-isolation">故障隔离时长（分钟）</label><input id="kf-isolation" data-ref="blacklistMinutes" type="number" step="any" min="1" max="1440" required></div>
           </div>
-          <p class="settings-hint" data-ref="confirmationHint">连续确认按择优轮次计算，回滚观察按故障检测轮次计算。</p>
+          <p class="settings-hint" data-ref="confirmationHint">连续确认和切换观察只统计新证据，重复轮询不累计。</p>
           <details class="settings-disclosure">
             <summary>健康判定与候选限制</summary>
             <div class="grid advanced">
@@ -7911,6 +8290,7 @@
       "candidatePlatform", "candidateSearch", "candidateSearchStatus", "candidateAvailabilityFilter", "candidateStatus", "candidateSort", "candidateResetFilters", "groupFilterPlatform", "manualGroupPlatform",
       "monitorScopeMode", "monitorScopeSearch", "monitorScopeList", "monitorScopeCount", "monitorScopeCountDetail", "monitorScopeSave", "monitorScopeSelectAll", "monitorScopeClear", "monitorScopeStatus", "monitorScopeSearchStatus", "monitorScopePanel", "currentScopeWarning", "outOfScopeTokenList", "removeOutOfScopeToken", "manualScopeDialog", "manualScopeTitle", "manualScopeTarget", "manualScopeRisk", "manualScopeHint", "manualScopeAdd", "manualScopeOnce", "manualScopeCancel",
       "automaticSwitchMode", "automaticSwitchHint", "tokenSearch", "tokenSearchStatus", "modelSearch", "modelSearchStatus", "groupFilterSearch", "groupFilterSearchStatus", "manualGroupSearch", "manualGroupSearchStatus",
+      "qualityWeightSuccess", "qualityWeightCache", "qualityWeightTps", "qualityWeightRatio", "minQualityGainDraft", "qualityWeightTotal", "qualityWeightsStatus", "qualityWeightsSave", "qualityWeightsReset", "qualityPreview", "qualityConfigWarning", "tokenModelBindings", "tokenModelStatus",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "fullscreen", "status", "currentGroup", "bestGroup",
       "lastCheck", "bestGroupMeta", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "settingsSave", "strategyMinutes", "lastHealthCheck", "lastStrategyCheck", "confirmationHint", "enabled", "monitorEnabled", "monitorMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",

@@ -1,5 +1,15 @@
 # AIHub 分组工作台
 
+## v2.1.0：可配权重与决策安全修复
+
+- 成功率、缓存命中、TPS、低倍率权重可配置，默认40/30/20/10，合计必须100%。设置提供同快照预览；编辑与保存不调用模型或切组。
+- 评分改用固定标尺和样本保守系数；同分保持，正常择优默认至少领先5分，并只按新证据累计确认。
+- 每个密钥绑定一个决策模型。旧单模型自动迁移；旧多模型待绑定，暂停相关密钥自动处理。
+- 故障恢复优先完整候选；无完整目标时才使用只缺缓存/TPS且安全条件合格的应急组。切换观察等待切换后的新健康证据，重复轮询不计数。
+- 30秒是轮询间隔，故障发现仍取决于上游发布；未核实的短时健康卡仅供参考。
+
+版本与发布状态见 [v2.1.0 Release](https://github.com/sj930211/kfcoding-aihub-group-switcher/releases/tag/v2.1.0)；[安装/更新用户脚本](https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js)。完整算法、迁移与限制见 [AIHub 2.1.0](docs/AIHub-2.1.0.md)。本轮验证来自本地模拟与 localhost 真实浏览器，不等于真实账户切组或线上持续运行验证。发布不代表已安装或用户已验收；下方2.0.0及旧版说明保留为历史记录。
+
 ## v2.0.0：AIHub 分组工作台
 
 本次按已确认设计改为AIHub专用，重新设计监控工作台，删除图片评价，改用模型检测详情和1h综合质量算法。版本与发布状态见 [v2.0.0 Release](https://github.com/sj930211/kfcoding-aihub-group-switcher/releases/tag/v2.0.0)；[安装/更新用户脚本](https://raw.githubusercontent.com/sj930211/kfcoding-aihub-group-switcher/main/kfcoding-group-switcher.user.js)。发布不代表插件已安装或用户已验收。
@@ -12,7 +22,7 @@
 完整使用、迁移和兼容说明见 [AIHub 2.0.0](docs/AIHub-2.0.0.md)。运行 npm test 重新生成根目录用户脚本；版本唯一来源为 package.json。
 
 <details>
-<summary>1.x及更早历史说明（当前行为以2.0.0文档为准）</summary>
+<summary>1.x及更早历史说明（当前行为以2.1.0文档为准）</summary>
 
 # KFCoding / AIHub / ooioo / FluxionAI 智能低倍率分组切换
 

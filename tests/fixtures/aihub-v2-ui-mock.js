@@ -4,10 +4,10 @@ const v2ConfigKey = "aihub-group-switcher:config:v1";
 const v2Saved = v2Params.has("persist") ? sessionStorage.getItem("aihub-v2-fixture-config") : null;
 values.set(v2ConfigKey, v2Saved ? JSON.parse(v2Saved) : {
   enabled: false, theme: v2Params.get("theme") || "dark", tokenIds: [1],
-  models: ["gpt-6.1-sol", "deepseek-v3.2"], selectionMode: "quality", automaticSwitchMode: "failover",
+  models: v2Params.has("single") ? ["deepseek-v3.2"] : ["gpt-6.1-sol", "deepseek-v3.2"], selectionMode: "quality", automaticSwitchMode: "failover",
   monitorScopeMode: v2Params.has("selected") ? "selected" : "all", monitorGroupIds: v2Params.has("selected") ? [2, 3] : [],
   pollSeconds: 30, strategySeconds: 300, minSuccessRate: 95, minMetricSamples: 10, minCacheSamples: 10,
-  rollbackChecks: 0, switchHoldMinutes: 0,
+  rollbackChecks: v2Params.has("observe") ? 2 : 0, switchHoldMinutes: 0,
 });
 values.set("aihub-group-switcher:ui:v1", { activeView: "monitor", settingsPage: "routing" });
 window.v2Evidence = { requests: [], configWrites: 0, modelCalls: 0, groupWrites: [], current: 1, fail: false, slow: false };
@@ -60,12 +60,12 @@ window.fetch = async (input, options = {}) => {
   if (/^\/api\/v[12]\/public\/providers$/.test(url.pathname)) {
     if (v2Evidence.slow) await new Promise((resolve) => setTimeout(resolve, 800));
     const now = new Date();
-    const fresh = now.toISOString();
+    const fresh = new Date(v2Evidence.publicationAt || now).toISOString();
     return v2Json({ version: 2, summary_range: "1h", generated_at: fresh, platform_tabs: v2Platforms, items: v2Groups.map((group, index) => {
       const model = index % 6 === 5 ? "other-model" : index % 3 === 0 ? "deepseek-v3.2" : "gpt-6.1-sol";
       const status = Number(v2Evidence.badTargetId) === group.id || index % 6 === 3 ? "failed" : index % 6 === 4 ? "pending" : "passed";
       const cacheTime = index % 6 === 2 ? new Date(now.getTime() - 70 * 60000).toISOString() : fresh;
-      return {
+      const item = {
         group_id: group.id, code: group.name, platform: group.platform, rate_multiplier: group.rate_multiplier, summary_range: "1h",
         group_models: group.models.map((name) => ({ model: name })), enabled: true, available: true, last_probed_at: fresh,
         summary_models: { [model]: { success_rate: .96 + (index % 5) * .009, tps: 10 + index * 3, sample_count: 50 + index,
@@ -74,6 +74,11 @@ window.fetch = async (input, options = {}) => {
           detected_at: fresh, expires_at: new Date(now.getTime() + 3600000).toISOString(), stage_enabled: { text: true, image: false },
           stages: { text: { published_state: status === "passed" ? "completed" : status, state: status === "passed" ? "completed" : status }, image: { published_state: "disabled", state: "disabled" } } },
       };
+      if (v2Evidence.emergencyOnly && group.id !== v2Evidence.current) {
+        item.summary_models[model].tps = null;
+        item.summary_models[model].range_cache = null;
+      }
+      return { ...item, ...(v2Evidence.providerOverrides?.[group.id] || {}) };
     }) });
   }
   if (/^\/api\/v[12]\/public\/providers\/series$/.test(url.pathname)) return v2Json({ items: [] });

@@ -47,6 +47,8 @@
   const pendingCandidates = new Map();
   const storedUi = GM_getValue(STORAGE_UI, {}) || {};
   const state = {
+    configWarnings: storedConfig.qualityWeights !== undefined && !validQualityWeights(storedConfig.qualityWeights)
+      ? ["已保存的质量权重损坏，已整套恢复默认 40/30/20/10，请检查设置。"] : [],
     checkCancelRevision: 0,
     outOfScopeTokens: [],
     tone: "idle",

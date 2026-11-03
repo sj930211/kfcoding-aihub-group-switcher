@@ -116,7 +116,7 @@ class Option {
   });
   vm.runInContext(fs.readFileSync(source, "utf8"), app);
   vm.runInContext(fs.readFileSync(new URL("../src/runtime/operations.js", import.meta.url), "utf8"), app);
-  vm.runInContext("renderGroupFilterOptions = () => {};", app);
+  vm.runInContext("renderGroupFilterOptions = () => {}; renderTokenModelBindings = () => {};", app);
   app.renderOptions();
   assert.equal(refs.modelList.children[0].hidden, true, "model filtering uses platform labels from the catalog");
   assert.equal(refs.modelList.children[1].hidden, false);

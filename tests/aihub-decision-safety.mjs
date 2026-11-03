@@ -10,7 +10,8 @@ vm.runInNewContext('(function(){' + modules.map(file => read('src/' + file + '.j
 const api = sandbox.__KFCODING_GROUP_SWITCHER_API__;
 const settings = api.sanitizeConfig({ enabled: false, models: ['fixture'], tokenIds: [1], rollbackChecks: 2, switchHoldMinutes: 0, confirmPolls: 1 });
 const candidate = (groupId, group = 'shared', overrides = {}) => ({ groupId, group, providerId: 'aihub', available: true, reasons: [],
-  aihubMetricModel: 'fixture', ratio: 1, aggregateSuccess: 99, cacheHitRate: 80, outputTokensPerSecond: 60, scopeEligible: true, ...overrides });
+  aihubMetricModel: 'fixture', ratio: 1, aggregateSuccess: 99, cacheHitRate: 80, outputTokensPerSecond: 60,
+  aihubMetricSampleCount: 100, aihubCacheSampleCount: 100, scopeEligible: true, ...overrides });
 const failed = (groupId, group = 'shared') => candidate(groupId, group, { available: false, reasons: ['model-detection-failed'],
   healthEvidence: { providerVersionValid: true, supported: true, monitoringActive: true, model: 'fixture', modelDetectionFresh: true, modelDetectionFailed: true } });
 

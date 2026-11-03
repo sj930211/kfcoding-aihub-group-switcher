@@ -17,7 +17,7 @@ const broken=()=>candidateRows({current:{model_detection:{applicable:true,status
 function runtime(overrides={}){
  const writes=[],token={id:1,groupId:1,group:'current',name:'fixture-key',status:'active'};
  const ctx=vm.createContext({...api,console,IS_AIHUB:true,IS_AIHUB_API:true,config:{...settings,...overrides},state:{logs:[],outOfScopeTokens:[]},pendingCandidates:new Map(),guard:{byToken:{},blacklist:[]},tokensCache:[token],checkRevision:0});
- vm.runInContext(read('src/core/selection.js'),ctx);
+ vm.runInContext(read('src/core/config.js') + read('src/core/selection.js'),ctx);
  vm.runInContext(read('src/runtime/operations.js'),ctx);
  Object.assign(ctx,{getSwitchGuardState:()=>ctx.guard,saveSwitchGuardState:next=>{ctx.guard=next;},getSwitchHistory:()=>({}),addLog:()=>{},validateToken:()=>{},getTokenDetail:async()=>({...token}),
   switchTokenGroup:async(_token,candidate,options)=>{options?.beforeSwitch?.();writes.push(candidate.group);Object.assign(token,{group:candidate.group,groupId:candidate.groupId});},
@@ -33,10 +33,10 @@ for(const current of [
  {model_detection:null},{model_detection:{applicable:true,status:'refreshing',model:'fixture',detected_at:fresh}},
  {enabled:false},{group_models:['other']},
 ]){
- const r=runtime();const result=await r.poll(candidateRows({current}));assert.equal(result.outcome,'healthy','unknown/disabled/unsupported is not explicit failure');assert.deepEqual(r.writes,[]);
+ const r=runtime();const result=await r.poll(candidateRows({current}));assert.equal(result.outcome, current.model_detection === null ? 'model-hold' : 'healthy','unknown/disabled/unsupported is not explicit failure');assert.deepEqual(r.writes,[]);
 }
 {
- const r=runtime();assert.equal((await r.poll(candidateRows().filter(row=>row.group!=='current'))).outcome,'healthy','missing current data stays unknown');assert.deepEqual(r.writes,[]);
+ const r=runtime();assert.equal((await r.poll(candidateRows().filter(row=>row.group!=='current'))).outcome,'model-hold','missing current data stays unknown');assert.deepEqual(r.writes,[]);
 }
 for(const mode of ['health','strategy']){
  const r=runtime();const result=await r.poll(broken(),{mode});assert.equal(result.outcome,'switched');assert.deepEqual(r.writes,['fast'],'recovery picks the highest 1h quality in the same model pool');
@@ -62,7 +62,9 @@ for(const failure of [false,true]){
  const r=runtime({automaticSwitchMode:'strategy'});const rows=candidateRows({current:{summary_models:{fixture:{success_rate:.96,tps:20,sample_count:100,range_cache:{cache_hit_rate:.4,usage_records:100,ready:true,stale:false,refreshed_at:fresh}}}}},r.ctx.config);
  assert.equal((await r.poll(rows,{mode:'strategy'})).outcome,'pending');assert.equal(r.ctx.pendingCandidates.get(1).hits,1);
  await r.poll(rows,{mode:'health'});assert.equal(r.ctx.pendingCandidates.get(1).hits,1,'health cycle never accumulates quality confirmations');assert.deepEqual(r.writes,[]);
- assert.equal((await r.poll(rows,{mode:'strategy'})).outcome,'switched');assert.deepEqual(r.writes,['fast']);
+ assert.equal((await r.poll(rows,{mode:'strategy'})).outcome,'pending');assert.deepEqual(r.writes,[],'repeat snapshot cannot satisfy another confirmation');
+ const newEvidence=rows.map(row=>row.group==='fast'?{...row,aihubMetricSampleCount:101}:row);
+ assert.equal((await r.poll(newEvidence,{mode:'strategy'})).outcome,'switched');assert.deepEqual(r.writes,['fast']);
 }
 {
  const r=runtime();let called=0;await assert.rejects(r.poll(broken(),{assertCurrent:()=>{called++;throw Error('fixture cancellation');}}),/fixture cancellation/);assert.ok(called>0);assert.deepEqual(r.writes,[],'cancelled decision never writes a group');

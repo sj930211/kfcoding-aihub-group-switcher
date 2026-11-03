@@ -37,6 +37,18 @@
     return value === "failover" ? "failover" : "strategy";
   }
 
+  function validQualityWeights(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value)
+      && ["success", "cache", "tps", "ratio"].every((key) => value[key] !== null && value[key] !== ""
+        && Number.isInteger(Number(value[key])) && Number(value[key]) >= 0 && Number(value[key]) <= 100)
+      && ["success", "cache", "tps", "ratio"].reduce((sum, key) => sum + Number(value[key]), 0) === 100);
+  }
+
+  function normalizeQualityWeights(value) {
+    const source = validQualityWeights(value) ? value : DEFAULT_CONFIG.qualityWeights;
+    return Object.fromEntries(["success", "cache", "tps", "ratio"].map((key) => [key, Number(source[key])]));
+  }
+
   function normalizeBusinessPlatform(value) {
     const key = String(value || "").normalize("NFKC").trim().toLowerCase().replace(/[\s_-]+/g, "");
     if (["zhipu", "zhipuglm", "glm"].includes(key)) return "zhipu";
@@ -128,6 +140,19 @@
 
   function targetModelIdentity(config) {
     return targetModels(config).slice().sort().join(MODEL_IDENTITY_SEPARATOR);
+  }
+
+  function normalizeTokenModels(value, ids, models) {
+    if (value === undefined) return models.length === 1
+      ? Object.fromEntries(ids.map((id) => [id, models[0]])) : {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([id, model]) => Number.isSafeInteger(Number(id))
+      && Number(id) > 0 && typeof model === "string" && model.trim()).map(([id, model]) => [String(Number(id)), model.trim()]));
+  }
+
+  function tokenDecisionModel(settings, tokenId) {
+    const model = settings.tokenModels?.[Number(tokenId)] || "";
+    return targetModels(settings).includes(model) ? model : "";
   }
 
   function targetModelLabel(config) {
@@ -226,6 +251,10 @@
         ...(toGroupId ? { toGroupId } : {}),
         remaining,
         at: Math.max(0, Number(entry.at) || 0),
+        switchAt: Math.max(0, Number(entry.switchAt) || 0),
+        lastEvidence: String(entry.lastEvidence || ""),
+        seenEvidence: (Array.isArray(entry.seenEvidence) ? entry.seenEvidence : []).filter((item) => typeof item === "string").slice(-20),
+        initialEvidence: String(entry.initialEvidence || ""),
       };
     });
     const blacklist = (Array.isArray(source.blacklist) ? source.blacklist : [])
@@ -297,13 +326,14 @@
 
   function applyTemporaryBlacklist(candidates, guardState, model, now, options) {
     const blocked = normalizeSwitchGuardState(guardState).blacklist
-      .filter((entry) => entry.model === model && entry.until > now);
+      .filter((entry) => entry.until > now);
     return candidates.map((candidate) => {
       const reasons = candidate.reasons.filter((reason) => reason !== "temporarily-blacklisted");
-      if (blocked.some((entry) => entry.groupId ? Number(candidate.groupId) === entry.groupId : candidate.group === entry.group)) {
+      if (blocked.some((entry) => entry.model === (candidate.aihubMetricModel || model)
+        && (entry.groupId ? Number(candidate.groupId) === entry.groupId : candidate.group === entry.group))) {
         reasons.unshift("temporarily-blacklisted");
       }
-      return { ...candidate, reasons,
+      return { ...candidate, reasons, emergencyEligible: candidate.emergencyEligible === true && !reasons.includes("temporarily-blacklisted"),
         available: reasons.length === 0 && (candidate.available || candidate.reasons.includes("temporarily-blacklisted")) };
     });
   }
@@ -416,11 +446,14 @@
       glassTransparency: normalizeGlassTransparency(source.glassTransparency),
       enabled: Boolean(source.enabled),
       tokenIds: parseTokenIds(source.tokenIds, source.tokenId),
+      tokenModels: normalizeTokenModels(source.tokenModels, parseTokenIds(source.tokenIds, source.tokenId), models),
       models,
       model: models[0] || "",
       automaticSwitchMode: normalizeAutomaticSwitchMode(source.automaticSwitchMode),
       businessPlatform: normalizeBusinessPlatform(source.businessPlatform),
       selectionMode: normalizeSelectionMode(source.selectionMode),
+      qualityWeights: normalizeQualityWeights(source.qualityWeights),
+      minQualityGain: clampNumber(source.minQualityGain, DEFAULT_CONFIG.minQualityGain, 0, 100),
       monitorScopeMode: hasMonitorScope ? (source.monitorScopeMode === "selected" ? "selected" : "all")
         : (legacyPlatform ? "selected" : "all"),
       monitorGroupIds: normalizeMonitorGroupIds(source.monitorGroupIds),
@@ -498,6 +531,7 @@
       "ratio-unknown": "倍率未知",
       "ratio-too-high": "超过倍率上限",
       "metrics-missing": "无性能数据",
+      "tps-missing": "1h TPS 缺失（仅故障时可应急）",
       "metrics-stale": "指标已过期",
       "success-low": "1h 成功率不足",
       "latest-success-low": "最新成功率不足",

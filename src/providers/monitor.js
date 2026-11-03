@@ -129,6 +129,8 @@
       cacheStale: cache.stale === false,
       cacheRefreshedAt: timestamp,
       cacheRefreshedAtMs: Number.isFinite(parsedTimestamp) ? parsedTimestamp : NaN,
+      windowStart: String(source.window_start ?? source.windowStart ?? ""),
+      windowEnd: String(source.window_end ?? source.windowEnd ?? ""),
       model: modelName || "",
     };
   }
@@ -330,7 +332,8 @@
       if (summaryRange !== "1h") reasons.push("metrics-window-invalid");
       if (summary.providerVersion !== 2) reasons.push("metrics-provider-version");
       if (!metricFresh) reasons.push("metrics-stale");
-      if (!Number.isFinite(metrics.successRate) || !Number.isFinite(metrics.tps) || !Number.isFinite(metrics.sampleCount)) reasons.push("metrics-missing");
+      if (!Number.isFinite(metrics.successRate) || !Number.isFinite(metrics.sampleCount)) reasons.push("metrics-missing");
+      if (!Number.isFinite(metrics.tps)) reasons.push("tps-missing");
       if (Number.isFinite(metrics.sampleCount) && metrics.sampleCount < settings.minMetricSamples) reasons.push("metrics-sample-insufficient");
       if (!Number.isFinite(metrics.successRate) || metrics.successRate < settings.minSuccessRate) reasons.push("success-low");
       if (!Number.isFinite(metrics.cacheHitRate) || !Number.isFinite(metrics.cacheSampleCount)) reasons.push("cache-metrics-missing");
@@ -342,17 +345,21 @@
       const detectionFresh = Boolean(detection && (detection.hasExpiresAt
         ? Number.isFinite(detection.expiresAtMs) && detection.expiresAtMs > now
         : Number.isFinite(detection.detectedAtMs) && detection.detectedAtMs <= now && now - detection.detectedAtMs <= 3600000));
+      const emergencyReasons = new Set(["tps-missing", "cache-metrics-missing", "cache-stale", "cache-sample-insufficient"]);
+      const emergencyEligible = reasons.length > 0 && reasons.every((reason) => emergencyReasons.has(reason));
       return {
-        group, groupId, ratio, publicRatio, ratioSource, available: reasons.length === 0, reasons, warnings: [],
+        group, groupId, ratio, publicRatio, ratioSource, available: reasons.length === 0, emergencyEligible, reasons, warnings: [],
         providerId: "aihub", platform: String(monitor.platform || meta?.platform || ""),
         aggregateSuccess: metrics.successRate, aggregateSuccessWindow: summaryRange,
         cacheHitRate: metrics.cacheHitRate, outputTokensPerSecond: metrics.tps,
         aihubSuccessRate: metrics.successRate, aihubCacheHitRate: metrics.cacheHitRate, aihubTps: metrics.tps,
         aihubMetricSampleCount: metrics.sampleCount, aihubCacheSampleCount: metrics.cacheSampleCount,
+        aihubMetricWindowStart: metrics.windowStart, aihubMetricWindowEnd: metrics.windowEnd,
         aihubMetricModel: metricModel, targetModels: matchedModel ? [matchedModel] : [],
         inMonitorScope, monitored: inMonitorScope, scopeEligible: inMonitorScope,
         modelDetection: detection, modelDetectionReason, modelDetectionStatus: detection?.status || "",
         modelDetectionModelKey: detection?.modelKey || "", modelHealthStatus: "",
+        modelCards: normalizeAihubModelCards(monitor.modelCards ?? monitor.model_cards),
         detectionMedia: normalizeAihubDetectionMedia(monitor),
         latestSuccess: NaN, recentSuccess: NaN, recentMinSuccess: NaN, recentSampleCount: 0,
         firstTokenLatencyMs: firstToken.value, firstTokenLatencySource: firstToken.source,

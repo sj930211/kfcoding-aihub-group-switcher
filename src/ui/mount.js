@@ -579,6 +579,23 @@
         .candidate-head button[aria-pressed="true"][data-sort-direction="ascending"]::after { content: " ↑"; }
         .algorithm-note { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 5px; background: var(--accent-soft); font-size: 12px; line-height: 1.6; }
         .algorithm-note p { margin: 4px 0 0; color: var(--text-soft); font-size: 11px; }
+        .quality-settings-draft { margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+        .quality-weight-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+        .quality-settings-draft .settings-footer { flex-wrap: wrap; gap: 10px; }
+        .quality-settings-draft .settings-footer > span { margin-right: auto; }
+        .quality-settings-draft [data-invalid="true"] { color: var(--danger); }
+        .quality-preview { white-space: pre-line; overflow-wrap: anywhere; margin: 12px 0; padding: 12px; border-radius: 6px; background: var(--surface); color: var(--text-soft); font-size: 12px; line-height: 1.75; }
+        .quality-gain-field { margin-top: 14px; max-width: 280px; }
+        .token-model-bindings { display: grid; gap: 12px; }
+        .token-model-field { min-width: 0; padding: 12px; border: 1px solid var(--line-soft); border-radius: 6px; }
+        .token-model-field label { overflow-wrap: anywhere; }
+        .token-model-field small { display: block; margin-top: 6px; color: var(--muted); line-height: 1.6; }
+        .quality-config-warning { padding: 10px 12px; color: var(--warning); border: 1px solid currentColor; border-radius: 6px; font-size: 12px; }
+        @media (max-width: 640px) {
+          .quality-weight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .quality-settings-draft { padding: 12px; }
+          .quality-gain-field { max-width: none; }
+        }
         .panel[data-fullscreen="true"] { inset: 12px !important; width: calc(100vw - 24px); height: calc(100dvh - 24px); max-height: none; }
         .candidate-section > .selector-search-status { margin: 0 12px 10px; }
         .candidate-section > .text-button { margin: 10px 12px; }
@@ -1290,7 +1307,7 @@
           .diagnostic-list { min-height: 140px; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .status[data-tone="running"]::before { animation: none; }
+          .dot, .status[data-tone="running"]::before { animation: none !important; }
           *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: .001ms !important; }
         }
         @media (prefers-reduced-transparency: reduce) {
@@ -1509,7 +1526,22 @@
             </select>
           </div>
           <p id="kf-automatic-mode-help" class="settings-hint" data-ref="automaticSwitchHint">正常切换按 AIHub 1 小时质量指标排序；故障转移模式仅在当前组故障时切换。</p>
-          <div class="algorithm-note"><strong>1h 综合质量排序</strong><p>成功率 40% · 缓存命中 30% · TPS 20% · 低倍率 10%。仅比较检测详情明确通过、指标完整且足够新鲜的同模型候选。</p></div>
+          <div class="algorithm-note"><strong>1h 固定标尺质量评分</strong><p>仅比较同一绑定模型、检测详情明确通过且指标完整新鲜的候选。分数用于排序，不代表实际服务成功概率；零权重不关闭检测、成功率或样本硬门槛。</p></div>
+          <section class="quality-settings-draft" aria-labelledby="kf-quality-weights-title">
+            <div class="section-head"><h3 class="section-title" id="kf-quality-weights-title">质量权重</h3><span class="section-meta" data-ref="qualityWeightTotal">合计 100% / 100%</span></div>
+            <p class="quality-config-warning" data-ref="qualityConfigWarning" role="status" hidden></p>
+            <div class="quality-weight-grid">
+              <div class="field"><label for="kf-quality-success">1h 成功率（%）</label><input id="kf-quality-success" data-ref="qualityWeightSuccess" type="number" min="0" max="100" step="1" required></div>
+              <div class="field"><label for="kf-quality-cache">1h 缓存命中（%）</label><input id="kf-quality-cache" data-ref="qualityWeightCache" type="number" min="0" max="100" step="1" required></div>
+              <div class="field"><label for="kf-quality-tps">1h TPS（%）</label><input id="kf-quality-tps" data-ref="qualityWeightTps" type="number" min="0" max="100" step="1" required></div>
+              <div class="field"><label for="kf-quality-ratio">低倍率（%）</label><input id="kf-quality-ratio" data-ref="qualityWeightRatio" type="number" min="0" max="100" step="1" required></div>
+            </div>
+            <div class="field quality-gain-field"><label for="kf-quality-gain">正常切换最小分差</label><input id="kf-quality-gain" data-ref="minQualityGainDraft" type="number" min="0" max="100" step="any" required><p class="settings-hint">默认 5 分；同分始终保持当前组。分差不是质量改善百分比。</p></div>
+            <details class="settings-disclosure"><summary>评分标尺与样本保守系数</summary><p class="settings-hint">成功率按超过最低门槛的余量计分，分母至少为 5 个百分点；TPS 参考值 100，名义倍率参考值 1，样本参考值 100。模型与缓存分别使用样本数 ÷（样本数＋100）修正，低倍率项不作样本修正。这是样本保守系数，不是统计置信度；会更偏向高样本组。</p></details>
+            <p class="settings-hint" data-ref="qualityWeightsStatus" role="status">编辑和预览只使用当前快照，保存后下次检查生效。</p>
+            <div class="quality-preview" data-ref="qualityPreview" aria-label="已保存权重与草稿权重推荐对比"></div>
+            <div class="settings-footer"><span class="settings-hint">不刷新接口，不调用模型，不立即切组。</span><button class="button" data-ref="qualityWeightsReset" type="button">恢复默认</button><button class="button button-primary" data-ref="qualityWeightsSave" type="button">保存权重</button></div>
+          </section>
           <div class="control-grid">
             <div class="field">
               <label id="kf-token-label">API 密钥（可多选）</label>
@@ -1531,7 +1563,7 @@
               </div>
             </div>
             <div class="field">
-              <label id="kf-model-label">${IS_AIHUB ? "目标模型（站点探测，可多选）" : "目标模型（可多选）"}</label>
+              <label id="kf-model-label">启用模型目录（可多选）</label>
               <div class="token-select model-select" data-ref="modelSelect">
                 <button class="token-select-trigger" data-ref="modelSelectToggle" type="button" aria-labelledby="kf-model-label" aria-expanded="false">
                   <span class="token-select-label" data-ref="modelSelectLabel">请选择目标模型</span>
@@ -1548,6 +1580,11 @@
                   <div class="token-list" data-ref="modelList"></div>
                 </div>
               </div>
+            </div>
+            <div class="field field-wide token-model-settings">
+              <h3 class="settings-subheading">每个密钥的决策模型</h3>
+              <p class="settings-hint" data-ref="tokenModelStatus" role="status">选择密钥后，为每个密钥绑定一个决策模型。</p>
+              <div class="token-model-bindings" data-ref="tokenModelBindings"></div>
             </div>
             <div class="field field-wide group-filter-field">
               <div class="group-filter-heading">
@@ -1584,7 +1621,7 @@
             <div class="field"><label for="kf-health-interval">故障检测间隔（秒）</label><input id="kf-health-interval" data-ref="pollSeconds" type="number" min="15" max="3600" step="any" required></div>
             <div class="field"><label for="kf-strategy-interval">分组择优间隔（分钟）</label><input id="kf-strategy-interval" data-ref="strategyMinutes" type="number" min="0.25" max="60" step="any" required></div>
           </div>
-          <p class="settings-hint">当前组故障时立即寻找可用组，不等待择优周期。平台监控数据的更新速度也会影响故障发现时间。</p>
+          <p class="settings-hint">30 秒为默认轮询间隔，不保证 30 秒发现故障；故障发现依赖上游发布。确认当前组故障后寻找安全目标，不等待择优周期。</p>
           <div class="settings-check-times"><span>故障检查 <b data-ref="lastHealthCheck">—</b></span><span>分组择优 <b data-ref="lastStrategyCheck">—</b></span></div>
           <h3 class="settings-subheading">切换保护</h3>
           <div class="settings-fields">
@@ -1593,7 +1630,7 @@
             <div class="field"><label for="kf-rollback">回滚观察次数（0关闭）</label><input id="kf-rollback" data-ref="rollbackChecks" type="number" min="0" max="10" step="1" required></div>
             <div class="field"><label for="kf-isolation">故障隔离时长（分钟）</label><input id="kf-isolation" data-ref="blacklistMinutes" type="number" step="any" min="1" max="1440" required></div>
           </div>
-          <p class="settings-hint" data-ref="confirmationHint">连续确认按择优轮次计算，回滚观察按故障检测轮次计算。</p>
+          <p class="settings-hint" data-ref="confirmationHint">连续确认和切换观察只统计新证据，重复轮询不累计。</p>
           <details class="settings-disclosure">
             <summary>健康判定与候选限制</summary>
             <div class="grid advanced">
@@ -1749,6 +1786,7 @@
       "candidatePlatform", "candidateSearch", "candidateSearchStatus", "candidateAvailabilityFilter", "candidateStatus", "candidateSort", "candidateResetFilters", "groupFilterPlatform", "manualGroupPlatform",
       "monitorScopeMode", "monitorScopeSearch", "monitorScopeList", "monitorScopeCount", "monitorScopeCountDetail", "monitorScopeSave", "monitorScopeSelectAll", "monitorScopeClear", "monitorScopeStatus", "monitorScopeSearchStatus", "monitorScopePanel", "currentScopeWarning", "outOfScopeTokenList", "removeOutOfScopeToken", "manualScopeDialog", "manualScopeTitle", "manualScopeTarget", "manualScopeRisk", "manualScopeHint", "manualScopeAdd", "manualScopeOnce", "manualScopeCancel",
       "automaticSwitchMode", "automaticSwitchHint", "tokenSearch", "tokenSearchStatus", "modelSearch", "modelSearchStatus", "groupFilterSearch", "groupFilterSearchStatus", "manualGroupSearch", "manualGroupSearchStatus",
+      "qualityWeightSuccess", "qualityWeightCache", "qualityWeightTps", "qualityWeightRatio", "minQualityGainDraft", "qualityWeightTotal", "qualityWeightsStatus", "qualityWeightsSave", "qualityWeightsReset", "qualityPreview", "qualityConfigWarning", "tokenModelBindings", "tokenModelStatus",
       "detectionImageDialog", "detectionImageTitle", "detectionImageClose", "detectionImageStatus", "detectionImage", "detectionImageOriginal",
       "launcher", "panel", "header", "workspace", "statusDot", "version", "updateBadge", "theme", "glassTransparency", "glassTransparencyValue", "collapse", "fullscreen", "status", "currentGroup", "bestGroup",
       "lastCheck", "bestGroupMeta", "balance", "todaySpendItem", "todaySpend", "todayRequests", "todayTokens", "candidateCount", "candidateSummary", "tokenResultCount", "logCount", "settingsSection", "settingsSave", "strategyMinutes", "lastHealthCheck", "lastStrategyCheck", "confirmationHint", "enabled", "monitorEnabled", "monitorMode", "spendProtectionEnabled", "dailySpendLimit", "spendProtectionStatus", "resetSpendProtection",

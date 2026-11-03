@@ -175,7 +175,9 @@
     return Number.isFinite(candidate.aggregateSuccess) && candidate.aggregateSuccess >= 0 && candidate.aggregateSuccess <= 100
       && Number.isFinite(candidate.cacheHitRate) && candidate.cacheHitRate >= 0 && candidate.cacheHitRate <= 100
       && Number.isFinite(candidate.outputTokensPerSecond) && candidate.outputTokensPerSecond >= 0
-      && Number.isFinite(candidate.ratio) && candidate.ratio > 0;
+      && Number.isFinite(candidate.ratio) && candidate.ratio > 0
+      && Number.isFinite(candidate.aihubMetricSampleCount) && candidate.aihubMetricSampleCount >= 0
+      && Number.isFinite(candidate.aihubCacheSampleCount) && candidate.aihubCacheSampleCount >= 0;
   }
 
   function candidateQualityTie(left, right) {
@@ -185,50 +187,45 @@
       || Number(left.groupId || 0) - Number(right.groupId || 0) || left.group.localeCompare(right.group);
   }
 
-  function scoreAihubQualityCandidates(candidates) {
-    const pools = new Map();
-    const result = candidates.map((candidate) => ({ ...candidate, qualityScore: NaN, qualityPercentiles: null }));
+  const QUALITY_SCALES = Object.freeze({ successHeadroom: 5, tps: 100, ratio: 1, samples: 100 });
+
+  function scoreAihubQualityCandidates(candidates, settings = DEFAULT_CONFIG) {
+    const weights = normalizeQualityWeights(settings.qualityWeights);
+    const minimum = clampNumber(settings.minSuccessRate, DEFAULT_CONFIG.minSuccessRate, 0, 100);
+    const result = candidates.map((candidate) => ({ ...candidate, qualityScore: NaN, qualityComponents: null }));
     result.forEach((candidate) => {
       if (!candidate.available || candidate.scopeEligible === false || !qualityMetricValid(candidate)) return;
-      const model = qualityModel(candidate);
-      if (!pools.has(model)) pools.set(model, []);
-      pools.get(model).push(candidate);
-    });
-    const metrics = [["success", (row) => row.aggregateSuccess, 0.4], ["cache", (row) => row.cacheHitRate, 0.3],
-      ["tps", (row) => row.outputTokensPerSecond, 0.2], ["cost", (row) => -row.ratio, 0.1]];
-    pools.forEach((pool) => {
-      pool.forEach((row) => { row.qualityPercentiles = {}; row.qualityScore = 0; });
-      metrics.forEach(([name, value, weight]) => {
-        const sorted = pool.slice().sort((left, right) => value(left) - value(right));
-        for (let start = 0; start < sorted.length;) {
-          let end = start + 1;
-          while (end < sorted.length && value(sorted[end]) === value(sorted[start])) end += 1;
-          const score = sorted.length === 1 ? 100 : 100 * ((start + end - 1) / 2) / (sorted.length - 1);
-          for (let index = start; index < end; index += 1) {
-            sorted[index].qualityPercentiles[name] = score;
-            sorted[index].qualityScore += weight * score;
-          }
-          start = end;
-        }
-      });
+      if (candidate.aggregateSuccess < minimum) return;
+      const qModel = candidate.aihubMetricSampleCount / (candidate.aihubMetricSampleCount + QUALITY_SCALES.samples);
+      const qCache = candidate.aihubCacheSampleCount / (candidate.aihubCacheSampleCount + QUALITY_SCALES.samples);
+      const utilities = {
+        success: Math.min(100, Math.max(0, 100 * (candidate.aggregateSuccess - minimum) / Math.max(100 - minimum, QUALITY_SCALES.successHeadroom))),
+        cache: candidate.cacheHitRate,
+        tps: 100 * candidate.outputTokensPerSecond / (candidate.outputTokensPerSecond + QUALITY_SCALES.tps),
+        ratio: 100 / (1 + candidate.ratio / QUALITY_SCALES.ratio),
+      };
+      const contributions = Object.fromEntries(Object.entries(utilities).map(([name, value]) => [name,
+        weights[name] / 100 * value * (name === "ratio" ? 1 : name === "cache" ? qCache : qModel)]));
+      candidate.qualityComponents = { utilities, contributions, qModel, qCache };
+      candidate.qualityScore = Object.values(contributions).reduce((sum, value) => sum + value, 0);
     });
     return result.sort((left, right) => qualityModel(left).localeCompare(qualityModel(right))
       || (Number.isFinite(right.qualityScore) ? right.qualityScore : -1) - (Number.isFinite(left.qualityScore) ? left.qualityScore : -1)
       || candidateQualityTie(left, right));
   }
 
-  function candidateStrategyScore(candidate, candidates) {
-    const scored = scoreAihubQualityCandidates(candidates).find((row) => Number(candidate.groupId) > 0
+  function candidateStrategyScore(candidate, candidates, settings) {
+    const scored = scoreAihubQualityCandidates(candidates, settings).find((row) => Number(candidate.groupId) > 0
       ? Number(row.groupId) === Number(candidate.groupId) : row.group === candidate.group);
     return scored?.qualityScore ?? NaN;
   }
 
-  function sortCandidatesForMode(candidates) {
-    return scoreAihubQualityCandidates(candidates);
+  function sortCandidatesForMode(candidates, mode, settings) {
+    return scoreAihubQualityCandidates(candidates, settings);
   }
 
-  function sortCandidateRowsForMode(candidates) {
-    const scored = scoreAihubQualityCandidates(candidates);
+  function sortCandidateRowsForMode(candidates, mode, settings) {
+    const scored = scoreAihubQualityCandidates(candidates, settings);
     return [...scored.filter((row) => row.available), ...scored.filter((row) => !row.available)];
   }
 
@@ -249,7 +246,53 @@
       ? Number(candidate.groupId) === Number(token.groupId) : candidate.group === token.group));
   }
 
-  function selectBestCandidate(candidates, currentGroup, mode) {
+  function candidateEmergencySafe(candidate, settings) {
+    const allowed = new Set(["tps-missing", "cache-metrics-missing", "cache-stale", "cache-sample-insufficient"]);
+    const evidence = candidate.healthEvidence;
+    return candidate.emergencyEligible === true && candidate.scopeEligible !== false && candidate.reasons.length > 0
+      && candidate.reasons.every((reason) => allowed.has(reason))
+      && Number.isSafeInteger(Number(candidate.groupId)) && Number(candidate.groupId) > 0
+      && Number.isFinite(candidate.ratio) && candidate.ratio > 0 && (!settings.maxGroupRatio || candidate.ratio <= settings.maxGroupRatio)
+      && Number.isFinite(candidate.aggregateSuccess) && candidate.aggregateSuccess >= settings.minSuccessRate && candidate.aggregateSuccess <= 100
+      && Number.isFinite(candidate.aihubMetricSampleCount) && candidate.aihubMetricSampleCount >= settings.minMetricSamples
+      && evidence?.providerVersionValid === true && evidence.metricsMatchModel === true && evidence.supported === true
+      && evidence.monitoringActive === true && evidence.ageMinutes >= 0 && evidence.ageMinutes <= 60
+      && !candidate.modelDetectionReason && !candidateHasExplicitHealthFailure(candidate, settings);
+  }
+
+  function selectRecoveryCandidate(candidates, model, settings, previousGroup) {
+    const sameModel = candidates.filter((row) => qualityModel(row) === model && row.scopeEligible !== false);
+    const complete = scoreAihubQualityCandidates(sameModel, settings).filter((row) => row.available && Number.isFinite(row.qualityScore));
+    const successUtility = (row) => Math.min(100, Math.max(0, 100 * (row.aggregateSuccess - settings.minSuccessRate)
+      / Math.max(100 - settings.minSuccessRate, QUALITY_SCALES.successHeadroom)))
+      * row.aihubMetricSampleCount / (row.aihubMetricSampleCount + QUALITY_SCALES.samples);
+    const emergency = sameModel.filter((row) => candidateEmergencySafe(row, settings)).sort((left, right) => successUtility(right) - successUtility(left)
+      || right.aggregateSuccess - left.aggregateSuccess || right.aihubMetricSampleCount - left.aihubMetricSampleCount
+      || left.ratio - right.ratio || Number(left.groupId) - Number(right.groupId));
+    const pool = complete.length ? complete : emergency;
+    const previous = Number(previousGroup?.groupId) > 0 ? pool.find((row) => Number(row.groupId) === Number(previousGroup.groupId)) : null;
+    return (previous || pool[0]) ? { ...(previous || pool[0]), recoveryTier: complete.length ? "complete" : "emergency" } : null;
+  }
+
+  function candidateDecisionEvidence(candidate) {
+    if (!candidate?.available || !qualityMetricValid(candidate)) return "";
+    return JSON.stringify([candidate.groupId, qualityModel(candidate), candidate.aihubMetricWindowStart || "", candidate.aihubMetricWindowEnd || "",
+      candidate.aggregateSuccess, candidate.cacheHitRate, candidate.outputTokensPerSecond,
+      candidate.aihubMetricSampleCount, candidate.aihubCacheSampleCount, candidate.ratio]);
+  }
+
+  function candidateHealthPublications(candidate, switchAt, now) {
+    if (!candidate) return [];
+    const detection = candidate.modelDetection;
+    const detectionAt = Math.max(detection?.detectedAtMs || 0,
+      ...(detection?.stages || []).map((stage) => Date.parse(stage.finishedAt || "") || 0));
+    const metricAt = Date.parse(candidate.aihubMetricWindowEnd || "");
+    return [["detection", detectionAt], ["metrics", metricAt]]
+      .filter(([, at]) => Number.isFinite(at) && at > switchAt && at <= now)
+      .map(([type, at]) => `${candidate.groupId}:${qualityModel(candidate)}:${type}:${at}`);
+  }
+
+  function selectBestCandidate(candidates, currentGroup, mode, settings) {
     let available = candidates.filter((candidate) => candidate.available && candidate.scopeEligible !== false && qualityMetricValid(candidate));
     const matching = candidates.filter((candidate) => typeof currentGroup === "object"
       ? candidateMatchesToken(candidate, currentGroup) : candidate.group === currentGroup);
@@ -260,13 +303,16 @@
     // Relative scores from different models are never compared. No matching current model is ambiguous.
     if (currentModel) available = available.filter((candidate) => qualityModel(candidate) === currentModel);
     else if (models.length > 1) return null;
-    return scoreAihubQualityCandidates(available)[0] || null;
+    const scored = scoreAihubQualityCandidates(available, settings);
+    const best = scored.find((row) => Number.isFinite(row.qualityScore));
+    const scoredCurrent = current && scored.find((row) => candidateMatchesToken(row, current));
+    return (scoredCurrent && best && scoredCurrent.qualityScore === best.qualityScore ? scoredCurrent : best) || null;
   }
 
   function selectSwitchCandidate(candidates, currentGroup, targetGroup, options) {
     const target = String(targetGroup || "").trim();
     const request = options && typeof options === "object" ? options : {};
-    if (!target) return selectBestCandidate(candidates, currentGroup, request.mode);
+    if (!target) return selectBestCandidate(candidates, currentGroup, request.mode, request.settings);
 
     const candidate = candidates.find((item) => item.group === target
       && (!(Number(request.targetGroupId) > 0) || Number(item.groupId) === Number(request.targetGroupId)));

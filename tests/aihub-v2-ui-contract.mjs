@@ -22,6 +22,7 @@ context.mountUi();
 assert.equal(mountedInBody, true, "mount in body so the workspace is available to browser accessibility and keyboard tools");
 
 const { innerHTML: html } = shadow;
+assert.match(html, /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.dot\s*,\s*\.status\[data-tone="running"\]::before\s*\{\s*animation:\s*none/, "reduced motion disables the status dot, rather than speeding its infinite animation");
 const { refs } = context;
 for (const name of [
   "monitorScopeMode", "monitorScopeSearch", "monitorScopeList", "monitorScopeCount",
